@@ -93,6 +93,11 @@ Cómo se escribe el PRIVADO:
 
 /** Lo que trae una cuenta que nunca configuró nada. */
 const OPCIONES_POR_DEFECTO = {
+  /* La única opción que NO entra en el prompt: no cambia lo que dice la IA,
+     cambia quién aprieta el botón. Vive acá porque es una decisión del
+     negocio como las demás y config_json ya es donde se guardan, y así no
+     hace falta una columna nueva en una tabla compartida con el ERP. */
+  auto: false,
   trato: 'tu', // 'tu' | 'usted'
   pais: 'Ecuador',
   max_frases: 2,
@@ -124,6 +129,7 @@ const frase = (v, tope) =>
 function normalizarOpciones(raw) {
   const o = raw && typeof raw === 'object' ? raw : {};
   return {
+    auto: Boolean(o.auto),
     trato: TRATOS.has(o.trato) ? o.trato : OPCIONES_POR_DEFECTO.trato,
     pais: frase(o.pais, 40) || OPCIONES_POR_DEFECTO.pais,
     max_frases: [1, 2, 3].includes(Number(o.max_frases))
