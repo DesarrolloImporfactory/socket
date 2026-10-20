@@ -37,6 +37,10 @@ const {
   elegirRespuestaRapida,
 } = require('../src/utils/wizardProducto/respuestasRapidas');
 const { leerApiKeyOpenAI } = require('../src/utils/openia/apiKeyOpenAI');
+const {
+  partirSalida,
+  prometePrivado,
+} = require('../src/utils/comentarios/promptComentarios');
 
 /* Las instrucciones se piden al mismo sitio que las pide el servidor, para que
    esto pruebe lo que de verdad corre y no una copia. Incluye la configuración
@@ -143,6 +147,7 @@ async function main() {
 
   let quemadas = 0;
   let conIa = 0;
+  let conPrivado = 0;
 
   for (const texto of args.textos) {
     console.log(`\n💬 "${texto}"`);
@@ -169,8 +174,9 @@ async function main() {
       `Negocio: ${cfg.nombre_configuracion || '(sin nombre)'}`,
       bloque,
       bloque
-        ? 'Si preguntan por OTRO producto distinto a este, no lo inventes: dile ' +
-          'que le escribes al privado y ahí se lo resuelves.'
+        ? 'Si preguntan por OTRO producto distinto a este, no sabes si el ' +
+          'negocio lo vende: no afirmes ni niegues. Dile que le escribes al ' +
+          'privado y ahí se lo confirman.'
         : 'No sabes de qué producto habla esta publicación. No des precios ni ' +
           'características: reconoce el comentario e invítalo al privado.',
       `Comentario de un cliente: ${texto}`,
@@ -192,10 +198,28 @@ async function main() {
       });
       const salida = String(r?.respuesta || r?.text || r || '').trim();
       conIa += 1;
+
+      /* El modelo devuelve el comentario público y el privado en la misma
+         llamada. Se separan con el MISMO parser que usa el servicio, así que si
+         acá se ve bien, en producción sale bien. */
+      const { comentario, privado } = partirSalida(salida);
+      if (privado) conPrivado += 1;
+
       console.log(
         `   🤖 IA ${prod ? 'con producto' : 'SIN producto'} · ${Date.now() - t0} ms`,
       );
-      console.log(`   → ${salida}`);
+      console.log(`   💬 público  → ${comentario}`);
+      if (privado) {
+        const prometido = prometePrivado(comentario);
+        console.log(
+          `   ${prometido ? '🔒' : '○ '} privado${prometido ? ' ' : ' (cortesía, va desmarcado)'} → ${privado}`,
+        );
+        if (prod) {
+          console.log(
+            `   🔗 puente   → ancla "${prod.nombre}" + estado contacto_inicial`,
+          );
+        }
+      }
     } catch (err) {
       console.log(`   ❌ falló la IA: ${err.message}`);
     }
@@ -205,7 +229,7 @@ async function main() {
   linea('═');
   console.log(
     `${args.textos.length} comentarios · ${quemadas} resueltos por respuesta ` +
-      `rápida (gratis) · ${conIa} con IA`,
+      `rápida (gratis) · ${conIa} con IA · ${conPrivado} con privado`,
   );
   linea('═');
 

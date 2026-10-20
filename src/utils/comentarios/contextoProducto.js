@@ -176,7 +176,33 @@ function bloqueProducto(prod, variaciones = []) {
       return `${etiqueta} (${hay})`;
     })
     .filter(Boolean);
-  if (vars.length) l.push(`Variaciones: ${vars.join(' · ')}`);
+
+  /* El silencio se lee como un "no".
+     Medido con el M27 (es_variable = 0, cero filas en productos_variaciones):
+     ante "¿viene en color rojo?" el modelo contestó "No tenemos el M27 en
+     color rojo, solo en el acabado estándar". Una negación rotunda sobre algo
+     de lo que no tenía UN dato, y la peor de las dos: el cliente se va
+     convencido de que no existe.
+     No alcanza con callar el hueco ni con la regla de no inventar — el modelo
+     no considera que negar sea inventar. Hay que nombrarlo. */
+  if (vars.length) {
+    l.push(`Variaciones: ${vars.join(' · ')}`);
+    l.push(
+      'Esas son TODAS las variantes que existen. Si preguntan por otra, no la hay.',
+    );
+  } else {
+    /* Prohibir "el modelo estándar" es tan necesario como prohibir la
+       negación. Sin esa línea el modelo rellenaba el hueco por el otro lado:
+       "solo tenemos el modelo estándar M27" cierra la puerta igual que un "no
+       hay en rojo", y suena más creíble porque no niega nada de frente. */
+    l.push(
+      'Variantes: NO tienes información de colores, tallas ni modelos de este ' +
+        'producto. Si preguntan por uno concreto, no digas que no existe ni ' +
+        'que sí lo tienes, y NO lo llames "el modelo estándar", "el único ' +
+        'modelo" ni nada que insinúe que viene en una sola versión. Di que lo ' +
+        'confirmas por el privado.',
+    );
+  }
 
   const faqs = (prod.faqs || []).slice(0, TOPE_FAQS_CONTEXTO);
   if (faqs.length) {
