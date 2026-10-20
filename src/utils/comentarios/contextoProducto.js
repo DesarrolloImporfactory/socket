@@ -150,9 +150,6 @@ function bloqueProducto(prod, variaciones = []) {
   l.push(`Nombre: ${prod.nombre}`);
   if (prod.precio != null) l.push(`Precio: ${fmtPrecio(prod.precio)}`);
   if (prod.material) l.push(`Material: ${prod.material}`);
-  if (prod.descripcion) {
-    l.push(`Descripción: ${String(prod.descripcion).slice(0, TOPE_DESCRIPCION)}`);
-  }
 
   const bullets = (prod.bullets || []).filter(Boolean).slice(0, 8);
   if (bullets.length) l.push(`Características: ${bullets.join(' · ')}`);
@@ -172,8 +169,7 @@ function bloqueProducto(prod, variaciones = []) {
     .map((v) => {
       const etiqueta = [v.atributo, v.valor].filter(Boolean).join(': ');
       if (!etiqueta) return null;
-      const hay = Number(v.stock) > 0 ? 'disponible' : 'agotado';
-      return `${etiqueta} (${hay})`;
+      return `- ${etiqueta}${Number(v.stock) > 0 ? '' : ' — AGOTADO'}`;
     })
     .filter(Boolean);
 
@@ -186,9 +182,22 @@ function bloqueProducto(prod, variaciones = []) {
      No alcanza con callar el hueco ni con la regla de no inventar — el modelo
      no considera que negar sea inventar. Hay que nombrarlo. */
   if (vars.length) {
-    l.push(`Variaciones: ${vars.join(' · ')}`);
+    /* Una lista contada, y no "Variaciones: A · B · C" en una línea.
+       Medido con el Parlante G200 (Negro y Rojo, los dos agotados) y la
+       pregunta "¿qué colores tienen?": en una línea el modelo contestaba
+       "solo tenemos el G200 en color rojo" 2 de cada 5 veces —se comía un
+       color Y añadía un "solo" que no era verdad—. Con la lista, el número
+       delante y la prohibición explícita del "solo": 6 de 6 correctas. */
+    l.push(`VARIANTES DE ESTE PRODUCTO: son ${vars.length} en total.`);
+    l.push(...vars);
     l.push(
-      'Esas son TODAS las variantes que existen. Si preguntan por otra, no la hay.',
+      'Si te preguntan por las variantes, nómbralas TODAS, agotadas incluidas.',
+    );
+    l.push(
+      'No digas "solo", "únicamente" ni "el único" si en la lista hay más de una.',
+    );
+    l.push(
+      'No existe ninguna otra: si preguntan por una que no esté ahí, no la hay.',
     );
   } else {
     /* Prohibir "el modelo estándar" es tan necesario como prohibir la
@@ -211,6 +220,19 @@ function bloqueProducto(prod, variaciones = []) {
     for (const f of faqs) {
       l.push(`- ${String(f.pregunta || '').trim()} → ${String(f.respuesta).trim()}`);
     }
+  }
+
+  /* La descripción va al FINAL, y es el motivo de la mitad del arreglo.
+     La que escribe el wizard trae sus propios encabezados en mayúsculas
+     ("DESCRIPCIÓN:", "BENEFICIOS:", "MATERIAL:", "USO PRINCIPAL:") repartidos
+     en quince líneas. Puesta arriba, todo lo que viniera después —las
+     variantes, sobre todo— se leía como un apartado más de ese bloque y
+     perdía peso. Abajo, los datos cortos y exactos quedan solos. */
+  if (prod.descripcion) {
+    l.push('');
+    l.push(
+      `Descripción del producto: ${String(prod.descripcion).slice(0, TOPE_DESCRIPCION)}`,
+    );
   }
 
   l.push('');
