@@ -39,6 +39,24 @@ exports.sincronizarPublicaciones = catchAsync(async (req, res) => {
   res.json({ ok: true, ...data });
 });
 
+// POST /api/v1/facebook_comentarios/ia-automatica
+//   body: { id_configuracion, post_id, activa }
+//
+// Enciende o apaga la respuesta automática en UNA publicación. No toca el
+// asistente ni el interruptor de la cuenta.
+exports.cambiarIaAutomatica = catchAsync(async (req, res, next) => {
+  const { post_id, activa } = req.body || {};
+  if (!post_id) return next(new AppError('post_id es requerido', 400));
+
+  const data = await FacebookComments.cambiarIaAutomatica({
+    id_configuracion: leerIdConfiguracionBody(req),
+    post_id: String(post_id),
+    activa: activa === true || activa === 1 || activa === '1',
+  });
+
+  res.json({ ok: true, ...data });
+});
+
 // GET /api/v1/facebook_comentarios/posts/:id_facebook_post/comentarios?id_configuracion=10
 exports.listarComentarios = catchAsync(async (req, res, next) => {
   const id_facebook_post = Number(req.params.id_facebook_post);

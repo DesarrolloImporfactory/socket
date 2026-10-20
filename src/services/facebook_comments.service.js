@@ -349,6 +349,23 @@ async function procesarCambioFeed(page_id, change) {
   }
 
   avisarBandejaComentarios({ id_configuracion, page_id, valor, verb });
+
+  /* ── La IA contesta sola ───────────────────────────────────────────
+     Sólo con verb='add'. Un 'edited' es la persona corrigiendo su propio
+     texto: volver a contestarle dejaría dos respuestas nuestras seguidas
+     colgando de un comentario que nadie volvió a hacer.
+
+     Va SUELTO, sin await. Redactar con el modelo y publicar en Graph son
+     entre dos y seis segundos, y Meta espera un 200 rápido: si tarda,
+     reintenta el entry completo y se reprocesan los mensajes de Messenger
+     que venían en el mismo lote. responderAutomatico() no lanza nunca, así
+     que soltarlo acá no deja una promesa sin capturar. */
+  if (verb === 'add' && resultado && !resultado.es_de_la_pagina) {
+    setImmediate(() => {
+      responderAutomatico({ id_configuracion, comment_id: valor.comment_id });
+    });
+  }
+
   return resultado;
 }
 
@@ -747,7 +764,7 @@ async function listarPosts({
     `SELECT fp.id_facebook_post, fp.page_id, fp.post_id, fp.mensaje, fp.tipo,
             fp.media_url, fp.permalink_url, fp.publicado_at,
             fp.total_comentarios, fp.sin_responder, fp.ultimo_comentario_at,
-            fp.detalle_refrescado_at, fp.id_producto,
+            fp.detalle_refrescado_at, fp.id_producto, fp.ia_automatica,
             pr.nombre AS producto_nombre
        FROM facebook_posts fp
        LEFT JOIN productos_chat_center pr
@@ -838,6 +855,7 @@ async function listarComentariosPlano({
             p.media_url AS post_media_url, p.tipo AS post_tipo,
             p.permalink_url AS post_permalink_url,
             p.id_producto AS post_id_producto,
+            p.ia_automatica AS post_ia_automatica,
             pr.nombre AS post_producto_nombre
        FROM facebook_comments c
        JOIN facebook_posts p ON p.id_facebook_post = c.id_facebook_post
@@ -1145,6 +1163,10 @@ const ORIGENES_VALIDOS = new Set([
   'rapida_editada',
   'ia',
   'ia_editada',
+  // La IA contestó sola, sin que nadie leyera antes lo que iba a publicar.
+  'ia_auto',
+  // Línea fija de la segunda interacción: "te escribo por el privado".
+  'derivada',
 ]);
 
 async function responder({
@@ -1383,6 +1405,10 @@ async function cargarInstruccionesComentarios(id_configuracion) {
 
   return {
     instrucciones: promptFinal({ avanzado, opciones }),
+    /* Las opciones ya normalizadas salen también crudas: la respuesta
+       automática necesita leer `auto`, `trato` y `emojis` sin volver a
+       consultar ni volver a decidir los valores por defecto. */
+    opciones: normalizarOpciones(opciones),
     usando: !a
       ? 'Configuración por defecto'
       : avanzado
@@ -2077,8 +2103,244 @@ async function responderEnPrivado({
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * Respuesta automática
+ * ------------------------------------------------------------------ */
+
+const {
+  ACCIONES,
+  decidirAccion,
+  lineaDerivacion,
+  primerPrivado,
+} = require('../utils/comentarios/decidirAutomatico');
+
+/**
+ * Enciende o apaga la IA automática en una publicación.
+ *
+ * Por publicación y no por cuenta porque la decisión cambia de una a otra: en
+ * la del producto conviene que conteste sola, en la del comunicado o la del
+ * sorteo no.
+ */
+async function cambiarIaAutomatica({ id_configuracion, post_id, activa }) {
+  const [post] = await db.query(
+    `SELECT id_facebook_post FROM facebook_posts
+      WHERE id_configuracion = ? AND post_id = ? LIMIT 1`,
+    { replacements: [id_configuracion, post_id], type: db.QueryTypes.SELECT },
+  );
+  if (!post) throw new Error('La publicación no existe en esta cuenta');
+
+  const valor = activa ? 1 : 0;
+  await db.query(
+    `UPDATE facebook_posts SET ia_automatica = ? WHERE id_facebook_post = ?`,
+    {
+      replacements: [valor, post.id_facebook_post],
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+
+  console.log(
+    `[FB_COMENT] 🤖 IA automática ${valor ? 'encendida' : 'APAGADA'} · ` +
+      `post=${post_id} · cfg=${id_configuracion}`,
+  );
+
+  return { id_facebook_post: post.id_facebook_post, ia_automatica: valor };
+}
+
+/* Comentarios que se están contestando ahora mismo.
+ *
+ * `respondido` en la base no alcanza para esto: entre que se decide contestar
+ * y que Graph publica pasan entre dos y seis segundos —el modelo redactando—,
+ * y en esa ventana la fila sigue con respondido = 0. Si Meta reintrega el
+ * mismo evento ahí en medio (lo hace cuando cree que no contestamos a tiempo),
+ * el segundo pasaría todas las comprobaciones y la página acabaría con dos
+ * respuestas seguidas al mismo comentario.
+ *
+ * En memoria basta: el riesgo que cubre dura segundos, y si el proceso se
+ * reinicia en ese instante lo que se pierde es una respuesta, no se duplica. */
+const enCurso = new Set();
+
+/**
+ * Contesta un comentario sin que nadie lo haya leído antes.
+ *
+ * Esto publica en la página de un negocio, en público y para siempre. Todo lo
+ * de acá está escrito con esa frase delante.
+ *
+ * NUNCA LANZA. Corre colgado del webhook, y una excepción que suba hasta allí
+ * hace que Meta reintente el `entry` completo: se reprocesarían también los
+ * mensajes de Messenger que venían en el mismo lote. Cada fallo se registra y
+ * el comentario se queda esperando a una persona en la bandeja, que es
+ * exactamente el comportamiento de antes de existir esto.
+ *
+ * Lo que decide qué hacer está en decidirAutomatico.js; acá solo se reúnen los
+ * datos y se ejecuta.
+ */
+async function responderAutomatico({ id_configuracion, comment_id }) {
+  const traza = `cfg=${id_configuracion} comment=${comment_id}`;
+  const llave = `${id_configuracion}:${comment_id}`;
+
+  if (enCurso.has(llave)) {
+    console.log(`[FB_COMENT][AUTO] ya se está contestando · ${traza}`);
+    return null;
+  }
+  enCurso.add(llave);
+
+  try {
+    const [c] = await db.query(
+      `SELECT c.id_facebook_post, c.post_id, c.page_id, c.from_id, c.mensaje,
+              c.es_de_la_pagina, c.oculto, c.eliminado_at, c.respondido,
+              fp.id_producto, fp.ia_automatica,
+              pr.nombre AS producto_nombre
+         FROM facebook_comments c
+         JOIN facebook_posts fp
+           ON fp.id_facebook_post = c.id_facebook_post
+         LEFT JOIN productos_chat_center pr
+           ON pr.id = fp.id_producto AND pr.id_configuracion = fp.id_configuracion
+        WHERE c.id_configuracion = ? AND c.comment_id = ?
+        LIMIT 1`,
+      {
+        replacements: [id_configuracion, comment_id],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    if (!c) return null;
+
+    /* Meta nos devuelve nuestra propia respuesta por el webhook y eso ya
+       refresca la bandeja, pero tarda —y si la suscripción se cae, no llega—.
+       Avisando acá, el agente ve la respuesta de la IA en cuanto sale. */
+    const avisar = () =>
+      avisarBandejaComentarios({
+        id_configuracion,
+        page_id: c.page_id,
+        valor: { post_id: c.post_id, comment_id },
+        verb: 'auto',
+      });
+
+    /* Las opciones mandan dos cosas: si la cuenta encendió esto, y cómo suena
+       la línea de la derivación (trato y emojis). Se pide una vez. */
+    const asistente = await cargarInstruccionesComentarios(id_configuracion);
+    const opciones = asistente.opciones || {};
+
+    /* Cuántas veces habló ya esta persona en ESTA publicación. Se cuenta
+       sobre comentarios vivos y ajenos a la página; el actual se excluye por
+       comment_id y no por fecha, porque dos comentarios seguidos pueden traer
+       el mismo `created_time` al segundo. */
+    const [{ previas }] = await db.query(
+      `SELECT COUNT(*) AS previas FROM facebook_comments
+        WHERE id_configuracion = ? AND id_facebook_post = ?
+          AND from_id = ? AND es_de_la_pagina = 0
+          AND eliminado_at IS NULL AND comment_id <> ?`,
+      {
+        replacements: [id_configuracion, c.id_facebook_post, c.from_id, comment_id],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    const [privadoPrevio] = await db.query(
+      `SELECT 1 AS si FROM facebook_comments
+        WHERE id_configuracion = ? AND id_facebook_post = ?
+          AND from_id = ? AND privado_enviado = 1
+        LIMIT 1`,
+      {
+        replacements: [id_configuracion, c.id_facebook_post, c.from_id],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    const decision = decidirAccion({
+      cuentaAuto: Boolean(opciones.auto),
+      post: c,
+      comentario: c,
+      previas: Number(previas),
+      privadoPrevio: Boolean(privadoPrevio),
+    });
+
+    if (decision.accion === ACCIONES.NADA) {
+      console.log(`[FB_COMENT][AUTO] sin responder · ${traza} · ${decision.motivo}`);
+      return null;
+    }
+
+    /* ── Segunda interacción: a la conversación de verdad ───────────── */
+    if (decision.accion === ACCIONES.DERIVAR) {
+      const yaEscrito = Boolean(privadoPrevio);
+      const publico = lineaDerivacion({
+        trato: opciones.trato,
+        emojis: opciones.emojis,
+        yaEscrito,
+      });
+      /* Si ya se le escribió, no se le vuelve a escribir. Facebook deja mandar
+         un privado por cada comentario, pero dos mensajes idénticos a alguien
+         que todavía no contestó el primero no abren una venta, la cierran. */
+      const privado = yaEscrito
+        ? null
+        : primerPrivado({
+            trato: opciones.trato,
+            producto: c.producto_nombre,
+            comentario: c.mensaje,
+          });
+
+      const r = await responder({
+        id_configuracion,
+        comment_id,
+        mensaje: publico,
+        origen: 'derivada',
+        privado,
+      });
+
+      console.log(
+        `[FB_COMENT][AUTO] 📩 derivado al privado · ${traza} · ` +
+          `${decision.motivo} · privado=${
+            privado ? (r.privado?.enviado ? 'enviado' : `falló: ${r.privado?.error}`) : 'ya existía'
+          }`,
+      );
+      avisar();
+      return { accion: decision.accion, ...r };
+    }
+
+    /* ── Primera interacción: la IA redacta y se publica ────────────── */
+    const s = await sugerirRespuesta({ id_configuracion, comment_id });
+    if (!s?.sugerencia) {
+      console.warn(`[FB_COMENT][AUTO] la IA no devolvió nada · ${traza}`);
+      return null;
+    }
+
+    /* El privado sale solo si la respuesta pública lo prometió. Es la misma
+       regla que ve el agente en la bandeja (la casilla viene marcada cuando
+       `privado_prometido`), y evita lo peor de las dos: prometerlo en público
+       y no mandarlo, o mandarlo sin haberlo anunciado. */
+    const privado = s.privado_prometido ? s.privado : null;
+
+    const r = await responder({
+      id_configuracion,
+      comment_id,
+      mensaje: s.sugerencia,
+      // Una respuesta rápida no la escribió la IA: la escribió el negocio en
+      // el wizard del producto. La insignia tiene que decir eso.
+      origen: s.origen === 'respuesta_rapida' ? 'rapida' : 'ia_auto',
+      privado,
+    });
+
+    console.log(
+      `[FB_COMENT][AUTO] 🤖 respondido · ${traza} · ${decision.motivo} · ` +
+        `origen=${s.origen} · privado=${
+          privado ? (r.privado?.enviado ? 'enviado' : `falló: ${r.privado?.error}`) : 'no'
+        }`,
+    );
+    avisar();
+    return { accion: decision.accion, ...r };
+  } catch (err) {
+    console.error(
+      `[FB_COMENT][AUTO][ERROR] ${traza} · ${err.message}\n${err.stack || ''}`,
+    );
+    return null;
+  } finally {
+    enCurso.delete(llave);
+  }
+}
+
 module.exports = {
   procesarCambioFeed,
+  responderAutomatico,
+  cambiarIaAutomatica,
   guardarComentario,
   recalcularContadores,
   listarPosts,
