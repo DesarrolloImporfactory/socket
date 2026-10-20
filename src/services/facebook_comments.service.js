@@ -532,9 +532,11 @@ const ultimaSincro = new Map();
  * julio de Urbystore llegó antes de que la página estuviera suscrita al
  * webhook: nunca lo vamos a tener). Y el producto es trabajo de una persona.
  *
- * Nunca lanza: abrir la bandeja no puede depender de que Graph conteste.
+ * Nunca lanza: abrir la bandeja no puede depender de que Graph conteste. La
+ * red de seguridad está en `sincronizarPublicaciones()`, acá abajo; lo que
+ * falla acá dentro vuelve como `errores` y se le enseña a quien apretó.
  */
-async function sincronizarPublicaciones({ id_configuracion, forzar = false }) {
+async function leerFeedDeLasPaginas({ id_configuracion, forzar }) {
   const res = {
     paginas: 0,
     vistas: 0,
@@ -670,6 +672,37 @@ async function sincronizarPublicaciones({ id_configuracion, forzar = false }) {
   );
 
   return res;
+}
+
+/**
+ * La misma lectura del feed, pero incapaz de tumbar la petición.
+ *
+ * El try de arriba cubre lo de CADA página (la llamada a Graph, el INSERT).
+ * Fuera de él quedaba la consulta de las páginas y cualquier cosa que no
+ * previera, y eso salía como 500 genérico: el front mostraba "Something went
+ * very wrong 🧨", que no le dice nada a nadie. Leer el feed es una comodidad,
+ * no una operación crítica — si falla, se dice por qué y la bandeja sigue
+ * funcionando con lo que ya tiene.
+ *
+ * El stack va al log con un prefijo buscable, porque en producción el
+ * manejador de errores no lo manda al navegador.
+ */
+async function sincronizarPublicaciones({ id_configuracion, forzar = false }) {
+  try {
+    return await leerFeedDeLasPaginas({ id_configuracion, forzar });
+  } catch (err) {
+    console.error(
+      `[FB_COMENT][FEED][ERROR] cfg=${id_configuracion} · ${err?.message}\n` +
+        (err?.stack || ''),
+    );
+    return {
+      paginas: 0,
+      vistas: 0,
+      nuevas: 0,
+      saltadas: 0,
+      errores: [err?.message || 'error desconocido leyendo las publicaciones'],
+    };
+  }
 }
 
 /**
