@@ -23,6 +23,11 @@ router.get('/asistente', ctrl.obtenerAsistente);
 // el asistente cuando redacte una sugerencia en ese post.
 router.post('/vincular-producto', ctrl.vincularProducto);
 
+// Releer el feed de la página. Es POST porque escribe en facebook_posts, pero
+// no publica nada: solo trae las publicaciones para poder configurarlas antes
+// de que lleguen los comentarios.
+router.post('/sincronizar-publicaciones', ctrl.sincronizarPublicaciones);
+
 // Configurar el asistente y probarlo. Probar no guarda, no publica y ni
 // siquiera necesita un comentario real: es para afinar el prompt a ciegas
 // cero, viendo qué sale antes de que lo vea nadie.
