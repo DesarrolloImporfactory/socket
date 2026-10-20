@@ -513,7 +513,8 @@ exports.enviarMedia = catchAsync(async (req, res, next) => {
    (utils/enlacePagoImporsuit) y el enlace apunta a Cobros/pagar/{uuid},
    que cobra en el Stripe de Imporsuit.
    El monto es SOLO lo vencido en dólares (lo único que cobra el enlace).
-   Quien debe solo en pesos o sin moneda confirmada no recibe el aviso:
+   Quien debe solo en otra moneda (MXN, COP, PEN…) o sin moneda confirmada
+   no recibe el aviso:
    motivo SALDO_EN_OTRA_MONEDA (docs/separacion_monedas.md en imporsutipro).
    ═══════════════════════════════════════════════════════════ */
 
@@ -587,7 +588,7 @@ exports.avisoPagoImporsuit = catchAsync(async (req, res, next) => {
 
   // 2) Si está al día no se le dice que debe. El envío lo vuelve a comprobar.
   //    Solo cuenta lo vencido en dólares: es lo que cobra el enlace. Si debe
-  //    pero solo en pesos (o sin moneda confirmada), no se le manda un link
+  //    pero solo en otra moneda (o sin moneda confirmada), no se le manda un link
   //    que no le cobra eso: queda para un asesor.
   const saldo = await consultarSaldoVencidoPor({ idUsers: dest.id_users });
   if (!saldo) {

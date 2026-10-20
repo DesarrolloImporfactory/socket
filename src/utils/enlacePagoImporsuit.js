@@ -35,7 +35,7 @@ const onlyDigits = (s) => String(s || '').replace(/\D/g, '');
  *
  * Variables disponibles: nombre, monto, cuotas, uuid_cartera, url_pago.
  * `monto` y `cuotas` son SOLO lo vencido en dólares: lo que cobra el enlace
- * (ver consultarSaldoVencidoPor). Nunca una suma de pesos con dólares.
+ * (ver consultarSaldoVencidoPor). Nunca una suma de monedas distintas.
  */
 const PLANTILLAS_ENLACE_PAGO = {
   242: {
@@ -90,6 +90,9 @@ function plantillaDeEnlacePago(idConfiguracion, nombreTemplate) {
  */
 const MONEDA_ENLACE_PAGO = 'USD';
 
+/** Clave de lo vencido sin moneda confirmada (la misma de Moneda::SIN en Imporsuit). */
+const SIN_MONEDA = 'SIN';
+
 /**
  * ¿Ya corrió en db_2 la migración 2026-10-20_1200 (cuenta_por_pagar.moneda)?
  * Se cachea solo el «sí»: si todavía no existe se vuelve a mirar en la
@@ -109,15 +112,16 @@ async function columnaMonedaDisponible() {
 /**
  * Saldo VENCIDO del usuario de Imporsuit, POR MONEDA. Mismo criterio que
  * CobrosModel::resolverDeuda('deuda') — estado 0, con saldo y fecha_limite
- * pasada —. Pesos y dólares nunca se suman: cada moneda va aparte, y las
- * deudas viejas sin moneda confirmada quedan en 'SIN'.
+ * pasada —. Las monedas nunca se suman: cada una (USD, MXN, COP, PEN… la que
+ * tenga la deuda) va aparte, y las deudas viejas sin moneda confirmada
+ * quedan en 'SIN'.
  *
  * Se busca por correo (la llave común con los contactos del chat) o por
  * id_users (lo que manda Imporsuit cuando avisa un intento de ingreso).
  *
  * @returns null si la cuenta no tiene nada vencido; si no,
  *   { id_users, nombre_users, email, uuid_cartera,
- *     por_moneda: { USD: { total, cuotas }, MXN: {…}, SIN: {…} } }
+ *     por_moneda: { USD: { total, cuotas }, MXN: {…}, COP: {…}, SIN: {…} } }
  */
 async function consultarSaldosVencidosPorMoneda({ email, idUsers }) {
   const correo = String(email || '').trim();
@@ -125,10 +129,12 @@ async function consultarSaldosVencidosPorMoneda({ email, idUsers }) {
   if (!correo && !idU) return null;
 
   // Antes de la migración no se sabe la moneda de nada: todo cae en 'SIN'
-  // (y por lo tanto no se le dice ningún monto al cliente; ver abajo).
+  // (y por lo tanto no se le dice ningún monto al cliente; ver abajo). La
+  // lista de monedas no se repite acá: lo que no sea USD (MXN, COP, PEN o la
+  // que se agregue en Imporsuit) queda fuera del enlace por igual.
   const moneda = (await columnaMonedaDisponible())
-    ? "COALESCE(c.moneda, 'SIN')"
-    : "'SIN'";
+    ? `COALESCE(NULLIF(UPPER(TRIM(c.moneda)), ''), '${SIN_MONEDA}')`
+    : `'${SIN_MONEDA}'`;
 
   const filas = await db_2.query(
     `SELECT u.id_users, u.nombre_users, u.email_users, MIN(ca.uuid) AS uuid_cartera,
@@ -174,12 +180,17 @@ async function consultarSaldosVencidosPorMoneda({ email, idUsers }) {
 }
 
 /**
- * Lo vencido que el enlace de pago NO cobra (pesos o sin moneda confirmada),
- * como texto para logs y motivos: «MXN 1780.00, SIN 50.00». '' si no hay.
+ * Lo vencido que el enlace de pago NO cobra (cualquier moneda que no sea la
+ * del enlace, o sin moneda confirmada), como texto para logs y motivos:
+ * «COP 973340.00, MXN 1780.00, SIN 50.00». Orden estable: las monedas por su
+ * código y 'SIN' al final. '' si no hay.
  */
 function saldoFueraDelEnlace(saldos) {
   return Object.entries(saldos?.por_moneda || {})
-    .filter(([m]) => m !== MONEDA_ENLACE_PAGO)
+    .filter(([m, v]) => m !== MONEDA_ENLACE_PAGO && Number(v?.total) > 0)
+    .sort(([a], [b]) =>
+      a === SIN_MONEDA ? 1 : b === SIN_MONEDA ? -1 : a.localeCompare(b),
+    )
     .map(([m, v]) => `${m} ${Number(v.total).toFixed(2)}`)
     .join(', ');
 }
@@ -187,15 +198,15 @@ function saldoFueraDelEnlace(saldos) {
 /**
  * Saldo VENCIDO que se le dice al cliente junto al enlace de pago: SOLO lo
  * que está en dólares, porque es exactamente lo que cobra el link
- * (CobrosModel::resolverDeuda suma `c.moneda = 'USD'`). Lo vencido en pesos
- * o sin moneda confirmada NO entra en el monto: decirle «debes $1,900»
- * cuando el link le cobra 120 dólares (o sumarle pesos como si fueran
- * dólares) es peor que no decir nada. Eso lo cobra un asesor fuera del link.
+ * (CobrosModel::resolverDeuda suma `c.moneda = 'USD'`). Lo vencido en otra
+ * moneda (MXN, COP, PEN…) o sin moneda confirmada NO entra en el monto:
+ * decirle «debes $1,900» cuando el link le cobra 120 dólares (o sumarle
+ * otra moneda como si fueran dólares) es peor que no decir nada. Eso lo cobra un asesor fuera del link.
  *
  * Solo sirve para MOSTRAR el monto: lo que se cobra lo vuelve a calcular
  * Imporsuit al hacer clic.
  *
- * @returns null si no hay saldo vencido EN DÓLARES (aunque deba en pesos);
+ * @returns null si no hay saldo vencido EN DÓLARES (aunque deba en otra moneda);
  *   si no, { id_users, nombre_users, email, uuid_cartera, cuotas, total,
  *   moneda: 'USD', fuera_del_enlace: 'MXN 1780.00' | '' }.
  */
@@ -405,7 +416,7 @@ async function resolverEnlacePagoTemplate({
 
   const saldo = await consultarSaldoVencido(email);
   if (!saldo) {
-    // ¿Debe, pero solo en pesos o sin moneda confirmada? El enlace cobra solo
+    // ¿Debe, pero solo en otra moneda o sin moneda confirmada? El enlace cobra solo
     // dólares: no se manda, y el motivo lo dice para que lo cobre un asesor.
     const fuera = saldoFueraDelEnlace(
       await consultarSaldosVencidosPorMoneda({ email }),
