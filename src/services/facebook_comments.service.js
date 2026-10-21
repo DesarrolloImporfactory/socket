@@ -34,6 +34,8 @@ const Store = require('./messenger_store.service');
 const {
   promptFinal,
   normalizarOpciones,
+  partirSalida,
+  prometePrivado,
   REGLAS_DEL_SISTEMA,
   OPCIONES_POR_DEFECTO,
 } = require('../utils/comentarios/promptComentarios');
@@ -47,9 +49,12 @@ const aFecha = (unixSegundos) =>
 /**
  * Crea la publicación si es la primera vez que la vemos.
  *
- * Los posts no se sincronizan por adelantado: se descubren cuando llega el
- * primer comentario. El texto y el permalink quedan en NULL hasta que la Fase 2
- * los pida a Graph, por eso acá sólo se guardan los ids.
+ * Normalmente ya existe: `sincronizarPublicaciones()` las trae del feed sin
+ * esperar a que nadie comente. Esto queda como red: una publicación más vieja
+ * que las últimas 25, o un comentario que llega antes de la primera
+ * sincronización, no se pierden. Acá sólo se guardan los ids —el texto y el
+ * permalink los rellena `refrescarDetallePosts()`— y por eso lo único que se
+ * actualiza es la fecha del último comentario.
  */
 async function asegurarPost({ id_configuracion, page_id, post_id, fecha }) {
   await db.query(
@@ -344,6 +349,23 @@ async function procesarCambioFeed(page_id, change) {
   }
 
   avisarBandejaComentarios({ id_configuracion, page_id, valor, verb });
+
+  /* ── La IA contesta sola ───────────────────────────────────────────
+     Sólo con verb='add'. Un 'edited' es la persona corrigiendo su propio
+     texto: volver a contestarle dejaría dos respuestas nuestras seguidas
+     colgando de un comentario que nadie volvió a hacer.
+
+     Va SUELTO, sin await. Redactar con el modelo y publicar en Graph son
+     entre dos y seis segundos, y Meta espera un 200 rápido: si tarda,
+     reintenta el entry completo y se reprocesan los mensajes de Messenger
+     que venían en el mismo lote. responderAutomatico() no lanza nunca, así
+     que soltarlo acá no deja una promesa sin capturar. */
+  if (verb === 'add' && resultado && !resultado.es_de_la_pagina) {
+    setImmediate(() => {
+      responderAutomatico({ id_configuracion, comment_id: valor.comment_id });
+    });
+  }
+
   return resultado;
 }
 
@@ -479,34 +501,278 @@ async function refrescarDetallePosts({ id_configuracion, posts }) {
   return posts;
 }
 
-/**
- * Publicaciones con actividad, la más reciente primero.
+/* ------------------------------------------------------------------ *
+ * Sincronización del feed
+ * ------------------------------------------------------------------ */
+
+// Cuántas publicaciones se piden por página. Son las últimas: una bandeja de
+// comentarios no necesita el archivo histórico, necesita lo que está vivo.
+const TOPE_PUBLICACIONES = 25;
+
+// Cada cuánto se vuelve a preguntar a Graph, y el piso cuando el usuario
+// aprieta "Actualizar publicaciones" a mano.
+const MS_FRESCURA_FEED = 10 * 60 * 1000;
+const MS_PISO_FORZADO = 20 * 1000;
+
+/* Cuándo se sincronizó cada página, en memoria del proceso.
  *
- * Ordena por `ultimo_comentario_at` y no por fecha de publicación: lo que
- * importa en una bandeja es dónde está pasando algo ahora, no cuándo se
- * publicó. Con `solo_pendientes` quedan sólo las que tienen comentarios sin
- * responder. Ambos caminos usan el índice ix_fbp_bandeja.
+ * No se guarda en la base a propósito: no hace falta una columna nueva (ni una
+ * migración en producción) para algo cuyo único efecto de perderse es UNA
+ * llamada de más a Graph al reiniciar el servidor. Si algún día hay muchas
+ * cuentas usando la bandeja y el arranque se nota, ahí sí se persiste. */
+const ultimaSincro = new Map();
+
+/**
+ * Trae al inbox las publicaciones de la página, hayan recibido comentarios o
+ * no.
+ *
+ * EL PROBLEMA QUE RESUELVE
+ *
+ * Hasta acá una publicación nacía en `asegurarPost()`, o sea con su PRIMER
+ * comentario. Medido en Urbystore: 1 publicación en la base contra 4 en la
+ * página. Dos consecuencias, las dos malas:
+ *   - el primer comentario de cada publicación se contesta sin producto
+ *     vinculado (`origen: 'ia_sin_producto'`), que es justo el comentario del
+ *     tráfico recién llegado;
+ *   - no hay ningún momento en que el negocio pueda configurar la publicación
+ *     ANTES de que llegue ese comentario, porque la publicación no existe.
+ *
+ * Con esto la publicación aparece en la bandeja al poco de publicarse y se le
+ * puede vincular el producto en frío.
+ *
+ * LO QUE NO TOCA
+ *
+ * Ni `total_comentarios`, ni `sin_responder`, ni `ultimo_comentario_at`, ni
+ * `id_producto`. Los contadores los calcula `recalcularContadores()` desde las
+ * filas de `facebook_comments` y pisarlos con el `summary` de Graph mostraría
+ * "1 comentario" en una publicación cuyo hilo está vacío (el comentario de
+ * julio de Urbystore llegó antes de que la página estuviera suscrita al
+ * webhook: nunca lo vamos a tener). Y el producto es trabajo de una persona.
+ *
+ * Nunca lanza: abrir la bandeja no puede depender de que Graph conteste. La
+ * red de seguridad está en `sincronizarPublicaciones()`, acá abajo; lo que
+ * falla acá dentro vuelve como `errores` y se le enseña a quien apretó.
+ */
+async function leerFeedDeLasPaginas({ id_configuracion, forzar }) {
+  const res = {
+    paginas: 0,
+    vistas: 0,
+    nuevas: 0,
+    saltadas: 0,
+    errores: [],
+  };
+
+  const paginas = await db.query(
+    `SELECT page_id, page_name, page_access_token, fb_app_id
+       FROM messenger_pages
+      WHERE id_configuracion = ? AND status = 'active'`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  res.paginas = paginas.length;
+
+  await Promise.allSettled(
+    paginas.map(async (pagina) => {
+      const clave = `${id_configuracion}:${pagina.page_id}`;
+      if (!pagina.page_access_token) {
+        res.errores.push(`${pagina.page_name || pagina.page_id}: sin token`);
+        return;
+      }
+
+      const previa = ultimaSincro.get(clave);
+      const umbral = forzar ? MS_PISO_FORZADO : MS_FRESCURA_FEED;
+      if (previa && Date.now() - previa < umbral) {
+        res.saltadas += 1;
+        return;
+      }
+      /* Se marca ANTES de llamar: si dos agentes abren la bandeja a la vez, la
+         segunda apertura no dispara una segunda llamada a Graph. */
+      ultimaSincro.set(clave, Date.now());
+
+      try {
+        const proof = appsecretProof(
+          pagina.page_access_token,
+          pagina.fb_app_id,
+        );
+        const { data } = await axios.get(
+          `${GRAPH_BASE}/${encodeURIComponent(pagina.page_id)}/published_posts`,
+          {
+            params: {
+              // `story` cubre las publicaciones sin texto propio ("X actualizó
+              // su foto de perfil"), que si no salen en blanco en la bandeja.
+              fields:
+                'id,message,story,created_time,permalink_url,full_picture,attachments{media_type}',
+              limit: TOPE_PUBLICACIONES,
+              access_token: pagina.page_access_token,
+              ...(proof ? { appsecret_proof: proof } : {}),
+            },
+            timeout: 12000,
+          },
+        );
+
+        const filas = (data?.data || [])
+          .filter((p) => p?.id)
+          .map((p) => ({
+            post_id: String(p.id),
+            mensaje: p.message || p.story || '',
+            tipo: p.attachments?.data?.[0]?.media_type || null,
+            media_url: p.full_picture || null,
+            permalink_url: p.permalink_url || null,
+            publicado_at: p.created_time ? new Date(p.created_time) : null,
+          }));
+
+        if (!filas.length) return;
+        res.vistas += filas.length;
+
+        // Cuáles son nuevas, sólo para el log y el aviso al navegador.
+        const marcadores = filas.map(() => '?').join(', ');
+        const existentes = await db.query(
+          `SELECT post_id FROM facebook_posts
+            WHERE id_configuracion = ? AND post_id IN (${marcadores})`,
+          {
+            replacements: [id_configuracion, ...filas.map((f) => f.post_id)],
+            type: db.QueryTypes.SELECT,
+          },
+        );
+        const yaEstaban = new Set(existentes.map((e) => String(e.post_id)));
+        const nuevas = filas.filter((f) => !yaEstaban.has(f.post_id));
+        res.nuevas += nuevas.length;
+
+        /* Un INSERT con todas las filas en vez de 25 sueltos: la cuota de
+           Graph se cuida arriba, la de la base se cuida acá. */
+        const valores = filas
+          .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, NOW())')
+          .join(', ');
+        await db.query(
+          `INSERT INTO facebook_posts
+             (id_configuracion, page_id, post_id, mensaje, tipo, media_url,
+              permalink_url, publicado_at, detalle_refrescado_at)
+           VALUES ${valores}
+           ON DUPLICATE KEY UPDATE
+             mensaje       = VALUES(mensaje),
+             tipo          = VALUES(tipo),
+             media_url     = VALUES(media_url),
+             permalink_url = VALUES(permalink_url),
+             publicado_at  = VALUES(publicado_at),
+             detalle_refrescado_at = NOW()`,
+          {
+            replacements: filas.flatMap((f) => [
+              id_configuracion,
+              pagina.page_id,
+              f.post_id,
+              f.mensaje,
+              f.tipo,
+              f.media_url,
+              f.permalink_url,
+              f.publicado_at,
+            ]),
+            type: db.QueryTypes.INSERT,
+          },
+        );
+
+        console.log(
+          `[FB_COMENT][FEED] ${pagina.page_name || pagina.page_id}: ` +
+            `${filas.length} publicaciones · ${nuevas.length} nuevas` +
+            (forzar ? ' · a mano' : ''),
+        );
+      } catch (err) {
+        /* Que vuelva a intentarlo en un minuto y no en diez: un fallo de red
+           no debería dejar la bandeja vieja un cuarto de hora. */
+        ultimaSincro.set(clave, Date.now() - (MS_FRESCURA_FEED - 60 * 1000));
+        const detalle = describirErrorMeta(err);
+        res.errores.push(`${pagina.page_name || pagina.page_id}: ${detalle}`);
+        console.warn(
+          `[FB_COMENT][FEED] no se pudieron leer las publicaciones de ` +
+            `${pagina.page_name || pagina.page_id}: ${detalle}`,
+        );
+      }
+    }),
+  );
+
+  return res;
+}
+
+/**
+ * La misma lectura del feed, pero incapaz de tumbar la petición.
+ *
+ * El try de arriba cubre lo de CADA página (la llamada a Graph, el INSERT).
+ * Fuera de él quedaba la consulta de las páginas y cualquier cosa que no
+ * previera, y eso salía como 500 genérico: el front mostraba "Something went
+ * very wrong 🧨", que no le dice nada a nadie. Leer el feed es una comodidad,
+ * no una operación crítica — si falla, se dice por qué y la bandeja sigue
+ * funcionando con lo que ya tiene.
+ *
+ * El stack va al log con un prefijo buscable, porque en producción el
+ * manejador de errores no lo manda al navegador.
+ */
+async function sincronizarPublicaciones({ id_configuracion, forzar = false }) {
+  try {
+    return await leerFeedDeLasPaginas({ id_configuracion, forzar });
+  } catch (err) {
+    console.error(
+      `[FB_COMENT][FEED][ERROR] cfg=${id_configuracion} · ${err?.message}\n` +
+        (err?.stack || ''),
+    );
+    return {
+      paginas: 0,
+      vistas: 0,
+      nuevas: 0,
+      saltadas: 0,
+      errores: [err?.message || 'error desconocido leyendo las publicaciones'],
+    };
+  }
+}
+
+/**
+ * Publicaciones, la que tuvo movimiento más reciente primero.
+ *
+ * ORDEN. Se ordena por la última actividad, y una publicación que todavía no
+ * tiene comentarios "se estrena" con su fecha de publicación — si no, al
+ * quedar `ultimo_comentario_at` en NULL, MySQL la manda al final de la lista y
+ * la publicación de hoy aparecería debajo de las del año pasado. Justo la que
+ * hay que configurar. El COALESCE renuncia al índice ix_fbp_bandeja, pero son
+ * decenas de filas por cuenta y la ordenación en memoria no se nota.
+ *
+ * FILTROS. `solo_pendientes` deja las que tienen comentarios sin responder;
+ * `sin_producto`, las que la IA todavía no puede contestar con precios.
+ *
+ * Antes de leer se sincroniza el feed, para que una publicación recién hecha
+ * ya esté acá. Sólo en la primera página: paginar no es descubrir.
  */
 async function listarPosts({
   id_configuracion,
   pagina,
   limite,
   solo_pendientes = false,
+  sin_producto = false,
+  sincronizar = true,
 }) {
   const pag = normalizarPaginacion({ pagina, limite });
-  const filtro = solo_pendientes ? 'AND sin_responder > 0' : '';
+  const filtros = [
+    solo_pendientes ? 'AND sin_responder > 0' : '',
+    sin_producto ? 'AND id_producto IS NULL' : '',
+  ];
+  const filtro = filtros.filter(Boolean).join(' ');
+
+  if (sincronizar && pag.pagina === 1) {
+    // La bandeja se abre igual si Graph no contesta: con lo que ya hay.
+    await sincronizarPublicaciones({ id_configuracion }).catch((err) =>
+      console.warn('[FB_COMENT][FEED] sincronización omitida:', err?.message),
+    );
+  }
 
   const posts = await db.query(
     `SELECT fp.id_facebook_post, fp.page_id, fp.post_id, fp.mensaje, fp.tipo,
             fp.media_url, fp.permalink_url, fp.publicado_at,
             fp.total_comentarios, fp.sin_responder, fp.ultimo_comentario_at,
-            fp.detalle_refrescado_at, fp.id_producto,
+            fp.detalle_refrescado_at, fp.id_producto, fp.ia_automatica,
             pr.nombre AS producto_nombre
        FROM facebook_posts fp
        LEFT JOIN productos_chat_center pr
          ON pr.id = fp.id_producto AND pr.id_configuracion = fp.id_configuracion
       WHERE fp.id_configuracion = ? ${filtro}
-      ORDER BY ultimo_comentario_at DESC, id_facebook_post DESC
+      ORDER BY COALESCE(fp.ultimo_comentario_at, fp.publicado_at, fp.created_at)
+                 DESC,
+               fp.id_facebook_post DESC
       LIMIT ? OFFSET ?`,
     {
       replacements: [id_configuracion, pag.limite, pag.offset],
@@ -589,6 +855,7 @@ async function listarComentariosPlano({
             p.media_url AS post_media_url, p.tipo AS post_tipo,
             p.permalink_url AS post_permalink_url,
             p.id_producto AS post_id_producto,
+            p.ia_automatica AS post_ia_automatica,
             pr.nombre AS post_producto_nombre
        FROM facebook_comments c
        JOIN facebook_posts p ON p.id_facebook_post = c.id_facebook_post
@@ -756,17 +1023,34 @@ async function listarComentarios({
 /**
  * Contadores para el badge del menú. Dos COUNT sobre ix_fbp_bandeja.
  */
+/**
+ * Las cifras del encabezado de la bandeja.
+ *
+ * `posts_sin_producto` es el que importa de los nuevos: una publicación sin
+ * producto vinculado se contesta igual, pero sin precios, sin combos y sin las
+ * respuestas que el negocio escribió en el wizard. Mientras la publicación
+ * nacía con su primer comentario ese número no se podía ni mirar —siempre
+ * empezaba en 1—; ahora que las publicaciones entran al poco de publicarse,
+ * es una lista de pendientes de verdad.
+ *
+ * Una sola pasada por las publicaciones de la cuenta en vez de un COUNT por
+ * cifra: son decenas de filas y el índice ix_fbp_bandeja ya acota por cuenta.
+ */
 async function resumen({ id_configuracion }) {
   const [fila] = await db.query(
-    `SELECT COUNT(*) AS posts_con_pendientes,
-            COALESCE(SUM(sin_responder), 0) AS comentarios_pendientes
+    `SELECT COUNT(*) AS posts,
+            COALESCE(SUM(sin_responder > 0), 0) AS posts_con_pendientes,
+            COALESCE(SUM(sin_responder), 0) AS comentarios_pendientes,
+            COALESCE(SUM(id_producto IS NULL), 0) AS posts_sin_producto
        FROM facebook_posts
-      WHERE id_configuracion = ? AND sin_responder > 0`,
+      WHERE id_configuracion = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   return {
+    posts: Number(fila.posts),
     posts_con_pendientes: Number(fila.posts_con_pendientes),
     comentarios_pendientes: Number(fila.comentarios_pendientes),
+    posts_sin_producto: Number(fila.posts_sin_producto),
   };
 }
 
@@ -799,6 +1083,10 @@ async function cargarComentarioConToken({ id_configuracion, comment_id }) {
     `SELECT c.id_facebook_comment, c.id_facebook_post, c.comment_id, c.page_id,
             c.post_id, c.es_de_la_pagina, c.eliminado_at, c.privado_enviado,
             c.parent_comment_id, c.comentado_at,
+            -- mensaje y from_nombre los usan el privado (para saludar por su
+            -- nombre) y el puente al kanban (para dejar rastro de por qué ese
+            -- contacto quedó anclado a ese producto).
+            c.mensaje, c.from_nombre,
             p.page_access_token, p.fb_app_id, p.status AS page_status,
             p.page_name
        FROM facebook_comments c
@@ -875,6 +1163,10 @@ const ORIGENES_VALIDOS = new Set([
   'rapida_editada',
   'ia',
   'ia_editada',
+  // La IA contestó sola, sin que nadie leyera antes lo que iba a publicar.
+  'ia_auto',
+  // Línea fija de la segunda interacción: "te escribo por el privado".
+  'derivada',
 ]);
 
 async function responder({
@@ -883,6 +1175,9 @@ async function responder({
   mensaje,
   id_sub_usuario,
   origen,
+  // Mensaje privado que sale junto con la respuesta pública. Opcional: si no
+  // viene, esto se comporta como siempre y sólo publica el comentario.
+  privado,
 }) {
   const texto = String(mensaje || '').trim();
   if (!texto) throw new Error('El mensaje no puede estar vacío');
@@ -998,7 +1293,41 @@ async function responder({
       `· cfg=${id_configuracion}`,
   );
 
-  return { respuesta_comment_id, id_facebook_post: c.id_facebook_post };
+  /* ── El privado, si el agente lo aprobó con la misma publicación ──────
+     Va DESPUÉS del comentario y en su propio try, y el orden no es casual:
+     si el comentario dice "te escribo al privado", lo público es la promesa y
+     el privado es cumplirla. Al revés, un fallo al publicar dejaría al cliente
+     con un mensaje privado que no pidió y sin nada en el comentario.
+
+     Y no relanza: el comentario ya está en Facebook. Si el privado falla, el
+     agente tiene que ver que lo público salió —si no, lo escribe otra vez— y
+     el motivo del fallo aparte. El botón de privado sigue ahí para reintentar,
+     porque `privado_enviado` sólo se marca cuando de verdad sale. */
+  let resultadoPrivado = null;
+  const textoPrivado = String(privado || '').trim();
+  if (textoPrivado) {
+    try {
+      const r = await responderEnPrivado({
+        id_configuracion,
+        comment_id,
+        mensaje: textoPrivado,
+        id_sub_usuario,
+      });
+      resultadoPrivado = { enviado: true, ...r };
+    } catch (err) {
+      resultadoPrivado = { enviado: false, error: err.message };
+      console.error(
+        `[FB_COMENT][WARN] comentario publicado pero el privado falló · ` +
+          `cfg=${id_configuracion} · comment=${comment_id} · ${err.message}`,
+      );
+    }
+  }
+
+  return {
+    respuesta_comment_id,
+    id_facebook_post: c.id_facebook_post,
+    privado: resultadoPrivado,
+  };
 }
 
 /**
@@ -1076,6 +1405,10 @@ async function cargarInstruccionesComentarios(id_configuracion) {
 
   return {
     instrucciones: promptFinal({ avanzado, opciones }),
+    /* Las opciones ya normalizadas salen también crudas: la respuesta
+       automática necesita leer `auto`, `trato` y `emojis` sin volver a
+       consultar ni volver a decidir los valores por defecto. */
+    opciones: normalizarOpciones(opciones),
     usando: !a
       ? 'Configuración por defecto'
       : avanzado
@@ -1138,6 +1471,10 @@ async function sugerirRespuesta({ id_configuracion, comment_id }) {
       );
       return {
         sugerencia: String(match.faq.respuesta).trim(),
+        // Sin privado: una respuesta rápida es la contestación completa que el
+        // negocio escribió para esa pregunta. Si hiciera falta seguir en
+        // privado, el negocio lo habría puesto en el texto.
+        privado: null,
         usando: 'Respuesta rápida del producto',
         origen: 'respuesta_rapida',
         producto: { id: prod.id, nombre: prod.nombre },
@@ -1192,8 +1529,9 @@ async function sugerirRespuesta({ id_configuracion, comment_id }) {
     post?.mensaje ? `Publicación: ${String(post.mensaje).slice(0, 600)}` : null,
     bloque,
     bloque
-      ? 'Si preguntan por OTRO producto distinto a este, no lo inventes: dile ' +
-        'que le escribes al privado y ahí se lo resuelves.'
+      ? 'Si preguntan por OTRO producto distinto a este, no sabes si el ' +
+        'negocio lo vende: no afirmes ni niegues. Dile que le escribes al ' +
+        'privado y ahí se lo confirman.'
       : 'No sabes de qué producto habla esta publicación. No des precios ni ' +
         'características: reconoce el comentario e invítalo al privado.',
     `Comentario de ${c.from_nombre || 'un cliente'}: ${texto || '(sin texto)'}`,
@@ -1207,7 +1545,10 @@ async function sugerirRespuesta({ id_configuracion, comment_id }) {
     instructions: instrucciones,
     input: entrada,
     model: 'gpt-4o-mini',
-    max_tokens: 200,
+    // Dos bloques en la misma respuesta (comentario + privado) no caben en los
+    // 200 de antes: el privado llega a tres frases y un corte a media palabra
+    // se publica igual de cortado.
+    max_tokens: 400,
     api_key_openai: apiKey,
     id_configuracion,
   });
@@ -1215,14 +1556,31 @@ async function sugerirRespuesta({ id_configuracion, comment_id }) {
   const salida = String(r?.respuesta || r?.text || r || '').trim();
   if (!salida) throw new Error('El asistente no devolvió ninguna respuesta');
 
+  /* El modelo devuelve "COMENTARIO: …" y "PRIVADO: …" en una sola llamada (ver
+     FORMATO_SALIDA). Si se salta las etiquetas, `partirSalida` trata todo como
+     el comentario y no hay privado: se degrada al comportamiento de siempre en
+     vez de publicar un texto con la etiqueta dentro. */
+  const { comentario, privado } = partirSalida(salida);
+  if (!comentario) throw new Error('El asistente no devolvió ninguna respuesta');
+
   console.log(
     `[FB_COMENT] 🤖 sugerencia para comment=${comment_id} · cfg=${id_configuracion} · ` +
       `${asistente.usando} · ` +
-      `producto=${prod ? prod.id : '(sin vincular)'} · ${salida.length} chars`,
+      `producto=${prod ? prod.id : '(sin vincular)'} · ${comentario.length} chars` +
+      (privado ? ` · + privado de ${privado.length} chars` : ' · sin privado'),
   );
 
   return {
-    sugerencia: salida,
+    sugerencia: comentario,
+    /* Si la respuesta pública promete el privado, la bandeja lo marca para
+       enviarse; si es de cortesía, lo deja desmarcado pero a la vista. Lo
+       decide el código, no el modelo: Facebook permite uno por comentario. */
+    privado_prometido: Boolean(privado) && prometePrivado(comentario),
+    /* El privado va aparte y SIN publicar, igual que el comentario. Es un
+       borrador más: el agente lo ve, lo corrige y decide si sale. Facebook
+       permite uno solo por comentario, así que mandarlo sin que nadie lo lea
+       sería gastar el único que hay. */
+    privado,
     usando: asistente.usando,
     origen: prod ? 'ia_con_producto' : 'ia_sin_producto',
     producto: prod ? { id: prod.id, nombre: prod.nombre } : null,
@@ -1404,6 +1762,8 @@ async function probarPrompt({
     if (match?.faq?.respuesta) {
       return {
         sugerencia: String(match.faq.respuesta).trim(),
+        privado: null,
+        privado_prometido: false,
         origen: 'respuesta_rapida',
         producto: { id: prod.id, nombre: prod.nombre },
         pregunta: match.faq.pregunta || null,
@@ -1437,8 +1797,9 @@ async function probarPrompt({
     `Negocio: ${cfg?.nombre_configuracion || '(sin nombre)'}`,
     bloque,
     bloque
-      ? 'Si preguntan por OTRO producto distinto a este, no lo inventes: dile ' +
-        'que le escribes al privado y ahí se lo resuelves.'
+      ? 'Si preguntan por OTRO producto distinto a este, no sabes si el ' +
+        'negocio lo vende: no afirmes ni niegues. Dile que le escribes al ' +
+        'privado y ahí se lo confirman.'
       : 'No sabes de qué producto habla esta publicación. No des precios ni ' +
         'características: reconoce el comentario e invítalo al privado.',
     `Comentario de un cliente: ${comentario}`,
@@ -1453,7 +1814,7 @@ async function probarPrompt({
     instructions: instrucciones,
     input: entrada,
     model: 'gpt-4o-mini',
-    max_tokens: 200,
+    max_tokens: 400,
     api_key_openai: apiKey,
     id_configuracion,
   });
@@ -1461,8 +1822,15 @@ async function probarPrompt({
   const salida = String(r?.respuesta || r?.text || r || '').trim();
   if (!salida) throw new Error('El asistente no devolvió ninguna respuesta');
 
+  // Mismo corte que en una sugerencia real: la vista previa tiene que mostrar
+  // el comentario y el privado por separado, no las etiquetas en crudo.
+  const { comentario: publico, privado } = partirSalida(salida);
+  if (!publico) throw new Error('El asistente no devolvió ninguna respuesta');
+
   return {
-    sugerencia: salida,
+    sugerencia: publico,
+    privado,
+    privado_prometido: Boolean(privado) && prometePrivado(publico),
     origen: prod ? 'ia_con_producto' : 'ia_sin_producto',
     producto: prod ? { id: prod.id, nombre: prod.nombre } : null,
     ms: Date.now() - t0,
@@ -1535,6 +1903,12 @@ function describirErrorPrivado(err, { edadDias } = {}) {
  * No abre la ventana de 24h de forma indefinida: es un único mensaje. La
  * conversación que se cree llegará por el webhook de Messenger como cualquier
  * otra y entrará al inbox por su camino normal.
+ *
+ * Y es donde arranca el bot de kanban. Si la publicación tiene un producto
+ * vinculado, antes de soltar la conversación se le deja el contexto puesto
+ * (utils/comentarios/puenteKanban.js): el cliente preguntó por ese producto en
+ * público, le escribimos por ese producto, y el bot no tiene por qué abrir la
+ * conversación en blanco.
  */
 async function responderEnPrivado({
   id_configuracion,
@@ -1619,6 +1993,7 @@ async function responderEnPrivado({
     // acá haría que el agente lo diera por no enviado y lo intentara otra vez,
     // y Facebook sólo permite uno por comentario.
     const privado_mid = data?.message_id || data?.id || null;
+    let puente = null;
     try {
       const psid = data?.recipient_id || null;
       if (psid) {
@@ -1652,6 +2027,25 @@ async function responderEnPrivado({
             id_encargado: uni?.id_encargado ?? null,
           });
 
+          /* Qué contacto es, anotado en el comentario.
+             La columna existía desde el principio y nadie la llenaba. Sirve
+             para lo que viene después: si esta misma persona vuelve a
+             comentar, ya no hace falta mandarle otro privado para saber a
+             qué chat pertenece —y sin saberlo no se le puede refrescar el
+             producto al bot de kanban. */
+          await db.query(
+            `UPDATE facebook_comments SET id_cliente = ?
+              WHERE id_configuracion = ? AND comment_id = ?`,
+            {
+              replacements: [
+                uni.id_cliente_contacto,
+                id_configuracion,
+                comment_id,
+              ],
+              type: db.QueryTypes.UPDATE,
+            },
+          );
+
           emitUpdateChatMS({
             id_configuracion,
             chatId: uni.id_cliente_contacto,
@@ -1661,6 +2055,35 @@ async function responderEnPrivado({
             saved,
             rawMessage: { mid: privado_mid, text: texto, attachments: null },
             kind: 'out-echo',
+          });
+
+          /* ── El relevo al bot de kanban ──────────────────────────────
+             Va DESPUÉS de guardar el mensaje porque hasta acá no existe el
+             contacto al que anclarle el producto.
+
+             El bot no actúa ahora: actúa cuando el cliente conteste, y su
+             respuesta entre por el webhook de Messenger. Eso es lo correcto
+             —nadie quiere dos mensajes nuestros seguidos antes de que el
+             cliente diga nada— y es la razón por la que el contexto tiene
+             que quedar guardado y no pasarse por parámetro. */
+          const { cargarProductoDelPost } = require(
+            '../utils/comentarios/contextoProducto',
+          );
+          const { entregarAlKanban } = require(
+            '../utils/comentarios/puenteKanban',
+          );
+
+          const prod = await cargarProductoDelPost({
+            id_configuracion,
+            id_facebook_post: c.id_facebook_post,
+          });
+
+          puente = await entregarAlKanban({
+            id_configuracion,
+            id_cliente_contacto: uni.id_cliente_contacto,
+            producto: prod ? { id: prod.id, nombre: prod.nombre } : null,
+            post_id: c.post_id,
+            comentario: c.mensaje || '',
           });
         }
       }
@@ -1675,7 +2098,7 @@ async function responderEnPrivado({
     console.log(
       `[FB_COMENT] ✅ privado enviado comment=${comment_id} · cfg=${id_configuracion}`,
     );
-    return { privado_mid };
+    return { privado_mid, puente };
   } catch (err) {
     const edadDias = c.comentado_at
       ? (Date.now() - new Date(c.comentado_at).getTime()) / 864e5
@@ -1699,11 +2122,307 @@ async function responderEnPrivado({
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * Respuesta automática
+ * ------------------------------------------------------------------ */
+
+const {
+  ACCIONES,
+  decidirAccion,
+  lineaDerivacion,
+  primerPrivado,
+} = require('../utils/comentarios/decidirAutomatico');
+const { entregarAlKanban } = require('../utils/comentarios/puenteKanban');
+
+/**
+ * Enciende o apaga la IA automática en una publicación.
+ *
+ * Por publicación y no por cuenta porque la decisión cambia de una a otra: en
+ * la del producto conviene que conteste sola, en la del comunicado o la del
+ * sorteo no.
+ */
+async function cambiarIaAutomatica({ id_configuracion, post_id, activa }) {
+  const [post] = await db.query(
+    `SELECT id_facebook_post FROM facebook_posts
+      WHERE id_configuracion = ? AND post_id = ? LIMIT 1`,
+    { replacements: [id_configuracion, post_id], type: db.QueryTypes.SELECT },
+  );
+  if (!post) throw new Error('La publicación no existe en esta cuenta');
+
+  const valor = activa ? 1 : 0;
+  await db.query(
+    `UPDATE facebook_posts SET ia_automatica = ? WHERE id_facebook_post = ?`,
+    {
+      replacements: [valor, post.id_facebook_post],
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+
+  console.log(
+    `[FB_COMENT] 🤖 IA automática ${valor ? 'encendida' : 'APAGADA'} · ` +
+      `post=${post_id} · cfg=${id_configuracion}`,
+  );
+
+  return { id_facebook_post: post.id_facebook_post, ia_automatica: valor };
+}
+
+/* Comentarios que se están contestando ahora mismo.
+ *
+ * `respondido` en la base no alcanza para esto: entre que se decide contestar
+ * y que Graph publica pasan entre dos y seis segundos —el modelo redactando—,
+ * y en esa ventana la fila sigue con respondido = 0. Si Meta reintrega el
+ * mismo evento ahí en medio (lo hace cuando cree que no contestamos a tiempo),
+ * el segundo pasaría todas las comprobaciones y la página acabaría con dos
+ * respuestas seguidas al mismo comentario.
+ *
+ * En memoria basta: el riesgo que cubre dura segundos, y si el proceso se
+ * reinicia en ese instante lo que se pierde es una respuesta, no se duplica. */
+const enCurso = new Set();
+
+/**
+ * Contesta un comentario sin que nadie lo haya leído antes.
+ *
+ * Esto publica en la página de un negocio, en público y para siempre. Todo lo
+ * de acá está escrito con esa frase delante.
+ *
+ * NUNCA LANZA. Corre colgado del webhook, y una excepción que suba hasta allí
+ * hace que Meta reintente el `entry` completo: se reprocesarían también los
+ * mensajes de Messenger que venían en el mismo lote. Cada fallo se registra y
+ * el comentario se queda esperando a una persona en la bandeja, que es
+ * exactamente el comportamiento de antes de existir esto.
+ *
+ * Lo que decide qué hacer está en decidirAutomatico.js; acá solo se reúnen los
+ * datos y se ejecuta.
+ */
+async function responderAutomatico({ id_configuracion, comment_id }) {
+  const traza = `cfg=${id_configuracion} comment=${comment_id}`;
+  const llave = `${id_configuracion}:${comment_id}`;
+
+  if (enCurso.has(llave)) {
+    console.log(`[FB_COMENT][AUTO] ya se está contestando · ${traza}`);
+    return null;
+  }
+  enCurso.add(llave);
+
+  try {
+    const [c] = await db.query(
+      `SELECT c.id_facebook_post, c.post_id, c.page_id, c.from_id, c.mensaje,
+              c.es_de_la_pagina, c.oculto, c.eliminado_at, c.respondido,
+              fp.id_producto, fp.ia_automatica,
+              pr.nombre AS producto_nombre
+         FROM facebook_comments c
+         JOIN facebook_posts fp
+           ON fp.id_facebook_post = c.id_facebook_post
+         LEFT JOIN productos_chat_center pr
+           ON pr.id = fp.id_producto AND pr.id_configuracion = fp.id_configuracion
+        WHERE c.id_configuracion = ? AND c.comment_id = ?
+        LIMIT 1`,
+      {
+        replacements: [id_configuracion, comment_id],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    if (!c) return null;
+
+    /* Meta nos devuelve nuestra propia respuesta por el webhook y eso ya
+       refresca la bandeja, pero tarda —y si la suscripción se cae, no llega—.
+       Avisando acá, el agente ve la respuesta de la IA en cuanto sale. */
+    const avisar = () =>
+      avisarBandejaComentarios({
+        id_configuracion,
+        page_id: c.page_id,
+        valor: { post_id: c.post_id, comment_id },
+        verb: 'auto',
+      });
+
+    /* Las opciones mandan dos cosas: si la cuenta encendió esto, y cómo suena
+       la línea de la derivación (trato y emojis). Se pide una vez. */
+    const asistente = await cargarInstruccionesComentarios(id_configuracion);
+    const opciones = asistente.opciones || {};
+
+    /* Cuántas veces habló ya esta persona en ESTA publicación. Se cuenta
+       sobre comentarios vivos y ajenos a la página; el actual se excluye por
+       comment_id y no por fecha, porque dos comentarios seguidos pueden traer
+       el mismo `created_time` al segundo. */
+    const [{ previas }] = await db.query(
+      `SELECT COUNT(*) AS previas FROM facebook_comments
+        WHERE id_configuracion = ? AND id_facebook_post = ?
+          AND from_id = ? AND es_de_la_pagina = 0
+          AND eliminado_at IS NULL AND comment_id <> ?`,
+      {
+        replacements: [id_configuracion, c.id_facebook_post, c.from_id, comment_id],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    const [privadoPrevio] = await db.query(
+      `SELECT 1 AS si FROM facebook_comments
+        WHERE id_configuracion = ? AND id_facebook_post = ?
+          AND from_id = ? AND privado_enviado = 1
+        LIMIT 1`,
+      {
+        replacements: [id_configuracion, c.id_facebook_post, c.from_id],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+
+    const decision = decidirAccion({
+      cuentaAuto: Boolean(opciones.auto),
+      post: c,
+      comentario: c,
+      previas: Number(previas),
+      privadoPrevio: Boolean(privadoPrevio),
+    });
+
+    if (decision.accion === ACCIONES.NADA) {
+      console.log(`[FB_COMENT][AUTO] sin responder · ${traza} · ${decision.motivo}`);
+      return null;
+    }
+
+    /* ── Segunda interacción: contestar Y mudarse al privado ────────── */
+    if (decision.accion === ACCIONES.DERIVAR) {
+      const yaEscrito = Boolean(privadoPrevio);
+      const linea = lineaDerivacion({
+        trato: opciones.trato,
+        emojis: opciones.emojis,
+        yaEscrito,
+      });
+
+      /* La pregunta se contesta igual. Que sea la segunda vez que escribe no
+         la convierte en una pregunta que no merece respuesta, y el hilo
+         público lo leen muchos más de los que comentan.
+
+         Si el modelo falla, queda la coletilla sola: peor que contestar, pero
+         mucho mejor que dejar el comentario sin nada. */
+      let publico = linea;
+      try {
+        const s = await sugerirRespuesta({ id_configuracion, comment_id });
+        if (s?.sugerencia) {
+          /* Si la IA ya prometió el privado por su cuenta, no se repite. Lo
+             decide el mismo detector que usa la bandeja para marcar la
+             casilla del privado. */
+          publico = prometePrivado(s.sugerencia)
+            ? s.sugerencia
+            : `${s.sugerencia} ${linea}`;
+        }
+      } catch (err) {
+        console.warn(
+          `[FB_COMENT][AUTO] sin respuesta pública en la derivación · ` +
+            `${traza} · ${err.message}`,
+        );
+      }
+      /* Si ya se le escribió, no se le vuelve a escribir. Facebook deja mandar
+         un privado por cada comentario, pero dos mensajes idénticos a alguien
+         que todavía no contestó el primero no abren una venta, la cierran. */
+      const privado = yaEscrito
+        ? null
+        : primerPrivado({
+            trato: opciones.trato,
+            producto: c.producto_nombre,
+            comentario: c.mensaje,
+          });
+
+      const r = await responder({
+        id_configuracion,
+        comment_id,
+        mensaje: publico,
+        origen: 'derivada',
+        privado,
+      });
+
+      /* Sin privado no pasa por responderEnPrivado, que es quien normalmente
+         llama al puente. Y el puente hace falta igual: el ancla del producto
+         caduca (anclaProductoVigente descarta las viejas) y el bot puede
+         haberse apagado desde la última vez. Se recupera el contacto del
+         comentario anterior de esta misma persona. */
+      if (!privado) {
+        const [previo] = await db.query(
+          `SELECT id_cliente FROM facebook_comments
+            WHERE id_configuracion = ? AND id_facebook_post = ?
+              AND from_id = ? AND id_cliente IS NOT NULL
+            ORDER BY id_facebook_comment DESC LIMIT 1`,
+          {
+            replacements: [id_configuracion, c.id_facebook_post, c.from_id],
+            type: db.QueryTypes.SELECT,
+          },
+        );
+        if (previo?.id_cliente) {
+          await entregarAlKanban({
+            id_configuracion,
+            id_cliente_contacto: previo.id_cliente,
+            producto: c.id_producto
+              ? { id: c.id_producto, nombre: c.producto_nombre }
+              : null,
+            post_id: c.post_id,
+            comentario: c.mensaje || '',
+          });
+        } else {
+          console.log(
+            `[FB_COMENT][AUTO] sin contacto anotado del privado anterior, ` +
+              `no se refresca el kanban · ${traza}`,
+          );
+        }
+      }
+
+      console.log(
+        `[FB_COMENT][AUTO] 📩 derivado al privado · ${traza} · ` +
+          `${decision.motivo} · privado=${
+            privado ? (r.privado?.enviado ? 'enviado' : `falló: ${r.privado?.error}`) : 'ya existía'
+          }`,
+      );
+      avisar();
+      return { accion: decision.accion, ...r };
+    }
+
+    /* ── Primera interacción: la IA redacta y se publica ────────────── */
+    const s = await sugerirRespuesta({ id_configuracion, comment_id });
+    if (!s?.sugerencia) {
+      console.warn(`[FB_COMENT][AUTO] la IA no devolvió nada · ${traza}`);
+      return null;
+    }
+
+    /* El privado sale solo si la respuesta pública lo prometió. Es la misma
+       regla que ve el agente en la bandeja (la casilla viene marcada cuando
+       `privado_prometido`), y evita lo peor de las dos: prometerlo en público
+       y no mandarlo, o mandarlo sin haberlo anunciado. */
+    const privado = s.privado_prometido ? s.privado : null;
+
+    const r = await responder({
+      id_configuracion,
+      comment_id,
+      mensaje: s.sugerencia,
+      // Una respuesta rápida no la escribió la IA: la escribió el negocio en
+      // el wizard del producto. La insignia tiene que decir eso.
+      origen: s.origen === 'respuesta_rapida' ? 'rapida' : 'ia_auto',
+      privado,
+    });
+
+    console.log(
+      `[FB_COMENT][AUTO] 🤖 respondido · ${traza} · ${decision.motivo} · ` +
+        `origen=${s.origen} · privado=${
+          privado ? (r.privado?.enviado ? 'enviado' : `falló: ${r.privado?.error}`) : 'no'
+        }`,
+    );
+    avisar();
+    return { accion: decision.accion, ...r };
+  } catch (err) {
+    console.error(
+      `[FB_COMENT][AUTO][ERROR] ${traza} · ${err.message}\n${err.stack || ''}`,
+    );
+    return null;
+  } finally {
+    enCurso.delete(llave);
+  }
+}
+
 module.exports = {
   procesarCambioFeed,
+  responderAutomatico,
+  cambiarIaAutomatica,
   guardarComentario,
   recalcularContadores,
   listarPosts,
+  sincronizarPublicaciones,
   listarComentarios,
   listarComentariosPlano,
   listarProductosVinculables,

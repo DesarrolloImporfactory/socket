@@ -329,6 +329,12 @@ app.use((req, res, next) => {
     // firma sobre los campos; el sanitizador los cambiaría y la firma
     // fallaría. Las demás rutas van con protect.
     '/api/v1/telefonia',
+    // Asistente de comentarios: los datos del negocio y el prompt avanzado
+    // llevan precios ("Envío gratis desde $30") y el sanitizador noSQL borraba
+    // el "$" al guardar, dejando "desde 30". Eso no se queda en la pantalla:
+    // es lo que la IA publica después en la página del cliente. Todo el grupo
+    // va con protect + protectConfigOwner (ver facebook_comentarios.routes.js).
+    '/api/v1/facebook_comentarios',
     // Puente a Imporsuit: conceptos y notas de deudas/pagos llevan "$" y el
     // sanitizador noSQL lo borraría antes de reenviar. Va con protect y el
     // cuerpo no toca esta BD: lo valida Imporsuit, igual que cuando el

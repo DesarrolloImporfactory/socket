@@ -7,15 +7,51 @@ const FacebookComments = require('../services/facebook_comments.service');
 // id_configuracion ya llega verificado, así que se usa tal cual en el WHERE.
 const leerIdConfiguracion = (req) => Number(req.query.id_configuracion);
 
-// GET /api/v1/facebook_comentarios/posts?id_configuracion=10&pagina=1&limite=20&solo_pendientes=1
+const esSi = (v) => v === '1' || v === 'true';
+
+// GET /api/v1/facebook_comentarios/posts
+//   ?id_configuracion=10&pagina=1&limite=20&solo_pendientes=1&sin_producto=1
 exports.listarPosts = catchAsync(async (req, res) => {
-  const { pagina, limite, solo_pendientes } = req.query;
+  const { pagina, limite, solo_pendientes, sin_producto } = req.query;
 
   const data = await FacebookComments.listarPosts({
     id_configuracion: leerIdConfiguracion(req),
     pagina,
     limite,
-    solo_pendientes: solo_pendientes === '1' || solo_pendientes === 'true',
+    solo_pendientes: esSi(solo_pendientes),
+    sin_producto: esSi(sin_producto),
+  });
+
+  res.json({ ok: true, ...data });
+});
+
+// POST /api/v1/facebook_comentarios/sincronizar-publicaciones?id_configuracion=10
+//
+// Lo mismo que hace la bandeja al abrirse, pero sin esperar los 10 minutos de
+// frescura: es el botón para cuando acabas de publicar y la quieres configurar
+// ya. No publica nada ni toca Facebook más allá de leer el feed.
+exports.sincronizarPublicaciones = catchAsync(async (req, res) => {
+  const data = await FacebookComments.sincronizarPublicaciones({
+    id_configuracion: leerIdConfiguracion(req),
+    forzar: true,
+  });
+
+  res.json({ ok: true, ...data });
+});
+
+// POST /api/v1/facebook_comentarios/ia-automatica
+//   body: { id_configuracion, post_id, activa }
+//
+// Enciende o apaga la respuesta automática en UNA publicación. No toca el
+// asistente ni el interruptor de la cuenta.
+exports.cambiarIaAutomatica = catchAsync(async (req, res, next) => {
+  const { post_id, activa } = req.body || {};
+  if (!post_id) return next(new AppError('post_id es requerido', 400));
+
+  const data = await FacebookComments.cambiarIaAutomatica({
+    id_configuracion: leerIdConfiguracionBody(req),
+    post_id: String(post_id),
+    activa: activa === true || activa === 1 || activa === '1',
   });
 
   res.json({ ok: true, ...data });
@@ -184,14 +220,21 @@ exports.sugerir = catchAsync(async (req, res, next) => {
 });
 
 // POST /api/v1/facebook_comentarios/responder
-// body: { id_configuracion, comment_id, mensaje, origen }
+// body: { id_configuracion, comment_id, mensaje, origen, privado? }
 //
 // `origen` dice si el texto lo escribió una persona, si salió de una respuesta
 // rápida del producto o si lo redactó la IA, y si el agente lo editó después.
 // El servicio valida el valor contra su propia lista: no se guarda lo que
 // llegue, porque si no cualquiera podría marcar como "IA" algo que escribió él.
+//
+// `privado` es opcional y es el mensaje que sale por Messenger junto con el
+// comentario. Cuando la respuesta pública promete "te escribo al privado", esto
+// es lo que cumple la promesa — y es también lo que entrega la conversación al
+// bot de kanban con el producto ya puesto. El servicio publica primero y manda
+// el privado después: si el privado falla, la respuesta sigue siendo 200 con el
+// motivo dentro, porque el comentario sí se publicó.
 exports.responder = catchAsync(async (req, res, next) => {
-  const { comment_id, mensaje, origen } = req.body;
+  const { comment_id, mensaje, origen, privado } = req.body;
   if (!comment_id || !String(mensaje || '').trim()) {
     return next(new AppError('comment_id y mensaje son requeridos', 400));
   }
@@ -203,6 +246,7 @@ exports.responder = catchAsync(async (req, res, next) => {
       mensaje,
       id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
       origen,
+      privado,
     });
     res.json({ ok: true, ...data });
   } catch (err) {

@@ -287,6 +287,40 @@ exports.listarPlantillas = async (req, res) => {
       { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
     );
 
+    // Las URLs de los creativos son firmadas por Meta y vencen en días: se
+    // renuevan las caducadas y se guardan (sin tocar updated_at, que ordena
+    // la lista). Si Meta no responde se lista igual, con lo que haya.
+    try {
+      const conn = rows.length ? await getAdConnection(id_configuracion) : null;
+      if (conn) {
+        const cambios = await launcher.refrescarUrlsCreativos({
+          conn,
+          plantillas: rows,
+        });
+        for (const [id, c] of cambios) {
+          await db.query(
+            `UPDATE meta_ads_plantillas
+                SET imagen_url = ?, imagenes_json = ?, updated_at = updated_at
+              WHERE id = ? AND id_configuracion = ?`,
+            {
+              replacements: [c.imagen_url, c.imagenes_json, id, id_configuracion],
+              type: db.QueryTypes.UPDATE,
+            },
+          );
+          Object.assign(rows.find((p) => p.id === id) || {}, c);
+        }
+        if (cambios.size) {
+          logger.info(
+            `launcher listarPlantillas cfg ${id_configuracion}: ${cambios.size} plantilla(s) con URLs de creativos renovadas`,
+          );
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        `launcher listarPlantillas cfg ${id_configuracion} renovar URLs: ${err.message}`,
+      );
+    }
+
     const data = rows.map((p) => ({
       ...p,
       faltantes: faltantesParaLanzar(p),
@@ -1155,9 +1189,10 @@ exports.listarCampanias = async (req, res) => {
       const propio = porCampania.get(c.id) || null;
       return {
         ...c,
-        // La imagen de la plantilla es la misma que subió el cliente; la
-        // miniatura de Meta es el respaldo (y la única para las externas).
-        thumbnail_url: propio?.plantilla?.imagen_url || c.thumbnail_url,
+        // La miniatura de Meta se pide en vivo en cada lectura (URL firmada
+        // fresca); la imagen guardada en la plantilla es solo el respaldo,
+        // porque esa firma vence en días y dejaba la portada rota.
+        thumbnail_url: c.thumbnail_url || propio?.plantilla?.imagen_url || null,
         es_sistema: !!propio,
         lanzamiento_id: propio?.lanzamiento_id || null,
         lanzado_at: propio?.lanzado_at || null,
