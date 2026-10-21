@@ -65,6 +65,10 @@ const ESTADOS_NEUTROS = new Set(['', 'contacto_inicial', 'nuevo']);
 /**
  * Qué hacer con el estado del contacto.
  *
+ * Lo que decide acá vale también para `bot_openia`: si el contacto está como
+ * para reiniciar, el bot se enciende, y si no, no se toca. Ver el comentario
+ * del UPDATE más abajo.
+ *
  * Tres casos:
  *   - estado neutro → `contacto_inicial`. Es donde ya estaba, pero deja el
  *     chat abierto y el registro consistente.
@@ -103,7 +107,13 @@ async function entregarAlKanban({
   post_id,
   comentario, // el texto del comentario que originó todo
 }) {
-  const hecho = { ancla: null, estado: null, mapa: false, error: null };
+  const hecho = {
+    ancla: null,
+    estado: null,
+    bot: null,
+    mapa: false,
+    error: null,
+  };
 
   try {
     if (!id_configuracion || !id_cliente_contacto) return hecho;
@@ -169,23 +179,35 @@ async function entregarAlKanban({
       hecho.ancla = producto.nombre;
     }
 
-    /* ── 3. El estado ──────────────────────────────────────────────────
+    /* ── 3. El estado y el bot ─────────────────────────────────────────
        El ancla va ANTES que esto a propósito: `anclaProductoVigente`
        descarta un ancla anterior a `reinicio_conversacion_at`, así que si
        alguna vez se reinicia la conversación acá, el orden importa. Hoy no
        se reinicia, pero el orden deja la puerta cerrada.
 
-       `bot_openia` no se toca nunca. Si el negocio apagó la IA para ese
-       chat, fue a propósito, y un comentario no es motivo para encenderla. */
+       SOBRE `bot_openia`. Al principio no se tocaba nunca, con el argumento
+       de que si alguien apagó la IA de un chat fue por algo. La primera
+       prueba real mostró el costo de esa prudencia: el contacto tenía el bot
+       apagado, se le publicó "te escribo por el privado y ahí seguimos", se
+       le escribió... y al contestar no le iba a responder nadie. Una promesa
+       rota en público y en privado a la vez.
+
+       Así que se enciende, pero sólo cuando el estado también se mueve —o
+       sea cuando el contacto estaba nuevo o con el chat cerrado—. Si hay una
+       venta en curso con un asesor, no se toca ni el estado ni el bot: ahí
+       el apagado sí es una decisión viva de alguien. */
     const decision = decidirEstado(contacto);
     if (decision.mover) {
       await db.query(
         `UPDATE clientes_chat_center
-            SET estado_contacto = 'contacto_inicial', chat_cerrado = 0
+            SET estado_contacto = 'contacto_inicial',
+                chat_cerrado = 0,
+                bot_openia = 1
           WHERE id = ?`,
         { replacements: [id_cliente_contacto], type: db.QueryTypes.UPDATE },
       );
       hecho.estado = 'contacto_inicial';
+      hecho.bot = Number(contacto.bot_openia) === 1 ? 'ya estaba' : 'encendido';
     }
 
     console.log(
@@ -194,8 +216,9 @@ async function entregarAlKanban({
         `mapa=${hecho.mapa ? fuente : 'no'} · estado=${
           hecho.estado || `sin tocar (${decision.motivo})`
         }` +
-        (Number(contacto.bot_openia) !== 1
-          ? ' · ⚠️ bot_openia apagado: el kanban no va a contestar'
+        (hecho.bot ? ` · bot_openia ${hecho.bot}` : '') +
+        (!decision.mover && Number(contacto.bot_openia) !== 1
+          ? ' · ⚠️ bot_openia apagado y no se toca: el kanban no va a contestar'
           : ''),
     );
   } catch (err) {

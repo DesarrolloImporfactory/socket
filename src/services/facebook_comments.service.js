@@ -2027,6 +2027,25 @@ async function responderEnPrivado({
             id_encargado: uni?.id_encargado ?? null,
           });
 
+          /* Qué contacto es, anotado en el comentario.
+             La columna existía desde el principio y nadie la llenaba. Sirve
+             para lo que viene después: si esta misma persona vuelve a
+             comentar, ya no hace falta mandarle otro privado para saber a
+             qué chat pertenece —y sin saberlo no se le puede refrescar el
+             producto al bot de kanban. */
+          await db.query(
+            `UPDATE facebook_comments SET id_cliente = ?
+              WHERE id_configuracion = ? AND comment_id = ?`,
+            {
+              replacements: [
+                uni.id_cliente_contacto,
+                id_configuracion,
+                comment_id,
+              ],
+              type: db.QueryTypes.UPDATE,
+            },
+          );
+
           emitUpdateChatMS({
             id_configuracion,
             chatId: uni.id_cliente_contacto,
@@ -2113,6 +2132,7 @@ const {
   lineaDerivacion,
   primerPrivado,
 } = require('../utils/comentarios/decidirAutomatico');
+const { entregarAlKanban } = require('../utils/comentarios/puenteKanban');
 
 /**
  * Enciende o apaga la IA automática en una publicación.
@@ -2259,14 +2279,38 @@ async function responderAutomatico({ id_configuracion, comment_id }) {
       return null;
     }
 
-    /* ── Segunda interacción: a la conversación de verdad ───────────── */
+    /* ── Segunda interacción: contestar Y mudarse al privado ────────── */
     if (decision.accion === ACCIONES.DERIVAR) {
       const yaEscrito = Boolean(privadoPrevio);
-      const publico = lineaDerivacion({
+      const linea = lineaDerivacion({
         trato: opciones.trato,
         emojis: opciones.emojis,
         yaEscrito,
       });
+
+      /* La pregunta se contesta igual. Que sea la segunda vez que escribe no
+         la convierte en una pregunta que no merece respuesta, y el hilo
+         público lo leen muchos más de los que comentan.
+
+         Si el modelo falla, queda la coletilla sola: peor que contestar, pero
+         mucho mejor que dejar el comentario sin nada. */
+      let publico = linea;
+      try {
+        const s = await sugerirRespuesta({ id_configuracion, comment_id });
+        if (s?.sugerencia) {
+          /* Si la IA ya prometió el privado por su cuenta, no se repite. Lo
+             decide el mismo detector que usa la bandeja para marcar la
+             casilla del privado. */
+          publico = prometePrivado(s.sugerencia)
+            ? s.sugerencia
+            : `${s.sugerencia} ${linea}`;
+        }
+      } catch (err) {
+        console.warn(
+          `[FB_COMENT][AUTO] sin respuesta pública en la derivación · ` +
+            `${traza} · ${err.message}`,
+        );
+      }
       /* Si ya se le escribió, no se le vuelve a escribir. Facebook deja mandar
          un privado por cada comentario, pero dos mensajes idénticos a alguien
          que todavía no contestó el primero no abren una venta, la cierran. */
@@ -2285,6 +2329,40 @@ async function responderAutomatico({ id_configuracion, comment_id }) {
         origen: 'derivada',
         privado,
       });
+
+      /* Sin privado no pasa por responderEnPrivado, que es quien normalmente
+         llama al puente. Y el puente hace falta igual: el ancla del producto
+         caduca (anclaProductoVigente descarta las viejas) y el bot puede
+         haberse apagado desde la última vez. Se recupera el contacto del
+         comentario anterior de esta misma persona. */
+      if (!privado) {
+        const [previo] = await db.query(
+          `SELECT id_cliente FROM facebook_comments
+            WHERE id_configuracion = ? AND id_facebook_post = ?
+              AND from_id = ? AND id_cliente IS NOT NULL
+            ORDER BY id_facebook_comment DESC LIMIT 1`,
+          {
+            replacements: [id_configuracion, c.id_facebook_post, c.from_id],
+            type: db.QueryTypes.SELECT,
+          },
+        );
+        if (previo?.id_cliente) {
+          await entregarAlKanban({
+            id_configuracion,
+            id_cliente_contacto: previo.id_cliente,
+            producto: c.id_producto
+              ? { id: c.id_producto, nombre: c.producto_nombre }
+              : null,
+            post_id: c.post_id,
+            comentario: c.mensaje || '',
+          });
+        } else {
+          console.log(
+            `[FB_COMENT][AUTO] sin contacto anotado del privado anterior, ` +
+              `no se refresca el kanban · ${traza}`,
+          );
+        }
+      }
 
       console.log(
         `[FB_COMENT][AUTO] 📩 derivado al privado · ${traza} · ` +
