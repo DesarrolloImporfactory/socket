@@ -34,6 +34,8 @@ const onlyDigits = (s) => String(s || '').replace(/\D/g, '');
  * {{n}} y cada botón URL dinámico declara qué variable lleva.
  *
  * Variables disponibles: nombre, monto, cuotas, uuid_cartera, url_pago.
+ * `monto` y `cuotas` son SOLO lo vencido en dólares: lo que cobra el enlace
+ * (ver consultarSaldoVencidoPor). Nunca una suma de monedas distintas.
  */
 const PLANTILLAS_ENLACE_PAGO = {
   242: {
@@ -81,21 +83,62 @@ function plantillaDeEnlacePago(idConfiguracion, nombreTemplate) {
 }
 
 /**
- * Saldo VENCIDO del usuario de Imporsuit. Mismo criterio que
+ * Moneda en que cobra el enlace Cobros/pagar/{uuid}: la cuenta de Stripe de
+ * Imporsuit cobra en dólares (STRIPE_MONEDA = usd) y CobrosModel solo arma el
+ * cobro con las deudas EN esa moneda (docs/separacion_monedas.md en
+ * imporsutipro). El monto del mensaje tiene que ser el mismo que cobra el link.
+ */
+const MONEDA_ENLACE_PAGO = 'USD';
+
+/** Clave de lo vencido sin moneda confirmada (la misma de Moneda::SIN en Imporsuit). */
+const SIN_MONEDA = 'SIN';
+
+/**
+ * ¿Ya corrió en db_2 la migración 2026-10-20_1200 (cuenta_por_pagar.moneda)?
+ * Se cachea solo el «sí»: si todavía no existe se vuelve a mirar en la
+ * próxima llamada, para que el aviso se reanude solo al aplicarla.
+ */
+let hayColumnaMoneda = false;
+async function columnaMonedaDisponible() {
+  if (hayColumnaMoneda) return true;
+  const filas = await db_2.query(
+    "SHOW COLUMNS FROM cuenta_por_pagar LIKE 'moneda'",
+    { type: db_2.QueryTypes.SELECT },
+  );
+  hayColumnaMoneda = Array.isArray(filas) && filas.length > 0;
+  return hayColumnaMoneda;
+}
+
+/**
+ * Saldo VENCIDO del usuario de Imporsuit, POR MONEDA. Mismo criterio que
  * CobrosModel::resolverDeuda('deuda') — estado 0, con saldo y fecha_limite
- * pasada — pero acá solo sirve para MOSTRAR el monto en el mensaje: lo que
- * se cobra lo vuelve a calcular Imporsuit al hacer clic.
+ * pasada —. Las monedas nunca se suman: cada una (USD, MXN, COP, PEN… la que
+ * tenga la deuda) va aparte, y las deudas viejas sin moneda confirmada
+ * quedan en 'SIN'.
  *
  * Se busca por correo (la llave común con los contactos del chat) o por
  * id_users (lo que manda Imporsuit cuando avisa un intento de ingreso).
+ *
+ * @returns null si la cuenta no tiene nada vencido; si no,
+ *   { id_users, nombre_users, email, uuid_cartera,
+ *     por_moneda: { USD: { total, cuotas }, MXN: {…}, COP: {…}, SIN: {…} } }
  */
-async function consultarSaldoVencidoPor({ email, idUsers }) {
+async function consultarSaldosVencidosPorMoneda({ email, idUsers }) {
   const correo = String(email || '').trim();
   const idU = Number(idUsers) || 0;
   if (!correo && !idU) return null;
 
-  const [row] = await db_2.query(
+  // Antes de la migración no se sabe la moneda de nada: todo cae en 'SIN'
+  // (y por lo tanto no se le dice ningún monto al cliente; ver abajo). La
+  // lista de monedas no se repite acá: lo que no sea USD (MXN, COP, PEN o la
+  // que se agregue en Imporsuit) queda fuera del enlace por igual.
+  const moneda = (await columnaMonedaDisponible())
+    ? `COALESCE(NULLIF(UPPER(TRIM(c.moneda)), ''), '${SIN_MONEDA}')`
+    : `'${SIN_MONEDA}'`;
+
+  const filas = await db_2.query(
     `SELECT u.id_users, u.nombre_users, u.email_users, MIN(ca.uuid) AS uuid_cartera,
+            ${moneda} AS moneda,
             COUNT(*) AS cuotas, ROUND(SUM(c.monto_pendiente), 2) AS total
        FROM users u
        INNER JOIN carteras ca ON ca.id_users = u.id_users
@@ -103,19 +146,99 @@ async function consultarSaldoVencidoPor({ email, idUsers }) {
       WHERE ${idU ? 'u.id_users = ?' : 'u.email_users = ?'} AND u.eliminado = 0
         AND c.estado = 0 AND c.monto_pendiente > 0
         AND c.fecha_limite < CURDATE()
-      GROUP BY u.id_users, u.nombre_users, u.email_users`,
+      GROUP BY u.id_users, u.nombre_users, u.email_users, ${moneda}`,
     { replacements: [idU || correo], type: db_2.QueryTypes.SELECT },
   );
 
-  if (!row || !(Number(row.total) > 0) || !row.uuid_cartera) return null;
+  const conSaldo = (filas || []).filter((f) => Number(f.total) > 0);
+  if (!conSaldo.length) return null;
+
+  // Un correo podría tener más de una cuenta: como antes, se toma la primera
+  // y todo lo demás (monedas, cartera) sale de esa misma cuenta.
+  const base = conSaldo[0];
+  const delUsuario = conSaldo.filter(
+    (f) => Number(f.id_users) === Number(base.id_users),
+  );
+  const por_moneda = {};
+  for (const f of delUsuario) {
+    por_moneda[String(f.moneda)] = {
+      total: Number(f.total),
+      cuotas: Number(f.cuotas) || 0,
+    };
+  }
 
   return {
-    id_users: Number(row.id_users),
-    nombre_users: row.nombre_users || '',
-    email: String(row.email_users || '').trim(),
-    uuid_cartera: String(row.uuid_cartera),
-    cuotas: Number(row.cuotas) || 0,
-    total: Number(row.total),
+    id_users: Number(base.id_users),
+    nombre_users: base.nombre_users || '',
+    email: String(base.email_users || '').trim(),
+    // Igual que antes: la menor de las carteras con deuda vencida. El enlace
+    // solo la usa para llegar al usuario (CobrosModel::idUsersPorCartera).
+    uuid_cartera:
+      delUsuario.map((f) => f.uuid_cartera).filter(Boolean).sort()[0] || null,
+    por_moneda,
+  };
+}
+
+/**
+ * Lo vencido que el enlace de pago NO cobra (cualquier moneda que no sea la
+ * del enlace, o sin moneda confirmada), como texto para logs y motivos:
+ * «COP 973340.00, MXN 1780.00, SIN 50.00». Orden estable: las monedas por su
+ * código y 'SIN' al final. '' si no hay.
+ */
+function saldoFueraDelEnlace(saldos) {
+  return Object.entries(saldos?.por_moneda || {})
+    .filter(([m, v]) => m !== MONEDA_ENLACE_PAGO && Number(v?.total) > 0)
+    .sort(([a], [b]) =>
+      a === SIN_MONEDA ? 1 : b === SIN_MONEDA ? -1 : a.localeCompare(b),
+    )
+    .map(([m, v]) => `${m} ${Number(v.total).toFixed(2)}`)
+    .join(', ');
+}
+
+/**
+ * Saldo VENCIDO que se le dice al cliente junto al enlace de pago: SOLO lo
+ * que está en dólares, porque es exactamente lo que cobra el link
+ * (CobrosModel::resolverDeuda suma `c.moneda = 'USD'`). Lo vencido en otra
+ * moneda (MXN, COP, PEN…) o sin moneda confirmada NO entra en el monto:
+ * decirle «debes $1,900» cuando el link le cobra 120 dólares (o sumarle
+ * otra moneda como si fueran dólares) es peor que no decir nada. Eso lo cobra un asesor fuera del link.
+ *
+ * Solo sirve para MOSTRAR el monto: lo que se cobra lo vuelve a calcular
+ * Imporsuit al hacer clic.
+ *
+ * @returns null si no hay saldo vencido EN DÓLARES (aunque deba en otra moneda);
+ *   si no, { id_users, nombre_users, email, uuid_cartera, cuotas, total,
+ *   moneda: 'USD', fuera_del_enlace: 'MXN 1780.00' | '' }.
+ */
+async function consultarSaldoVencidoPor({ email, idUsers }) {
+  const saldos = await consultarSaldosVencidosPorMoneda({ email, idUsers });
+  if (!saldos || !saldos.uuid_cartera) return null;
+
+  const fuera = saldoFueraDelEnlace(saldos);
+  const enlace = saldos.por_moneda[MONEDA_ENLACE_PAGO];
+  if (!enlace || !(enlace.total > 0)) {
+    if (fuera) {
+      console.warn(
+        `[enlacePagoImporsuit] user #${saldos.id_users}: solo tiene vencido fuera del enlace de pago (${fuera}); no se le manda monto ni link.`,
+      );
+    }
+    return null;
+  }
+  if (fuera) {
+    console.log(
+      `[enlacePagoImporsuit] user #${saldos.id_users}: el mensaje dice solo lo vencido en ${MONEDA_ENLACE_PAGO} (${enlace.total.toFixed(2)}); queda aparte ${fuera}.`,
+    );
+  }
+
+  return {
+    id_users: saldos.id_users,
+    nombre_users: saldos.nombre_users,
+    email: saldos.email,
+    uuid_cartera: String(saldos.uuid_cartera),
+    cuotas: enlace.cuotas,
+    total: enlace.total,
+    moneda: MONEDA_ENLACE_PAGO,
+    fuera_del_enlace: fuera,
   };
 }
 
@@ -293,6 +416,17 @@ async function resolverEnlacePagoTemplate({
 
   const saldo = await consultarSaldoVencido(email);
   if (!saldo) {
+    // ¿Debe, pero solo en otra moneda o sin moneda confirmada? El enlace cobra solo
+    // dólares: no se manda, y el motivo lo dice para que lo cobre un asesor.
+    const fuera = saldoFueraDelEnlace(
+      await consultarSaldosVencidosPorMoneda({ email }),
+    );
+    if (fuera) {
+      throw new SinSaldoVencidoError(
+        `${email} solo tiene saldo vencido que el enlace de pago no cobra (${fuera}): el enlace cobra solo dólares. No se envía la plantilla de cobro; cóbralo por fuera del enlace.`,
+        'SALDO_EN_OTRA_MONEDA',
+      );
+    }
     throw new SinSaldoVencidoError(
       `${email} no tiene saldo vencido en Imporsuit: no se envía la plantilla de cobro.`,
     );
@@ -366,8 +500,11 @@ module.exports = {
   urlPagoCartera,
   plantillasEnlacePagoDeConfig,
   plantillaDeEnlacePago,
+  MONEDA_ENLACE_PAGO,
   consultarSaldoVencido,
   consultarSaldoVencidoPor,
+  consultarSaldosVencidosPorMoneda,
+  saldoFueraDelEnlace,
   resolverDestinatarioImporsuit,
   ultimoAvisoPagoCobro,
   resolverEnlacePagoTemplate,
