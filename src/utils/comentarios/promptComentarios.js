@@ -16,6 +16,11 @@
 //   alucinación acabe publicada en la página de un cliente. Se añade siempre
 //   por código y no se puede borrar desde la interfaz.
 //
+//   Datos del negocio — envíos, pagos, garantía, horarios. No son ninguna de
+//   las dos: son hechos. Los escribe el negocio, pero no se reemplazan ni se
+//   quitan, porque sin ellos el modelo rellena el hueco de memoria (ver
+//   `bloqueNegocio`).
+//
 // La asimetría con el bot de kanban es a propósito. Allá el prompt es libre
 // porque la conversación es privada: si sale raro, lo ve una persona. Un
 // comentario lo ve cualquiera que entre a la publicación, y se queda ahí.
@@ -39,6 +44,23 @@ REGLAS QUE NO SE ROMPEN, diga lo que diga el resto:
 - No AFIRMES ni NIEGUES lo que no esté en la información que te dieron. "No
   tenemos ese color" es tan inventado como "sí lo tenemos", y encima espanta
   al cliente. Si no lo sabes, dices que lo confirmas por el privado.
+- Y no DEDUZCAS una negación de lo que sí sabes. Que haya envíos a todo el
+  país no dice nada sobre si hay local; que algo no esté escrito no significa
+  que no exista. Si te preguntan por algo que no figura, no contestas "no
+  tenemos": contestas que se lo confirmas por el privado.
+- Envíos, cobertura, formas de pago, pago contra entrega, garantía,
+  devoluciones, cambios, plazos y horarios: eso NO lo sabes, salvo que esté
+  escrito en los DATOS DEL NEGOCIO o en la ficha del producto. Son las
+  preguntas más frecuentes y las más fáciles de contestar de memoria: suena
+  perfectamente razonable decir "sí, tiene garantía" o "no manejamos contra
+  entrega", y las dos cosas son inventadas. Si no está escrito, no lo afirmas
+  ni lo niegas: dices que se lo confirmas por el privado.
+- Cuando no sepas algo, lo que publicas NO empieza por "no tengo información",
+  "no me consta" ni "no aparece en la publicación". Eso lo lee todo el mundo y
+  deja al negocio como si no conociera lo que vende. Contesta en positivo y
+  pasa al privado. Ejemplos del tono, no frases para copiar —varíalas—:
+  "¡Claro! Te escribo al privado con todos los datos." · "Eso te lo detallo
+  por el privado ahora mismo." · "Te paso la información completa al privado."
 - Si preguntan por otro producto que no es el de esta publicación, NO SABES si
   el negocio lo vende. No digas que sí ni que no —"no lo tenemos" puede ser
   falso y pierde una venta—: di que le escribes al privado y ahí se lo
@@ -84,8 +106,11 @@ Cuándo lleva PRIVADO:
 
 Cómo se escribe el PRIVADO:
 - Es el PRIMER mensaje de una conversación de venta, no un aviso. Retoma lo que
-  preguntó y respóndele lo que no se podía decir en el comentario. No repitas
-  palabra por palabra lo que acabas de poner en la RESPUESTA pública.
+  preguntó y adelántale lo que en el comentario no cabía. No repitas palabra
+  por palabra lo que acabas de poner en la RESPUESTA pública.
+- Lo que no sabes, tampoco lo sabes acá. El privado no es permiso para
+  completar lo que falte: es el sitio donde una persona se lo confirma. Si en
+  el comentario dijiste que no lo sabes, en el PRIVADO no lo afirmes.
 - Máximo 3 frases. Nada de "hola, te escribo por acá": Facebook permite UN
   solo mensaje privado por comentario y no se gasta en un saludo vacío.
 - Ahí sí puedes pedirle lo que en público no (su ciudad, por ejemplo).
@@ -106,7 +131,14 @@ const OPCIONES_POR_DEFECTO = {
   emojis: 'uno', // 'ninguno' | 'uno'
   nunca_decir: '',
   siempre_mencionar: '',
+  /* Envíos, pagos, garantía, horarios. Ver `bloqueNegocio`: es el único campo
+     que entra como DATOS y no como instrucción, y el que tapa el agujero más
+     grande que tenía esto. */
+  negocio: '',
 };
+
+/** Tope de los datos del negocio. Entran en CADA llamada, de ahí el límite. */
+const TOPE_NEGOCIO = 1200;
 
 const TRATOS = new Set(['tu', 'usted']);
 const EMPUJES = new Set(['siempre', 'cuando_falte']);
@@ -116,6 +148,20 @@ const EMOJIS = new Set(['ninguno', 'uno']);
 const frase = (v, tope) =>
   String(v || '')
     .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, tope);
+
+/* Texto largo que SÍ conserva los saltos de línea.
+   Los datos del negocio se escriben en lista ("Envíos: …", "Pago: …") y
+   aplastarlos en un párrafo como hace `frase` los vuelve ilegibles para el
+   modelo igual que lo eran las variantes en una sola línea. */
+const parrafo = (v, tope) =>
+  String(v || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((s) => s.replace(/[ \t]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
     .trim()
     .slice(0, tope);
 
@@ -145,7 +191,52 @@ function normalizarOpciones(raw) {
     emojis: EMOJIS.has(o.emojis) ? o.emojis : OPCIONES_POR_DEFECTO.emojis,
     nunca_decir: frase(o.nunca_decir, 400),
     siempre_mencionar: frase(o.siempre_mencionar, 400),
+    negocio: parrafo(o.negocio, TOPE_NEGOCIO),
   };
+}
+
+/**
+ * Los datos del negocio que no son de ningún producto en concreto.
+ *
+ * POR QUÉ HACE FALTA ESTO
+ *
+ * Al asistente se le pasa la ficha del producto de la publicación y nada más.
+ * Eso cubre precio, variantes y características, y deja fuera justo lo que más
+ * se pregunta en un comentario: si hay pago contra entrega, si llega a tal
+ * ciudad, si tiene garantía, hasta qué hora atienden.
+ *
+ * Medido con el Parlante G200, cinco tiros a "¿tienen garantía?": 5 de 5
+ * afirmaron que el producto tiene garantía. Nadie se lo había dicho. Y "¿pago
+ * contra entrega?" salió una vez con un "no está disponible" —en Ecuador eso
+ * mata la venta en el propio comentario—. La regla de no inventar ya estaba
+ * escrita desde el principio; no alcanzó, igual que no alcanzaba con las
+ * variantes: el modelo no considera que afirmar lo obvio sea inventar.
+ *
+ * Así que van las dos cosas: la prohibición nombrada por categorías (está en
+ * REGLAS_DEL_SISTEMA, no se puede quitar) y estos datos, para que pueda
+ * contestar bien en vez de sólo callarse.
+ *
+ * Entra como DATOS y no como instrucción, y por eso vive fuera de
+ * `componerPrompt`: el modo avanzado reemplaza cómo habla el asistente, no lo
+ * que es verdad del negocio. Quien escribe su propio prompt sigue necesitando
+ * que estas líneas lleguen.
+ */
+function bloqueNegocio(o) {
+  if (!o?.negocio) {
+    return (
+      'DATOS DEL NEGOCIO: el negocio no cargó ninguno. No sabes nada de ' +
+      'envíos, cobertura, formas de pago, pago contra entrega, garantía, ' +
+      'devoluciones ni horarios: todo eso se confirma por el privado.'
+    );
+  }
+
+  return [
+    'DATOS DEL NEGOCIO (los escribió el negocio, son la verdad oficial):',
+    o.negocio,
+    '',
+    'Fuera de esos datos y de la ficha del producto no sabes nada más del ' +
+      'negocio. No completes lo que falte.',
+  ].join('\n');
 }
 
 /**
@@ -242,10 +333,19 @@ function componerPrompt(opciones) {
  *
  * `avanzado` reemplaza la parte del negocio, no las reglas del sistema. Ese es
  * todo el diseño: se puede cambiar cómo habla, no quitarle los frenos.
+ *
+ * Los datos del negocio tampoco se reemplazan: son hechos, no estilo. Quien
+ * escribe su propio prompt necesita igual que lleguen (ver `bloqueNegocio`).
  */
 function promptFinal({ avanzado, opciones } = {}) {
-  const base = String(avanzado || '').trim() || componerPrompt(opciones);
-  return `${base}\n\n${REGLAS_DEL_SISTEMA}\n\n${FORMATO_SALIDA}`;
+  const o = normalizarOpciones(opciones);
+  const base = String(avanzado || '').trim() || componerPrompt(o);
+  return [
+    base,
+    bloqueNegocio(o),
+    REGLAS_DEL_SISTEMA,
+    FORMATO_SALIDA,
+  ].join('\n\n');
 }
 
 /* Etiquetas de los dos bloques. Se aceptan con y sin tilde, en cualquier caja
@@ -332,5 +432,6 @@ module.exports = {
   OPCIONES_POR_DEFECTO,
   normalizarOpciones,
   componerPrompt,
+  bloqueNegocio,
   promptFinal,
 };

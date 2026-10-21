@@ -9,15 +9,19 @@
 //
 // LAS DOS INTERACCIONES
 //
-// El primer comentario de una persona se contesta en público con todo el
-// contexto del producto. El segundo ya no: ahí la conversación dejó de ser una
-// pregunta suelta y se volvió una venta, y una venta no se lleva en los
-// comentarios de una publicación —se lleva en el chat, donde está el bot de
-// kanban con el catálogo, las objeciones, el envío y el cierre.
+// El primer comentario de una persona se contesta en público con el contexto
+// del producto. A partir del segundo, la conversación dejó de ser una pregunta
+// suelta y se volvió una venta, y una venta no se lleva en los comentarios de
+// una publicación —se lleva en el chat, donde está el bot de kanban con el
+// catálogo, las objeciones, el envío y el cierre.
 //
-// Así que a partir del segundo se le dice en público que se le escribe por el
-// privado, y se le escribe de verdad. El puente al kanban (puenteKanban.js) ya
-// deja ese chat anclado al producto de la publicación.
+// Pero mudarse al privado NO es dejar de contestar en público. La primera
+// versión sólo publicaba "te escribo por el privado", y visto en el hilo real
+// se leía como esquivar la pregunta: el que entra a los comentarios ve una
+// pregunta concreta y ninguna respuesta, y los que leen son muchos más que los
+// que escriben. Así que desde la segunda se hacen las dos cosas: se contesta
+// igual y además se le escribe. El puente al kanban (puenteKanban.js) deja ese
+// chat anclado al producto de la publicación.
 // ════════════════════════════════════════════════════════════════════════
 
 /** Qué hacer con un comentario recién llegado. */
@@ -98,12 +102,15 @@ function decidirAccion({
 }
 
 /**
- * La línea pública de la derivación.
+ * La coletilla que se pega a la respuesta pública para anunciar el privado.
  *
- * Fija, sin modelo. Dos razones: no gasta tokens en una frase que siempre dice
- * lo mismo, y sobre todo no hay forma de que invente nada — lo que tenga que
- * decirse del producto se dice en el privado, donde hay una conversación
- * entera por delante y no un comentario público.
+ * Fija, sin modelo: no tiene sentido gastar tokens en una frase que siempre
+ * dice lo mismo, y así no hay forma de que la promesa salga distinta de lo que
+ * el código va a hacer después.
+ *
+ * Va detrás de lo que redactó la IA, salvo que esa respuesta ya prometa el
+ * privado por su cuenta —se comprueba con `prometePrivado`— para no publicar
+ * la promesa dos veces seguidas.
  *
  * Respeta el trato y los emojis que el negocio configuró en el asistente, para
  * que no se note el salto entre lo que escribe la IA y esto.
