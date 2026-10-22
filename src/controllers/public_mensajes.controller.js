@@ -44,6 +44,8 @@ const {
   PLANTILLA_AVISO_PAGO_DEFAULT,
   plantillasEnlacePagoDeConfig,
   consultarSaldoVencidoPor,
+  consultarSaldosVencidosPorMoneda,
+  saldoFueraDelEnlace,
   resolverDestinatarioImporsuit,
   ultimoAvisoPagoCobro,
 } = require('../utils/enlacePagoImporsuit');
@@ -510,6 +512,10 @@ exports.enviarMedia = catchAsync(async (req, res, next) => {
    Monto y enlace NO los manda Imporsuit: se calculan acá desde la cartera
    (utils/enlacePagoImporsuit) y el enlace apunta a Cobros/pagar/{uuid},
    que cobra en el Stripe de Imporsuit.
+   El monto es SOLO lo vencido en dólares (lo único que cobra el enlace).
+   Quien debe solo en otra moneda (MXN, COP, PEN…) o sin moneda confirmada
+   no recibe el aviso:
+   motivo SALDO_EN_OTRA_MONEDA (docs/separacion_monedas.md en imporsutipro).
    ═══════════════════════════════════════════════════════════ */
 
 exports.avisoPagoImporsuit = catchAsync(async (req, res, next) => {
@@ -581,8 +587,18 @@ exports.avisoPagoImporsuit = catchAsync(async (req, res, next) => {
   }
 
   // 2) Si está al día no se le dice que debe. El envío lo vuelve a comprobar.
+  //    Solo cuenta lo vencido en dólares: es lo que cobra el enlace. Si debe
+  //    pero solo en otra moneda (o sin moneda confirmada), no se le manda un link
+  //    que no le cobra eso: queda para un asesor.
   const saldo = await consultarSaldoVencidoPor({ idUsers: dest.id_users });
-  if (!saldo) return omitir('SIN_SALDO_VENCIDO', { email: dest.email });
+  if (!saldo) {
+    const fuera = saldoFueraDelEnlace(
+      await consultarSaldosVencidosPorMoneda({ idUsers: dest.id_users }),
+    );
+    return fuera
+      ? omitir('SALDO_EN_OTRA_MONEDA', { email: dest.email, fuera_del_enlace: fuera })
+      : omitir('SIN_SALDO_VENCIDO', { email: dest.email });
+  }
 
   // 3) Candado: ni en cada intento de ingreso ni encima de un cobro manual.
   const previo = await ultimoAvisoPagoCobro({
@@ -669,7 +685,9 @@ exports.avisoPagoImporsuit = catchAsync(async (req, res, next) => {
       email: dest.email,
       telefono: onlyDigits(telefono),
       monto: saldo.total.toFixed(2),
+      moneda: saldo.moneda,
       cuotas: saldo.cuotas,
+      fuera_del_enlace: saldo.fuera_del_enlace || null,
       wamid: resultado.wamid,
       chat_id: chatId,
     },
@@ -686,6 +704,7 @@ exports.avisoPagoImporsuit = catchAsync(async (req, res, next) => {
       telefono: onlyDigits(telefono),
       email: dest.email,
       monto: saldo.total.toFixed(2),
+      moneda: saldo.moneda,
       cuotas: saldo.cuotas,
     },
   });
