@@ -531,21 +531,25 @@ const TOPE_VERIFICAR_BORRADAS = 10;
  * ¿Este error de Graph significa que la publicación ya no existe?
  *
  * Meta no contesta 404 cuando se borra una publicación: el id queda huérfano y
- * el GET vuelve con código 100 y subcódigo 33 — "Unsupported get request.
- * Object with ID 'X' does not exist, cannot be loaded due to missing
- * permissions, or does not support this operation".
+ * el GET vuelve con un error que mete "no existe" y "no tienes permiso" en la
+ * misma frase. Medido contra una publicación borrada de verdad (Urbystore,
+ * octubre de 2026, token de página y app nueva):
  *
- * Ese mensaje es ambiguo a propósito: Meta usa el mismo para "no existe" y
- * para "no tienes permiso". Por eso esto SÓLO se consulta justo después de
- * haber leído el feed de esa página con ese mismo token: si el feed contestó,
- * el token sirve y tiene permiso, y entonces un 100/33 sobre una publicación
- * suelta significa que la borraron. Fuera de ese contexto no se puede concluir
- * nada, y confundirlo con un token caducado (190) o con un permiso que falta
- * (200/10) vaciaría la bandeja entera.
+ *   (#10) Object does not exist, cannot be loaded due to missing permission
+ *   or reviewable feature, or does not support this operation.
+ *
+ * Según el endpoint y el tipo de token, el mismo caso también sale como código
+ * 100 con subcódigo 33 ("Unsupported get request"), así que se aceptan los dos.
+ *
+ * IMPORTANTE: esto NO distingue el borrado del permiso. Es imposible mirando
+ * sólo el error, porque Meta manda la misma frase para ambos. Quien distingue
+ * es el control de marcarBorradasDelFeed(); no usar esto sin ese control
+ * delante o un token a medio morir vaciaría la bandeja de un negocio.
  */
 function postYaNoExiste(err) {
   const m = err?.response?.data?.error;
-  if (!m || m.code !== 100) return false;
+  if (!m) return false;
+  if (m.code !== 10 && m.code !== 100) return false;
   return (
     m.error_subcode === 33 ||
     /does not exist|unsupported get request/i.test(m.message || '')
@@ -563,6 +567,15 @@ function postYaNoExiste(err) {
  * se llevaría esas por delante — justo las que más comentarios reciben. Así
  * que la ausencia es sólo una sospecha, y cada sospechosa se verifica con un
  * GET directo: si Graph la devuelve, está viva (oscura, pero viva).
+ *
+ * EL CONTROL, QUE ES LO QUE HACE ESTO SEGURO
+ *
+ * El error de Meta no dice si la publicación no existe o si el token no tiene
+ * permiso: manda las dos cosas en la misma frase. Así que antes de creerle se
+ * prueba el token contra una publicación que SÍ existe — una de las que acaba
+ * de devolver el feed. Si el control también falla, el problema es el permiso
+ * y no se marca nada. Si el control pasa y la sospechosa falla, la diferencia
+ * entre las dos llamadas es el objeto, no el permiso: la borraron.
  *
  * LA FRONTERA
  *
@@ -606,19 +619,33 @@ async function marcarBorradasDelFeed({ id_configuracion, pagina, filas }) {
     if (!sospechosas.length) return 0;
 
     const proof = appsecretProof(pagina.page_access_token, pagina.fb_app_id);
-    let borradas = 0;
+    const pedirPost = (postId) =>
+      axios.get(`${GRAPH_BASE}/${encodeURIComponent(postId)}`, {
+        params: {
+          fields: 'id',
+          access_token: pagina.page_access_token,
+          ...(proof ? { appsecret_proof: proof } : {}),
+        },
+        timeout: 8000,
+      });
 
+    // El control: una publicación que el feed acaba de devolver, así que
+    // existe con certeza. Si ni esa se puede leer, el token no da para esto.
+    try {
+      await pedirPost(vivos[0]);
+    } catch (err) {
+      console.warn(
+        `[FB_COMENT][FEED] ${pagina.page_name || pagina.page_id}: no se ` +
+          `revisan borradas, el control falló (${describirErrorMeta(err)})`,
+      );
+      return 0;
+    }
+
+    let borradas = 0;
     await Promise.allSettled(
       sospechosas.map(async (post) => {
         try {
-          await axios.get(`${GRAPH_BASE}/${encodeURIComponent(post.post_id)}`, {
-            params: {
-              fields: 'id',
-              access_token: pagina.page_access_token,
-              ...(proof ? { appsecret_proof: proof } : {}),
-            },
-            timeout: 8000,
-          });
+          await pedirPost(post.post_id);
           // Contestó: existe. Es una publicación oscura, no un borrado.
         } catch (err) {
           if (!postYaNoExiste(err)) return;
@@ -808,8 +835,8 @@ async function leerFeedDeLasPaginas({ id_configuracion, forzar }) {
             (forzar ? ' · a mano' : ''),
         );
 
-        /* Al final y con el token ya probado: la verificación de borradas se
-           apoya en que esta lectura del feed funcionó (ver postYaNoExiste). */
+        /* Al final y con el token ya probado por esta misma lectura del feed:
+           de eso depende que el control de abajo signifique algo. */
         res.borradas += await marcarBorradasDelFeed({
           id_configuracion,
           pagina,
