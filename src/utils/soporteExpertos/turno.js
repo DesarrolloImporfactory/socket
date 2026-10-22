@@ -142,8 +142,10 @@ async function prepararTurno(p) {
   // ── Qué hacer con un adjunto que no se pudo leer y vino solo ──────────
   if (adj.soloIlegible) {
     bloques.push(
-      'ℹ️ Llegó algo que no puedes abrir y el cliente no escribió para qué es. Si en la conversación ya se sabe de qué se trata, ' +
-        `aplica el caso de los adjuntos de tus instrucciones; si no se sabe, responde exactamente: ${T.MENSAJE_ADJUNTO_SIN_TEXTO}`,
+      'ℹ️ Llegó algo que no puedes abrir y el cliente no escribió para qué es. Si en esta conversación TÚ le pediste una captura, la proforma o el comprobante, ' +
+        'o en sus últimos mensajes habló de un pago, de una cotización o de un proveedor, es eso: NO le preguntes qué necesita. ' +
+        `Responde exactamente: «Recibí lo que enviaste. ${T.CIERRE_ASESOR}» (o «${T.MENSAJE_RECIBIDO}» si ya le avisaste que un asesor lo retoma). ` +
+        `Si no se sabe de qué se trata, responde exactamente: ${T.MENSAJE_ADJUNTO_SIN_TEXTO}`,
     );
   }
 
