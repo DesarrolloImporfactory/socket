@@ -12,6 +12,7 @@ const handleJWTExpiredError = () => {
   err.code = 'TOKEN_EXPIRED';
   return err;
 };
+
 const handleJWTError = () => {
   const err = new AppError('Sesión inválida. Vuelve a iniciar sesión.', 401);
   err.code = 'TOKEN_INVALID';
