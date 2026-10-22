@@ -231,8 +231,8 @@ const cifras = (t) => (String(t).match(/\d+(?:[.,]\d+)?/g) || []).map(numero);
 /* Dónde SÍ se puede repetir una cifra que escribió el cliente: como código
    (su cotización, su marca, su guía) o como cantidad de unidades. */
 const RE_CODIGO_DEL_CLIENTE = new RegExp(
-  '((?:cotizaci[oó]n(?:es)?|pedido|orden|gu[ií]a|referencia|marca|c[oó]digo|ticket|caso)\\s*(?:n\\.?\\s*[ºo°]?\\.?|nro\\.?|n[uú]mero|#|:)?\\s*|#\\s*|\\b[A-Za-z]{2}-)(\\d[\\d]*)|' +
-    '(\\d+)(\\s*(?:unidades|cajas|piezas|pcs|productos|bultos)\\b)',
+  '((?:cotizaci[oó]n(?:es)?|pedido|orden|gu[ií]a|referencia|marca|c[oó]digo|ticket|caso|producto|modelo|opci[oó]n)\\s*(?:n\\.?\\s*[ºo°]?\\.?|nro\\.?|n[uú]mero|#|:)?\\s*|#\\s*|\\b[A-Za-z]{2}-)(\\d[\\d]*)|' +
+    '(\\d+)(\\s*(?:unidades|cajas|piezas|pcs|productos|bultos|proveedores|marcas)\\b)',
   'giu',
 );
 
@@ -251,8 +251,11 @@ const codigoNormal = (c) => sinTildes(c).replace(/[^a-z0-9]/g, '');
    bodega de destino») explica el proceso: no afirma nada de la carga de este
    cliente. Sin esto, «¿cómo funciona la importación?» se cambiaba por el paso
    a asesor (simulación del 17-oct). Se quita solo la frase o línea que nombra
-   4 pasos distintos o más: «tu carga está en tránsito» sigue frenándose. */
-const RE_PASO_DEL_PROCESO = /cotizacion registrada|recibido en china|en contenedor|en transito|en aduana|liberad[oa]|bodega de destino/g;
+   4 pasos distintos o más: «tu carga está en tránsito» sigue frenándose.
+   «Bodega de China» y «en el barco» son las etapas que muestra la herramienta
+   Seguimiento de mi carga: describirla se cambiaba por el paso a asesor
+   (simulación del 18-oct, «¿hay tracking en la plataforma?»). */
+const RE_PASO_DEL_PROCESO = /cotizacion registrada|recibido en china|bodega de china|en contenedor|en el barco|en transito|en aduana|liberad[oa]|bodega de destino/g;
 /* «Tu mensaje llegó cortado», «el enlace sí me llegó»: ese «llegó» es de un
    mensaje, no de la carga (4 respuestas cambiadas en la simulación del 17-oct). */
 const RE_LLEGO_NO_ES_CARGA =
@@ -264,6 +267,9 @@ function sinListaDePasos(texto) {
     .map((f) => plano(f).replace(RE_LLEGO_NO_ES_CARGA, ' '))
     .join(' ');
 }
+
+const RE_PARTE_DEL_CAMINO =
+  /(?<![\p{L}\d])(?:(?:partes?|pasos?)\s+[1-6](?:\s*(?:,|y|o|a|-)\s*[1-6])*|[1-6]\s+(?:partes|pasos|herramientas)|3\s+datos)(?![\p{L}\d])/giu;
 
 /** Cifra, plazo, monto, enlace, correo o estado sin respaldo. Devuelve el motivo o null. */
 function datoSinRespaldo(texto, firme, eco, estado = firme) {
@@ -325,7 +331,12 @@ function datoSinRespaldo(texto, firme, eco, estado = firme) {
     return cod !== undefined ? `${pre} ` : ` ${unidad}`;
   });
   // «1. …», «2) …» al inicio de una línea son el orden de los pasos, no un dato.
-  const sinOrden = sinCodigos.replace(/^[ \t]*\d{1,2}[.)][ \t]+/gm, '');
+  // Tampoco las partes del camino del prompt («estás en la parte 2», «las
+  // partes 1 y 2», «los 3 datos», «6 herramientas»): en la simulación del
+  // 18-oct cambiaban por el paso a asesor la respuesta a «aún no tengo proveedor».
+  const sinOrden = sinCodigos
+    .replace(/^[ \t]*\d{1,2}[.)][ \t]+/gm, '')
+    .replace(RE_PARTE_DEL_CAMINO, ' ');
   for (const c of cifras(sinOrden)) {
     if (!delRespaldo.has(c)) return `traía la cifra «${c}», que no sale de un dato leído`;
   }
@@ -349,8 +360,8 @@ const RE_OFRECE = new RegExp(
     'reviso|verifico|valido|cambio|restablezco|reseteo|reinicio|genero|calculo|averiguo|reembolso|reembolsamos|devuelvo|devolvemos|gestiono|tramito|soluciono|resuelvo|arreglo|activo|habilito|desbloqueo|rastreo)|' +
     // «lo reviso», «la cotizo», «lo consulto con logística»
     '(?:lo|la|los|las)\\s+(?:reviso|verifico|valido|cotizo|consulto|gestiono|soluciono|resuelvo|averiguo)|' +
-    // «puedo cotizarte», «voy a revisar», «déjame verificar» (no «no puedo…»)
-    `(?<!no\\s)(?<!no te\\s)(?<!tampoco\\s)(?:puedo|podemos|voy a|vamos a|d[eé]jame|perm[ií]teme)\\s+(?:(?:te|le|lo|la|les)\\s+)?(?:${HACER})(?:te|le|les|lo|la|los|las|telo|tela|selo|sela)?|` +
+    // «puedo cotizarte», «voy a revisar», «déjame verificar» (no «no puedo…» ni «no te los puedo confirmar»)
+    `(?<!(?:no|tampoco)(?:\\s+(?:te|le|les|lo|la|los|las|se))*\\s+)(?:puedo|podemos|voy a|vamos a|d[eé]jame|perm[ií]teme)\\s+(?:(?:te|le|lo|la|les)\\s+)?(?:${HACER})(?:te|le|les|lo|la|los|las|telo|tela|selo|sela)?|` +
     // «¿quieres que te pidamos más fotos?», «si quieres te cotizo»
     '(?:quieres|deseas|necesitas|prefieres|te gustar[ií]a) que\\s+(?:(?:te|le|lo|la|les|se)\\s+)*(?:cotic|llam|agend|program|busqu|consig|revis|verifi|valid|comprob|confirm|cambi|restablez|resete|gener|calcul|averig|reembols|devolv|devuelv|gestion|tramit|solucion|resolv|resuelv|arregl|activ|habilit|desbloque|rastre|pid|solicit|envi|mand)\\p{L}*|' +
     // «ya verifiqué tu pago», «revisé tu captura»

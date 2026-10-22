@@ -12,6 +12,18 @@ const LINKS = {
   // Enlace fijo de la clase en vivo: abre la sala solo cuando el calendario de
   // la plataforma dice que hay clase (imporsuit-pro, docs/enlace_clase.md).
   clase: 'https://new.imporsuitpro.com/clase',
+  // Las 6 herramientas de «Importaciones» en la plataforma nueva (imporfactory.app,
+  // rutas sacadas de su código el 18-oct-2026). El bot manda al cliente a la
+  // herramienta exacta en vez de pasarlo a un asesor.
+  importaciones: 'https://imporfactory.app/importaciones',
+  ideasProductos: 'https://imporfactory.app/ideas-productos',
+  proveedores: 'https://imporfactory.app/proveedores',
+  calculadora: 'https://imporfactory.app/calculadora',
+  seguimientoCarga: 'https://imporfactory.app/seguimiento-carga',
+  infoaduana: 'https://imporfactory.app/infoaduana',
+  imporia: 'https://imporfactory.app/imporia',
+  checklist: 'https://imporfactory.app/checklist',
+  cursoMetodoYuan: 'https://imporfactory.app/cursos/30',
 };
 
 /* ── Los de la versión 1 (sin cambios) ── */

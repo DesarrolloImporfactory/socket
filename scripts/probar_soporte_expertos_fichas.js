@@ -527,6 +527,46 @@ const NADA = [
     prueba('el rescate trae una sola ficha y nunca de otro tema', r(largo).length <= 1 && UMBRAL_RESCATE < UMBRAL_CERCANIA);
   }
 
+  console.log('\n15. Herramientas de imporfactory.app: la prueba en vivo de Daniel (18-oct-2026)');
+  {
+    const r = (q) => buscarConRescate(real, q, { pais: 'ec' }).map((y) => y.ficha);
+    const avion = r('Y SI VIENE EN AVION.?');
+    prueba(`«Y SI VIENE EN AVION.?» trae la ficha de avión y ya no pasa a precios (${avion.map((f) => f.id).join(', ')})`, avion[0]?.id === 'avion-o-courier' && !avion[0].pasar_a && avion[0].pasos.some((x) => x.includes(T.LINKS.ideasProductos)));
+    const prov = r('AUN NO TENGO PROVEEDOR.');
+    prueba(`«AUN NO TENGO PROVEEDOR.» trae el directorio con su enlace (${prov.map((f) => f.id).join(', ')})`, prov[0]?.id === 'directorio-de-proveedores' && prov[0].pasos.some((x) => x.includes(T.LINKS.proveedores)));
+    prueba('«qué herramientas tiene la plataforma» trae las 6 con su enlace', r('que herramientas tiene la plataforma')[0]?.id === 'herramientas-de-la-plataforma' && ['ideasProductos', 'proveedores', 'calculadora', 'seguimientoCarga', 'infoaduana', 'imporia'].every((k) => r('que herramientas tiene la plataforma')[0].pasos.some((x) => x.includes(T.LINKS[k]))));
+    prueba('la calculadora ya contesta sola, con su enlace', r('donde esta la calculadora')[0]?.id === 'calculadora-de-costos' && !!r('donde esta la calculadora')[0].respuesta_base && r('donde esta la calculadora')[0].enlace === T.LINKS.calculadora);
+    prueba('ninguna ficha apunta a una lección de la plataforma vieja', require('../src/utils/soporteExpertos/fichas_bot.json').every((f) => !/new\.imporsuitpro\.com\/curso\?/.test(`${f.enlace} ${f.respuesta_base} ${(f.pasos || []).join(' ')}`)));
+    const p3 = promptSoporteExpertos();
+    prueba('el prompt trae las herramientas con sus enlaces', ['ideasProductos', 'proveedores', 'calculadora', 'seguimientoCarga', 'infoaduana', 'imporia', 'checklist'].every((k) => p3.includes(T.LINKS[k])));
+    prueba('«aún no tengo proveedor» tras el paso a asesor NO es «Recibido»', /«aún no tengo proveedor»[^\n]*NO es «Recibido»/.test(p3));
+    prueba('la meta es resolver en la primera respuesta', /lo resuelva con tu PRIMERA respuesta/.test(p3));
+  }
+
+  console.log('\n16. Juicio a ciegas de 90 conversaciones (18-oct-2026): la guardia ya no tapa respuestas buenas');
+  {
+    const { datoSinRespaldo } = require('../src/utils/soporteExpertos/guardia');
+    const firme = Object.values(T.LINKS).join(' ');
+    const pasa = (t, eco = '') => datoSinRespaldo(t, firme, eco, '') === null;
+    prueba('«estás en la parte 2… le pides 3 datos» no es una cifra inventada', pasa('Aún no tienes proveedor, así que estás en la parte 2. A cada uno le pides 3 datos.'));
+    prueba('«las partes 1 y 2 del camino» tampoco', pasa('Como recién empiezas, vas en las partes 1 y 2 del camino.'));
+    prueba('repetir «3 proveedores» que dijo el cliente pasa; «4 proveedores» no', pasa('Si con 3 proveedores va junto, lo confirma una persona.', 'tengo 3 proveedores distintos') && !pasa('Son 4 proveedores.', 'tengo 3 proveedores'));
+    prueba('describir las etapas de Seguimiento de mi carga no afirma nada de SU carga', pasa('Ves en qué parte va tu pedido: en la bodega de China, en el barco, en aduana o ya en la bodega de destino.'));
+    prueba('«tu carga ya está en aduana» sin dato sigue frenándose', !pasa('Tu carga ya está en aduana.'));
+    prueba('«no te los puedo confirmar» no es un ofrecimiento; «puedo confirmarte» sí', ofreceLoQueNoPuede('Los días de tránsito no te los puedo confirmar por aquí.', '') === null && !!ofreceLoQueNoPuede('Puedo confirmarte la fecha.', ''));
+    const r = (q) => buscarConRescate(real, q, { pais: 'ec' }).map((y) => y.ficha.id);
+    prueba('«compro en alibaba o en yiwugo» trae el directorio', r('compro en alibaba o en yiwugo')[0] === 'directorio-de-proveedores');
+    prueba('«esos precios ya incluyen todo?» trae que la herramienta es una referencia', r('esos precios ya incluyen todo?')[0] === 'precio-de-las-herramientas');
+    prueba('«vi en ideas de productos… me interesa» trae cómo cotizarlo', r('vi en ideas de productos unas freidoras de aire, me interesa')[0] === 'me-interesa-producto-de-ideas');
+  }
+
+  console.log('\n17. Mensajes reales del fin de semana 17-19 oct: repetir «producto 2» del cliente');
+  {
+    const { datoSinRespaldo } = require('../src/utils/soporteExpertos/guardia');
+    const pasa = (t, eco = '') => datoSinRespaldo(t, '', eco, '') === null;
+    prueba('«producto 2» que escribió el cliente se puede repetir; «producto 3» no', pasa('Recibí los datos del producto 2.', 'Producto 2 me interesa') && !pasa('Recibí los datos del producto 3.', 'Producto 2 me interesa'));
+  }
+
   console.log(`\n${fallos ? `HAY FALLAS: ${fallos} fallan, ${ok} pasan` : `TODO BIEN: ${ok} pasan, 0 fallan`}`);
   process.exit(fallos ? 1 : 0);
 })().catch((e) => {

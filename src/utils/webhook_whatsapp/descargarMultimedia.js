@@ -47,16 +47,33 @@ async function descargarAudioWhatsapp(mediaId, accessToken) {
     });
 
     const audioData = audioRes.data;
-    const mimeType = audioRes.headers['content-type'];
+    // El header puede venir con parametros: 'audio/ogg; codecs=opus'
+    const mimeType = (audioRes.headers['content-type'] || '')
+      .split(';')[0]
+      .trim()
+      .toLowerCase();
 
-    // Verificar si el tipo MIME es 'audio/ogg'
-    if (mimeType !== 'audio/ogg') {
+    // WhatsApp no manda solo notas de voz: un audio reenviado o adjuntado como
+    // archivo llega con otro MIME. Antes solo se aceptaba 'audio/ogg' y el
+    // resto se descartaba en silencio (reproductor vacio, "audio en 0").
+    const EXT_AUDIO = {
+      'audio/ogg': 'ogg',
+      'audio/opus': 'ogg',
+      'audio/mpeg': 'mp3',
+      'audio/mp3': 'mp3',
+      'audio/mp4': 'm4a',
+      'audio/x-m4a': 'm4a',
+      'audio/aac': 'aac',
+      'audio/amr': 'amr',
+      'audio/wav': 'wav',
+      'audio/x-wav': 'wav',
+      'audio/webm': 'webm',
+    };
+    const extension = EXT_AUDIO[mimeType];
+    if (!extension) {
       await logError(`❌ Tipo de archivo no válido: ${mimeType}`);
       return null;
     }
-
-    // Determinar extensión y nombre del archivo, forzando .ogg
-    const extension = 'ogg'; // Forzamos la extensión a .ogg
     const fileName = `${mediaId}.${extension}`;
     const fullPath = path.join(audioDir, fileName);
 
@@ -69,6 +86,9 @@ async function descargarAudioWhatsapp(mediaId, accessToken) {
     // Devolver ruta relativa para guardar en DB
     return dominio + `/uploads/webhook_whatsapp/recibidos/audios/${fileName}`;
   } catch (err) {
+    if (err && err.code === 'ENOSPC') {
+      await logError('🔴🔴 DISCO LLENO (ENOSPC) — se esta PERDIENDO multimedia entrante. Revisar df -h YA.');
+    }
     await logError(`❌ Error al descargar audio: ${err.message}`);
     return null;
   }
@@ -128,9 +148,11 @@ async function descargarImagenWhatsapp(mediaId, accessToken) {
     });
 
     const imageData = imageRes.data;
-    const mimeType = imageRes.headers['content-type'];
+    const mimeType = (imageRes.headers['content-type'] || '')
+      .split(';')[0].trim().toLowerCase();
 
-    const validImageTypes = ['image/jpeg', 'image/png', 'image/gif'];
+    const validImageTypes = ['image/jpeg', 'image/jpg', 'image/png',
+                             'image/gif', 'image/webp', 'image/bmp'];
     if (!validImageTypes.includes(mimeType)) {
       await logError(`❌ Tipo de archivo no válido: ${mimeType}`);
       return null;
@@ -147,6 +169,9 @@ async function descargarImagenWhatsapp(mediaId, accessToken) {
 
     return `${dominio}/uploads/webhook_whatsapp/recibidos/imagenes/${fileName}`;
   } catch (err) {
+    if (err && err.code === 'ENOSPC') {
+      await logError('🔴🔴 DISCO LLENO (ENOSPC) — se esta PERDIENDO multimedia entrante. Revisar df -h YA.');
+    }
     await logError(`❌ Error al descargar imagen: ${err.message}`);
     return null;
   }
@@ -240,6 +265,9 @@ async function descargarDocumentoWhatsapp(
       ruta: `${dominio}/uploads/webhook_whatsapp/recibidos/documentos/${fileName}`,
     };
   } catch (err) {
+    if (err && err.code === 'ENOSPC') {
+      await logError('🔴🔴 DISCO LLENO (ENOSPC) — se esta PERDIENDO multimedia entrante. Revisar df -h YA.');
+    }
     await logError(`❌ Error al descargar documento: ${err.message}`);
     return null;
   }
@@ -299,9 +327,11 @@ async function descargarVideoWhatsapp(mediaId, accessToken) {
     });
 
     const videoData = videoRes.data;
-    const mimeType = videoRes.headers['content-type'];
+    const mimeType = (videoRes.headers['content-type'] || '')
+      .split(';')[0].trim().toLowerCase();
 
-    const validVideoTypes = ['video/mp4', 'video/avi', 'video/quicktime'];
+    const validVideoTypes = ['video/mp4', 'video/avi', 'video/quicktime',
+                             'video/3gpp', 'video/webm', 'video/x-matroska'];
     if (!validVideoTypes.includes(mimeType)) {
       await logError(`❌ Tipo de archivo no válido: ${mimeType}`);
       return null;
@@ -319,6 +349,9 @@ async function descargarVideoWhatsapp(mediaId, accessToken) {
 
     return `${dominio}/uploads/webhook_whatsapp/recibidos/videos/${fileName}`;
   } catch (err) {
+    if (err && err.code === 'ENOSPC') {
+      await logError('🔴🔴 DISCO LLENO (ENOSPC) — se esta PERDIENDO multimedia entrante. Revisar df -h YA.');
+    }
     await logError(`❌ Error al descargar video: ${err.message}`);
     return null;
   }
@@ -396,6 +429,9 @@ async function descargarStickerWhatsapp(mediaId, accessToken) {
 
     return `${dominio}/uploads/webhook_whatsapp/recibidos/stickers/${fileName}`;
   } catch (err) {
+    if (err && err.code === 'ENOSPC') {
+      await logError('🔴🔴 DISCO LLENO (ENOSPC) — se esta PERDIENDO multimedia entrante. Revisar df -h YA.');
+    }
     await logError(`❌ Error al descargar sticker: ${err.message}`);
     return null;
   }
