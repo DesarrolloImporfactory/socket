@@ -522,6 +522,161 @@ const MS_PISO_FORZADO = 20 * 1000;
  * cuentas usando la bandeja y el arranque se nota, ahí sí se persiste. */
 const ultimaSincro = new Map();
 
+// Cuántas publicaciones ausentes del feed se verifican contra Graph en cada
+// sincronización. Cada una es una llamada, así que se limita: lo normal es que
+// no haya ninguna, y cuando el negocio borra algo, una o dos.
+const TOPE_VERIFICAR_BORRADAS = 10;
+
+/**
+ * ¿Este error de Graph significa que la publicación ya no existe?
+ *
+ * Meta no contesta 404 cuando se borra una publicación: el id queda huérfano y
+ * el GET vuelve con un error que mete "no existe" y "no tienes permiso" en la
+ * misma frase. Medido contra una publicación borrada de verdad (Urbystore,
+ * octubre de 2026, token de página y app nueva):
+ *
+ *   (#10) Object does not exist, cannot be loaded due to missing permission
+ *   or reviewable feature, or does not support this operation.
+ *
+ * Según el endpoint y el tipo de token, el mismo caso también sale como código
+ * 100 con subcódigo 33 ("Unsupported get request"), así que se aceptan los dos.
+ *
+ * IMPORTANTE: esto NO distingue el borrado del permiso. Es imposible mirando
+ * sólo el error, porque Meta manda la misma frase para ambos. Quien distingue
+ * es el control de marcarBorradasDelFeed(); no usar esto sin ese control
+ * delante o un token a medio morir vaciaría la bandeja de un negocio.
+ */
+function postYaNoExiste(err) {
+  const m = err?.response?.data?.error;
+  if (!m) return false;
+  if (m.code !== 10 && m.code !== 100) return false;
+  return (
+    m.error_subcode === 33 ||
+    /does not exist|unsupported get request/i.test(m.message || '')
+  );
+}
+
+/**
+ * Marca como borradas las publicaciones que Facebook ya no tiene.
+ *
+ * POR QUÉ NO BASTA LA AUSENCIA EN EL FEED
+ *
+ * `published_posts` devuelve lo que la página publicó en su muro, y hay
+ * publicaciones legítimas que nunca salen ahí: las "oscuras" del lanzador de
+ * anuncios existen sólo dentro de la campaña. Dar por borrado todo lo ausente
+ * se llevaría esas por delante — justo las que más comentarios reciben. Así
+ * que la ausencia es sólo una sospecha, y cada sospechosa se verifica con un
+ * GET directo: si Graph la devuelve, está viva (oscura, pero viva).
+ *
+ * EL CONTROL, QUE ES LO QUE HACE ESTO SEGURO
+ *
+ * El error de Meta no dice si la publicación no existe o si el token no tiene
+ * permiso: manda las dos cosas en la misma frase. Así que antes de creerle se
+ * prueba el token contra una publicación que SÍ existe — una de las que acaba
+ * de devolver el feed. Si el control también falla, el problema es el permiso
+ * y no se marca nada. Si el control pasa y la sospechosa falla, la diferencia
+ * entre las dos llamadas es el objeto, no el permiso: la borraron.
+ *
+ * LA FRONTERA
+ *
+ * El feed viene limitado a TOPE_PUBLICACIONES, así que todo lo anterior a la
+ * más antigua que devolvió está ausente por recorte, no por borrado. Sólo se
+ * sospecha de lo publicado desde esa fecha en adelante. La consecuencia, dicha
+ * sin maquillaje: una publicación vieja que borren hoy no se detecta. Se
+ * arreglaría paginando el feed, pero son llamadas a Graph a cambio de limpiar
+ * filas que nadie está mirando.
+ *
+ * NO BORRA NADA. Pone `eliminado_at` y la bandeja deja de mostrarla; los
+ * comentarios y lo que la IA respondió siguen en la base. Si la publicación
+ * reaparece en el feed, el ON DUPLICATE KEY de la sincronización vuelve a
+ * dejar la columna en NULL.
+ *
+ * Nunca lanza: esto es limpieza, no puede tumbar una sincronización.
+ */
+async function marcarBorradasDelFeed({ id_configuracion, pagina, filas }) {
+  try {
+    const fechas = filas
+      .map((f) => f.publicado_at?.getTime?.())
+      .filter((t) => Number.isFinite(t));
+    if (!fechas.length) return 0;
+    const frontera = new Date(Math.min(...fechas));
+
+    const vivos = filas.map((f) => f.post_id);
+    const marcadores = vivos.map(() => '?').join(', ');
+    const sospechosas = await db.query(
+      `SELECT id_facebook_post, post_id FROM facebook_posts
+        WHERE id_configuracion = ? AND page_id = ?
+          AND eliminado_at IS NULL
+          AND publicado_at >= ?
+          AND post_id NOT IN (${marcadores})
+        ORDER BY publicado_at DESC
+        LIMIT ${TOPE_VERIFICAR_BORRADAS}`,
+      {
+        replacements: [id_configuracion, pagina.page_id, frontera, ...vivos],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    if (!sospechosas.length) return 0;
+
+    const proof = appsecretProof(pagina.page_access_token, pagina.fb_app_id);
+    const pedirPost = (postId) =>
+      axios.get(`${GRAPH_BASE}/${encodeURIComponent(postId)}`, {
+        params: {
+          fields: 'id',
+          access_token: pagina.page_access_token,
+          ...(proof ? { appsecret_proof: proof } : {}),
+        },
+        timeout: 8000,
+      });
+
+    // El control: una publicación que el feed acaba de devolver, así que
+    // existe con certeza. Si ni esa se puede leer, el token no da para esto.
+    try {
+      await pedirPost(vivos[0]);
+    } catch (err) {
+      console.warn(
+        `[FB_COMENT][FEED] ${pagina.page_name || pagina.page_id}: no se ` +
+          `revisan borradas, el control falló (${describirErrorMeta(err)})`,
+      );
+      return 0;
+    }
+
+    let borradas = 0;
+    await Promise.allSettled(
+      sospechosas.map(async (post) => {
+        try {
+          await pedirPost(post.post_id);
+          // Contestó: existe. Es una publicación oscura, no un borrado.
+        } catch (err) {
+          if (!postYaNoExiste(err)) return;
+          await db.query(
+            `UPDATE facebook_posts SET eliminado_at = NOW()
+              WHERE id_facebook_post = ? AND eliminado_at IS NULL`,
+            {
+              replacements: [post.id_facebook_post],
+              type: db.QueryTypes.UPDATE,
+            },
+          );
+          borradas += 1;
+          console.log(
+            `[FB_COMENT][FEED] ${pagina.page_name || pagina.page_id}: ` +
+              `publicación ${post.post_id} borrada en Facebook, ` +
+              `fuera de la bandeja`,
+          );
+        }
+      }),
+    );
+
+    return borradas;
+  } catch (err) {
+    console.warn(
+      `[FB_COMENT][FEED] no se pudo revisar las publicaciones borradas de ` +
+        `${pagina.page_name || pagina.page_id}: ${err?.message}`,
+    );
+    return 0;
+  }
+}
+
 /**
  * Trae al inbox las publicaciones de la página, hayan recibido comentarios o
  * no.
@@ -558,6 +713,7 @@ async function leerFeedDeLasPaginas({ id_configuracion, forzar }) {
     paginas: 0,
     vistas: 0,
     nuevas: 0,
+    borradas: 0,
     saltadas: 0,
     errores: [],
   };
@@ -653,7 +809,11 @@ async function leerFeedDeLasPaginas({ id_configuracion, forzar }) {
              media_url     = VALUES(media_url),
              permalink_url = VALUES(permalink_url),
              publicado_at  = VALUES(publicado_at),
-             detalle_refrescado_at = NOW()`,
+             detalle_refrescado_at = NOW(),
+             /* Si una publicación que dimos por borrada reaparece en el feed,
+                vuelve a la bandeja. Es la válvula de escape de
+                marcarBorradasDelFeed(). */
+             eliminado_at  = NULL`,
           {
             replacements: filas.flatMap((f) => [
               id_configuracion,
@@ -674,6 +834,14 @@ async function leerFeedDeLasPaginas({ id_configuracion, forzar }) {
             `${filas.length} publicaciones · ${nuevas.length} nuevas` +
             (forzar ? ' · a mano' : ''),
         );
+
+        /* Al final y con el token ya probado por esta misma lectura del feed:
+           de eso depende que el control de abajo signifique algo. */
+        res.borradas += await marcarBorradasDelFeed({
+          id_configuracion,
+          pagina,
+          filas,
+        });
       } catch (err) {
         /* Que vuelva a intentarlo en un minuto y no en diez: un fallo de red
            no debería dejar la bandeja vieja un cuarto de hora. */
@@ -716,6 +884,7 @@ async function sincronizarPublicaciones({ id_configuracion, forzar = false }) {
       paginas: 0,
       vistas: 0,
       nuevas: 0,
+      borradas: 0,
       saltadas: 0,
       errores: [err?.message || 'error desconocido leyendo las publicaciones'],
     };
@@ -769,7 +938,7 @@ async function listarPosts({
        FROM facebook_posts fp
        LEFT JOIN productos_chat_center pr
          ON pr.id = fp.id_producto AND pr.id_configuracion = fp.id_configuracion
-      WHERE fp.id_configuracion = ? ${filtro}
+      WHERE fp.id_configuracion = ? AND fp.eliminado_at IS NULL ${filtro}
       ORDER BY COALESCE(fp.ultimo_comentario_at, fp.publicado_at, fp.created_at)
                  DESC,
                fp.id_facebook_post DESC
@@ -782,7 +951,7 @@ async function listarPosts({
 
   const [{ total }] = await db.query(
     `SELECT COUNT(*) AS total FROM facebook_posts
-      WHERE id_configuracion = ? ${filtro}`,
+      WHERE id_configuracion = ? AND eliminado_at IS NULL ${filtro}`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
 
@@ -831,6 +1000,9 @@ async function listarComentariosPlano({
   const donde = [
     'c.id_configuracion = ?',
     'c.eliminado_at IS NULL',
+    // La publicación borrada en Facebook también se va de la vista plana: si
+    // no, sus comentarios seguían saliendo acá sin hilo al que volver.
+    'p.eliminado_at IS NULL',
     'c.es_de_la_pagina = 0',
   ];
   const valores = [id_configuracion];
@@ -1043,7 +1215,7 @@ async function resumen({ id_configuracion }) {
             COALESCE(SUM(sin_responder), 0) AS comentarios_pendientes,
             COALESCE(SUM(id_producto IS NULL), 0) AS posts_sin_producto
        FROM facebook_posts
-      WHERE id_configuracion = ?`,
+      WHERE id_configuracion = ? AND eliminado_at IS NULL`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
   return {
