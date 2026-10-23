@@ -223,7 +223,14 @@ function usaCatalogoInline(id_configuracion) {
 // La 285 volvió a crecer (32.093) y la batería lo cazó otra vez. Con 34k
 // vuelve y entran 434 (32.824) y 485 (33.125). Quedan fuera 766 (35.600) y
 // 405/406 (~43k).
-const TOPE_CATALOGO_INLINE = 34000;
+//
+// ── 2026-10-22: sube a 40.000 ─────────────────────────────────
+// La 285 creció a 36.218 (75 productos) y volvió a file_search; la batería
+// lo cazó por cuarta vez. Con 40k vuelve y entra solo la 969 (37.780, sin
+// tráfico). Siguen en file_search 406 (41.377), 766 (42.056), 405 (44.559)
+// y 1401 (64.198). Si la 285 sigue creciendo, toca podar su catálogo o que
+// la batería compare contra el tope real y no contra un número fijo.
+const TOPE_CATALOGO_INLINE = 40000;
 
 // La pregunta de verdad: ¿esta columna va por inline en esta llamada?
 // Necesita los tokens del catálogo de la columna, no solo la cuenta.
