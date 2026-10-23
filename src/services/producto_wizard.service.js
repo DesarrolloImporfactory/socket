@@ -646,6 +646,20 @@ function traducirErrorOpenAI(e) {
   const status = e?.response?.status;
   const detalle = e?.response?.data?.error?.message || e.message;
   console.error(`[WIZARD_IA] OpenAI ${status || ''} — ${detalle}`);
+  // 404 "must be verified": la organización del cliente no pasó la
+  // verificación que OpenAI pide para gpt-5 (cfg 1478, 2026-10-22). El motor
+  // ya responde con el modelo de respaldo; si aun así llega acá, que el
+  // mensaje diga el arreglo real y no "OpenAI no respondió".
+  if (/must be verified/i.test(String(detalle))) {
+    const m = String(detalle).match(/model `([^`]+)`/);
+    return errorCon(
+      `Tu organización de OpenAI no está verificada para el modelo ${m ? m[1] : 'GPT-5'}. ` +
+        `Verifícala en https://platform.openai.com/settings/organization/general (tarda hasta 15 minutos en activarse) ` +
+        `o cambia el modelo de la columna a gpt-4.1-mini. No es un problema de saldo ni de la API Key.`,
+      'OPENAI_ORG_NO_VERIFICADA',
+      400,
+    );
+  }
   if (status === 401) {
     return errorCon(
       'Tu API Key de OpenAI no es válida o fue revocada. Revísala en Asistentes.',
