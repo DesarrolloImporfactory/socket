@@ -249,12 +249,15 @@ async function cargarTranscript(id_configuracion, id_cliente, limite = 30) {
     const esCliente = String(m.rol_mensaje) === '0';
     if (esCliente && parseUbicacionJson(texto)) {
       const geo = await geocodificarMensaje(texto).catch(() => null);
+      /* El código postal del pin va en el texto del CLIENTE: así el extractor
+         lo toma como "escrito por el cliente" (México lo exige para Dropi) y
+         el bot no se lo pide. */
       texto = geo
         ? `[UBICACIÓN GPS COMPARTIDA] Dirección: ${
             geo.direccion || 'sin calle identificable'
           } | Ciudad: ${geo.ciudad || 's/d'} | Provincia: ${
             geo.provincia || 's/d'
-          }`
+          }${geo.codigo_postal ? ` | Código postal: ${geo.codigo_postal}` : ''}`
         : '[UBICACIÓN GPS COMPARTIDA]';
     }
     // Recortes por code point: un slice() que parte un emoji deja un
@@ -650,6 +653,24 @@ function faltantesFicha(ficha, opts = {}) {
         `La opción del producto: pregúntale cuál quiere entre ${variantes.join(', ')} (ofrécele SOLO esas)`,
       );
     }
+  }
+
+  /* México en DOS pasos. El guion pide seis campos de golpe ("nombre,
+     teléfono, dirección, colonia, referencia y código postal") y el 59 % de
+     los que reciben ese mensaje no contesta (Ecuador, con cuatro campos:
+     34 %; medido 7 días al 22-10-2026 con scripts/analisis_bot/etapas.js).
+     Cuando todavía no hay NADA del destino, primero se pide solo el código
+     postal y la colonia (corto, y sirve para la cobertura); nombre, teléfono y
+     calle van en el mensaje siguiente. Si el cliente ya dio algo, se sigue
+     con lo que falte como siempre. La variedad del producto, si falta, va
+     delante (por eso este bloque está al final). */
+  if (mxDir && !f.codigo_postal && !f.direccion && !f.nombre && !f.telefono) {
+    const variedadPendiente = faltan.filter((x) => /^La opción del producto/.test(x));
+    faltan.length = 0;
+    faltan.push(
+      ...variedadPendiente,
+      'PRIMER PASO (México, en este mensaje pide SOLO esto): el código postal de 5 dígitos y la colonia donde recibe. Nombre, teléfono y calle con número se piden en el mensaje SIGUIENTE, aunque tu guion diga "último paso: dame nombre, teléfono, dirección y código postal" — nunca los seis datos de golpe',
+    );
   }
   return faltan;
 }

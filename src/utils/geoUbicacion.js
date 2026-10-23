@@ -122,9 +122,18 @@ async function reverseGeocode(lat, lng) {
       // el catálogo de Dropi lo conoce como "Medellín" a secas.
       .replace(/^per[ií]metro urbano\s+/i, '')
       .trim();
-    const provincia = String(
+    let provincia = String(
       a.state || PROVINCIA_EC_POR_ISO[a['ISO3166-2-lvl4']] || a.region || '',
     ).trim();
+    /* Ciudad de México: para Dropi la "ciudad" es la alcaldía (Iztapalapa,
+       Coyoacán…), que Nominatim trae en borough/city_district; `city` dice
+       "Ciudad de México" y eso no casa con el catálogo. */
+    let ciudadFinal = ciudad;
+    if (/ciudad de m[eé]xico/i.test(provincia) || /ciudad de m[eé]xico/i.test(ciudad)) {
+      const alcaldia = String(a.borough || a.city_district || a.suburb || '').trim();
+      if (alcaldia) ciudadFinal = alcaldia;
+      if (!/ciudad de m[eé]xico/i.test(provincia)) provincia = 'Ciudad de México';
+    }
     const direccion = [
       [a.road, a.house_number].filter(Boolean).join(' '),
       a.neighbourhood || a.suburb,
@@ -136,9 +145,12 @@ async function reverseGeocode(lat, lng) {
       lat: Number(lat),
       lng: Number(lng),
       direccion,
-      ciudad,
+      ciudad: ciudadFinal,
       provincia,
       pais: String(a.country || '').trim(),
+      /* México exige el código postal para cotizar en Dropi; el pin lo trae
+         casi siempre y así el cliente no tiene que escribirlo. */
+      codigo_postal: String(a.postcode || '').replace(/\s+/g, '').trim(),
       // display_name completo: sirve como referencia legible ("Calle X,
       // Barrio Y, Otavalo, Imbabura, Ecuador") para logs y transcripts.
       referencia: String(data?.display_name || '').trim(),

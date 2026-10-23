@@ -562,7 +562,7 @@ async function completarDatosConIA({
                 geo.direccion || 'sin calle identificable'
               } | Ciudad: ${geo.ciudad || 's/d'} | Provincia: ${
                 geo.provincia || 's/d'
-              }`
+              }${geo.codigo_postal ? ` | Código postal: ${geo.codigo_postal}` : ''}`
             : '[UBICACIÓN GPS COMPARTIDA]';
         }
         return `${rol}: ${texto.slice(0, 400)}`;
@@ -789,6 +789,13 @@ async function autoCrearOrdenDropi({
         datosBot.direccion = `${
           geoCliente.direccion || geoCliente.referencia
         } (ubicación GPS: ${geoCliente.mapa})`;
+        datosBot._fuente_ubicacion = true;
+      }
+      /* México: el código postal del pin evita que la orden caiga a manual
+         por "Debe ingresar un código postal" cuando el cliente mandó la
+         ubicación en vez de escribirlo. */
+      if (!datosBot.codigo_postal && /^\d{5}$/.test(String(geoCliente.codigo_postal || ''))) {
+        datosBot.codigo_postal = geoCliente.codigo_postal;
         datosBot._fuente_ubicacion = true;
       }
       ctx.datos_bot = datosBot;

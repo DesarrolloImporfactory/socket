@@ -4680,6 +4680,9 @@ async function textoDeUbicacion(texto) {
     `- Dirección: ${geo.direccion || '(sin calle identificable en el mapa)'}\n` +
     `- Ciudad: ${geo.ciudad || '(no identificada)'}\n` +
     `- Provincia: ${geo.provincia || '(no identificada)'}\n` +
+    (geo.codigo_postal
+      ? `- Código postal: ${geo.codigo_postal} (sale del mapa: NO se lo pidas al cliente)\n`
+      : '') +
     `Ya tienes su ubicación: NO se la vuelvas a pedir ni le pidas la ` +
     `dirección "en palabras", y NO le vuelvas a preguntar la ciudad ni la ` +
     `provincia si aquí aparecen. Si estás cerrando un pedido con entrega, usa ` +
@@ -5626,6 +5629,7 @@ module.exports = {
   // Lo usa simular_conversacion.js para armar el catálogo inline EXACTAMENTE
   // como producción: si el puente cambia acá, la simulación cambia sola.
   PUENTE_INLINE,
+  preguntaPorPrecio,
   // Exportados para reutilizar la generación IA desde el remarketing de IG
   // (no cambian el comportamiento de WhatsApp; son helpers puros de OpenAI).
   ejecutarAsistente,
