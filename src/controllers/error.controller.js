@@ -44,6 +44,7 @@ const handleBodyParseError = (err) => {
   );
 };
 
+
 const sendErrorDev = (err, res) => {
   logger.info(err);
   res.status(err.statusCode).json({
