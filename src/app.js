@@ -131,6 +131,8 @@ const marketingControlRouter = require('./routes/marketing_control.routes');
 
 const soporteChatRouter = require('./routes/soporte_chat.routes');
 const asistenteCuentaRouter = require('./routes/asistente_cuenta.routes');
+// Avisos de arranque (invitación a agendar la implementación con comercial)
+const onboardingRouter = require('./routes/onboarding.routes');
 
 const kanbanPlantillasAdminRouter = require('./routes/kanban_plantillas_admin.routes');
 
@@ -439,6 +441,7 @@ app.use('/api/v1/meta_ads', metaAdsRouter);
 app.use('/api/v1/marketing-control', marketingControlRouter);
 app.use('/api/v1/soporte_chat', soporteChatRouter);
 app.use('/api/v1/asistente_cuenta', asistenteCuentaRouter);
+app.use('/api/v1/onboarding', onboardingRouter);
 app.use('/api/v1/comunidades', comunidadesRouter);
 app.use('/api/v1/referidos', referidosRouter);
 app.use('/api/v1/trive_cart', webhookTriveRouter);
