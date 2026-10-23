@@ -10,6 +10,14 @@ exports.implementacion = catchAsync(async (req, res, next) => {
   const id_usuario = Number(req.sessionUser?.id_usuario);
   if (!id_usuario) return next(new AppError('Sesión sin cuenta', 401));
   const data = await svc.estadoImplementacion(id_usuario);
+  // El saludo lleva el nombre de la PERSONA (nombre_encargado del subusuario
+  // que inició sesión), no el del negocio: con usuarios.nombre salía
+  // «WAPP, tu WhatsApp…» en vez de «Daniel, tu WhatsApp…».
+  const persona = String(req.sessionUser?.nombre_encargado || '').trim();
+  if (data?.dueno) {
+    data.dueno.empresa = data.dueno.nombre || null;
+    if (persona) data.dueno.nombre = persona;
+  }
   res.json({ status: 'success', data });
 });
 

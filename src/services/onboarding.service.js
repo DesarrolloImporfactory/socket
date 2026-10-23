@@ -21,10 +21,22 @@
 const { db } = require('../database/config');
 
 const AVISO_IMPLEMENTACION = 'agendar_implementacion';
-const CALENDLY_IMPLEMENTACION =
-  process.env.CALENDLY_IMPLEMENTACION_URL ||
-  'https://calendly.com/comercial-imporchat/30min';
+
+// ── Ajustes (a propósito en código y no en .env: nadie los va a tocar desde
+//    el servidor; cuando cambien, cambian aquí con un commit) ──────────────
+// Agenda del equipo comercial.
+const CALENDLY_IMPLEMENTACION = 'https://calendly.com/comercial-imporchat/30min';
+// Interruptor general: con la agenda llena, poner en false y desplegar. Las
+// respuestas guardadas no se tocan; al volver a true cada cuenta sigue donde
+// estaba.
+const MODAL_ACTIVO = true;
+// «No por ahora» → se vuelve a ofrecer a los N días.
 const POSPONER_DIAS = 3;
+// «Agendar» solo dice que ABRIÓ la agenda, no que reservó. Si a la semana
+// sigue sin conectar nada, se le vuelve a ofrecer (con otro texto en el
+// front). 7 y no 5: la cita suele caer dentro de la semana y a los 5 días
+// podría salirle con la llamada ya agendada para el día siguiente.
+const REOFRECER_TRAS_AGENDAR_DIAS = 7;
 
 let tablaLista = false;
 async function ensureTabla() {
@@ -95,16 +107,20 @@ async function estadoImplementacion(id_usuario) {
     conexiones,
     aviso: aviso || null,
   };
+  if (!MODAL_ACTIVO) return { ...base, motivo: 'desactivado' };
   if (!dueno) return { ...base, motivo: 'sin_cuenta' };
   if (conexiones.conexiones > 1) return { ...base, motivo: 'varias_conexiones' };
   if (conexiones.conectadas > 0) return { ...base, motivo: 'ya_conectado' };
-  if (aviso?.estado === 'agendado') return { ...base, motivo: 'ya_agendo' };
   if (aviso?.estado === 'descartado') return { ...base, motivo: 'no_mostrar' };
-  if (
-    aviso?.estado === 'pospuesto' &&
-    aviso.pospuesto_hasta &&
-    new Date(aviso.pospuesto_hasta) > new Date()
-  ) {
+  const enEspera =
+    aviso?.pospuesto_hasta && new Date(aviso.pospuesto_hasta) > new Date();
+  if (aviso?.estado === 'agendado') {
+    // Abrió la agenda pero sigue sin conectar nada: a la semana se le vuelve
+    // a ofrecer, con otro texto (el front mira el motivo).
+    if (enEspera) return { ...base, motivo: 'ya_agendo' };
+    return { ...base, mostrar: true, motivo: 'agendo_sin_avanzar' };
+  }
+  if (aviso?.estado === 'pospuesto' && enEspera) {
     return { ...base, motivo: 'pospuesto' };
   }
   return { ...base, mostrar: true, motivo: 'sin_empezar' };
@@ -121,10 +137,11 @@ async function marcarMostrado(id_usuario) {
   );
 }
 
+// dias = en cuántos días se vuelve a ofrecer si sigue sin avanzar (null = nunca).
 const ACCIONES = {
-  agendo: { estado: 'agendado', pospuesto_hasta: null },
-  no_por_ahora: { estado: 'pospuesto', pospuesto_hasta: 'POSPONER' },
-  no_mostrar: { estado: 'descartado', pospuesto_hasta: null },
+  agendo: { estado: 'agendado', dias: REOFRECER_TRAS_AGENDAR_DIAS },
+  no_por_ahora: { estado: 'pospuesto', dias: POSPONER_DIAS },
+  no_mostrar: { estado: 'descartado', dias: null },
 };
 
 async function responderImplementacion({ id_usuario, accion, id_sub_usuario }) {
@@ -134,7 +151,7 @@ async function responderImplementacion({ id_usuario, accion, id_sub_usuario }) {
   await db.query(
     `INSERT INTO onboarding_avisos_chat_center
        (id_usuario, aviso, estado, pospuesto_hasta, respondido_por)
-     VALUES (?, ?, ?, ${a.pospuesto_hasta ? `DATE_ADD(NOW(), INTERVAL ${POSPONER_DIAS} DAY)` : 'NULL'}, ?)
+     VALUES (?, ?, ?, ${a.dias ? `DATE_ADD(NOW(), INTERVAL ${Number(a.dias)} DAY)` : 'NULL'}, ?)
      ON DUPLICATE KEY UPDATE
        estado = VALUES(estado),
        pospuesto_hasta = VALUES(pospuesto_hasta),
@@ -144,7 +161,7 @@ async function responderImplementacion({ id_usuario, accion, id_sub_usuario }) {
       type: db.QueryTypes.INSERT,
     },
   );
-  return { estado: a.estado, posponer_dias: a.pospuesto_hasta ? POSPONER_DIAS : null };
+  return { estado: a.estado, posponer_dias: a.dias };
 }
 
 module.exports = {
