@@ -33,6 +33,21 @@ const SOLO_ECOMMERCE = `
                WHERE ke.id_configuracion = m.id_configuracion
                  AND ke.es_dropi_principal = 1)`;
 
+/* Filtro por país (?pais=mx|ec|co). México cierra 5-7 % y Ecuador 20 %:
+   mezclados, el global baja cuando MX crece aunque ningún bot empeore
+   (análisis 2026-10-05). El país sale de configuraciones.pais (minúsculas).
+   Sin ?pais o con "todos": sin filtro. */
+function paisDe(req) {
+  const p = String(req.query.pais || '')
+    .trim()
+    .toLowerCase();
+  return /^[a-z]{2}$/.test(p) ? p : null;
+}
+const FILTRO_PAIS = `
+  AND EXISTS (SELECT 1 FROM configuraciones cp
+               WHERE cp.id = m.id_configuracion
+                 AND LOWER(cp.pais) = :pais)`;
+
 /* INDICADOR PRINCIPAL: % de cierre sobre quienes conversaron con el bot =
    cierres_respondieron ÷ convers_respondieron. Más de la mitad de las
    conversaciones son personas que escriben por el anuncio y nunca contestan:
@@ -69,10 +84,11 @@ exports.resumen = catchAsync(async (req, res) => {
   /* Con cuenta: filtro por id y sin la restricción e-commerce (la tabla
      ya solo lista cuentas e-commerce). Se usan replacements con nombre
      para no depender de la posición del '?' en cada consulta. */
+  const pais = idConfig ? null : paisDe(req);
   const filtro = idConfig
     ? 'AND m.id_configuracion = :cfg'
-    : SOLO_ECOMMERCE;
-  const base = { cfg: idConfig, d: dias, d2: dias * 2 };
+    : `${SOLO_ECOMMERCE}${pais ? FILTRO_PAIS : ''}`;
+  const base = { cfg: idConfig, d: dias, d2: dias * 2, pais };
   const CAMPOS_SUMA = camposSuma(await tieneCierresRespondieron());
 
   const [actual] = await q(
@@ -114,6 +130,7 @@ exports.resumen = catchAsync(async (req, res) => {
     status: 'success',
     data: {
       dias,
+      pais,
       id_configuracion: idConfig,
       actual: actual || {},
       previo: previo || {},
@@ -132,6 +149,7 @@ exports.resumen = catchAsync(async (req, res) => {
    ══════════════════════════════════════════════════════════════ */
 exports.cuentas = catchAsync(async (req, res) => {
   const dias = rangoDias(req);
+  const pais = paisDe(req);
   const conResp = await tieneCierresRespondieron();
   const sumResp = (cond) =>
     conResp
@@ -144,6 +162,7 @@ exports.cuentas = catchAsync(async (req, res) => {
     SELECT m.id_configuracion,
            c.nombre_configuracion,
            c.telefono,
+           LOWER(c.pais) AS pais,
            SUM(CASE WHEN m.fecha >= DATE_SUB(CURDATE(), INTERVAL :d DAY) THEN m.convers_ia ELSE 0 END)           AS convers_ia,
            SUM(CASE WHEN m.fecha >= DATE_SUB(CURDATE(), INTERVAL :d DAY) THEN m.convers_respondieron ELSE 0 END) AS convers_respondieron,
            SUM(CASE WHEN m.fecha >= DATE_SUB(CURDATE(), INTERVAL :d DAY) THEN m.auto_creadas ELSE 0 END)         AS auto_creadas,
@@ -163,12 +182,12 @@ exports.cuentas = catchAsync(async (req, res) => {
                AND kc.activo = 1 AND kc.activa_ia = 1) AS modelos
       FROM bot_metricas_diarias m
       LEFT JOIN configuraciones c ON c.id = m.id_configuracion
-     WHERE m.fecha >= DATE_SUB(CURDATE(), INTERVAL :d2 DAY) ${SIN_HOY} ${SOLO_ECOMMERCE}
-     GROUP BY m.id_configuracion, c.nombre_configuracion, c.telefono
+     WHERE m.fecha >= DATE_SUB(CURDATE(), INTERVAL :d2 DAY) ${SIN_HOY} ${SOLO_ECOMMERCE}${pais ? FILTRO_PAIS : ''}
+     GROUP BY m.id_configuracion, c.nombre_configuracion, c.telefono, c.pais
     HAVING convers_ia > 0 OR ordenes_total > 0
      ORDER BY convers_ia DESC
     `,
-    { d: dias, d2: dias * 2 },
+    { d: dias, d2: dias * 2, pais },
   );
 
   /* % de cierre = cierres del KANBAN (el chat llegó a generar_guia o más
@@ -190,6 +209,7 @@ exports.cuentas = catchAsync(async (req, res) => {
       id_configuracion: r.id_configuracion,
       nombre: r.nombre_configuracion || '(sin nombre)',
       telefono: r.telefono || null,
+      pais: r.pais || null,
       modelos: r.modelos || null,
       convers_ia: convers,
       convers_dia: Number((convers / dias).toFixed(1)),
@@ -223,7 +243,47 @@ exports.cuentas = catchAsync(async (req, res) => {
     };
   });
 
-  res.json({ status: 'success', dias, total: data.length, data });
+  res.json({ status: 'success', dias, pais, total: data.length, data });
+});
+
+/* ══════════════════════════════════════════════════════════════
+   GET /admin_bot_salud/paises?dias=30
+   Países donde hay bots e-commerce con conversaciones en la ventana,
+   con su volumen y su % de cierre: llena el selector del tablero y
+   deja ver de un vistazo cuál país arrastra el global.
+   ══════════════════════════════════════════════════════════════ */
+exports.paises = catchAsync(async (req, res) => {
+  const dias = rangoDias(req);
+  const conResp = await tieneCierresRespondieron();
+  const rows = await q(
+    `SELECT LOWER(c.pais) AS pais,
+            COUNT(DISTINCT m.id_configuracion) AS cuentas,
+            SUM(m.convers_ia) AS convers_ia,
+            SUM(m.convers_respondieron) AS convers_respondieron,
+            ${conResp ? 'SUM(m.cierres_respondieron)' : 'NULL'} AS cierres_respondieron,
+            SUM(m.cierres_kanban) AS cierres_kanban
+       FROM bot_metricas_diarias m
+       JOIN configuraciones c ON c.id = m.id_configuracion
+      WHERE m.fecha >= DATE_SUB(CURDATE(), INTERVAL :d DAY) ${SIN_HOY} ${SOLO_ECOMMERCE}
+      GROUP BY LOWER(c.pais)
+     HAVING convers_ia > 0
+      ORDER BY convers_ia DESC`,
+    { d: dias },
+  );
+  const pct = (a, b) => (Number(b) > 0 ? Number(((Number(a) / Number(b)) * 100).toFixed(1)) : null);
+  res.json({
+    status: 'success',
+    dias,
+    data: rows.map((r) => ({
+      pais: r.pais || null,
+      cuentas: Number(r.cuentas) || 0,
+      convers_ia: Number(r.convers_ia) || 0,
+      convers_respondieron: Number(r.convers_respondieron) || 0,
+      pct_cierre: conResp
+        ? pct(r.cierres_respondieron, r.convers_respondieron)
+        : pct(r.cierres_kanban, r.convers_ia),
+    })),
+  });
 });
 
 /* ══════════════════════════════════════════════════════════════
@@ -234,21 +294,24 @@ exports.embudo = catchAsync(async (req, res) => {
   const dias = rangoDias(req);
   const idConfig = parseInt(req.query.id_configuracion, 10) || null;
 
-  const filtro = idConfig ? 'AND m.id_configuracion = ?' : SOLO_ECOMMERCE;
-  const repl = idConfig ? [dias, idConfig] : [dias];
+  const pais = idConfig ? null : paisDe(req);
+  const filtro = idConfig
+    ? 'AND m.id_configuracion = :cfg'
+    : `${SOLO_ECOMMERCE}${pais ? FILTRO_PAIS : ''}`;
   const CAMPOS_SUMA = camposSuma(await tieneCierresRespondieron());
 
   const [tot] = await q(
     `SELECT ${CAMPOS_SUMA}
        FROM bot_metricas_diarias m
-      WHERE m.fecha >= DATE_SUB(CURDATE(), INTERVAL ? DAY) ${SIN_HOY} ${filtro}`,
-    repl,
+      WHERE m.fecha >= DATE_SUB(CURDATE(), INTERVAL :d DAY) ${SIN_HOY} ${filtro}`,
+    { d: dias, cfg: idConfig, pais },
   );
 
   const n = (v) => Number(v) || 0;
   res.json({
     status: 'success',
     dias,
+    pais,
     id_configuracion: idConfig,
     data: {
       /* Cierre y entrega según el estado del kanban (la señal del propio
