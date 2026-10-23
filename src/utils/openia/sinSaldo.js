@@ -108,9 +108,9 @@ function esOrganizacionNoVerificada(err) {
 
 // Con qué modelo se responde cuando gpt-5* está bloqueado por verificación.
 // gpt-4.1-mini y no gpt-4o-mini: mismo rango de precio, modelo más nuevo y es
-// el que el propio cliente comprobó que le funciona.
-const MODELO_RESPALDO_GPT5 =
-  process.env.OPENAI_MODELO_RESPALDO_GPT5 || 'gpt-4.1-mini';
+// el que el propio cliente comprobó que le funciona. En código y no en .env a
+// propósito: se cambia aquí con un commit.
+const MODELO_RESPALDO_GPT5 = 'gpt-4.1-mini';
 
 const URL_VERIFICAR_ORGANIZACION =
   'https://platform.openai.com/settings/organization/general';
