@@ -52,6 +52,17 @@ exports.cliente = catchAsync(async (req, res, next) => {
 });
 
 /**
+ * GET /recuperacion/casos/buscar?q= — clientes por empresa/correo/WhatsApp con
+ * su último caso, abierto o CERRADO. El embudo solo lista abiertos: así el
+ * asesor ve qué pasó con quien ya canceló sin tener que ir a Resultados.
+ */
+exports.buscar = catchAsync(async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (q.length < 3) return res.json({ status: 'success', data: [] });
+  res.json({ status: 'success', data: await svc.buscarCasos(q) });
+});
+
+/**
  * POST /recuperacion/casos/:id_usuario/asignar  body: { id_sub_usuario? }
  * Sin body: "tomar" el caso (me lo asigno). Con id_sub_usuario: reasignar
  * (solo quien puede asignar). id_sub_usuario = null → liberar.

@@ -14,6 +14,8 @@ router.use(requireRecuperacion);
 router.get('/embudo', ctrl.embudo);
 router.get('/resultados', ctrl.resultados);
 router.get('/cliente/:id_usuario', ctrl.cliente);
+// Antes de las rutas con :id_usuario: busca clientes con su último caso (abierto o cerrado).
+router.get('/casos/buscar', ctrl.buscar);
 router.post('/casos/:id_usuario/asignar', ctrl.asignar);
 router.post('/casos/:id_usuario/cerrar', ctrl.cerrar);
 router.post('/casos/:id_usuario/abrir', ctrl.abrir);

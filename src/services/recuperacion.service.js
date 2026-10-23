@@ -425,12 +425,36 @@ async function ultimosSeguimientos(ids) {
   return new Map(rows.map((r) => [r.id_usuario, r]));
 }
 
+/**
+ * Casos abiertos, uno por cliente. Si un cliente tiene dos abiertos (pasó
+ * cuando el cron de la hora y una carga del embudo sincronizaron a la vez:
+ * MERO y Valeria Enriquez el 22-10-2026), se conserva el que tiene asesor
+ * —o el más viejo— y los demás se cierran como descartados «Caso duplicado»,
+ * para que no cuenten como perdidos ni dupliquen la lista.
+ */
 async function casosAbiertos() {
   const rows = await db.query(
-    `SELECT * FROM recuperacion_casos_chat_center WHERE estado = 'abierto'`,
+    `SELECT * FROM recuperacion_casos_chat_center WHERE estado = 'abierto'
+      ORDER BY id_usuario, (asignado_a_id IS NULL), asignado_en, id_caso`,
     { type: db.QueryTypes.SELECT },
   );
-  return new Map(rows.map((r) => [r.id_usuario, r]));
+  const map = new Map();
+  const duplicados = [];
+  for (const r of rows) {
+    if (map.has(r.id_usuario)) duplicados.push(r.id_caso);
+    else map.set(r.id_usuario, r);
+  }
+  if (duplicados.length) {
+    await db.query(
+      `UPDATE recuperacion_casos_chat_center
+          SET estado = 'descartado', cerrado_en = NOW(), cerrado_por = 'sistema',
+              cierre_motivo = 'Caso duplicado', estado_final = 'manual'
+        WHERE id_caso IN (:ids) AND estado = 'abierto'`,
+      { replacements: { ids: duplicados }, type: db.QueryTypes.UPDATE },
+    );
+    console.warn(`[recuperacion] ${duplicados.length} caso(s) duplicado(s) cerrados: ${duplicados.join(', ')}`);
+  }
+  return map;
 }
 
 /**
@@ -444,10 +468,15 @@ async function sincronizarCasos(filas, abiertos) {
 
   const nuevos = filas.filter((f) => !abiertos.has(f.id_usuario));
   if (nuevos.length) {
+    // Solo si no hay ya un caso abierto: dos sincronizaciones a la vez (cron +
+    // carga del embudo) insertaban el mismo cliente dos veces.
     const values = nuevos.map((f) => [f.id_usuario, f.cohorte, f.precio_plan ?? null]);
     await db.query(
       `INSERT INTO recuperacion_casos_chat_center (id_usuario, cohorte, monto_plan)
-       VALUES ${values.map(() => '(?,?,?)').join(',')}`,
+       SELECT v.id_usuario, v.cohorte, v.monto_plan
+         FROM (${values.map(() => 'SELECT ? AS id_usuario, ? AS cohorte, ? AS monto_plan').join(' UNION ALL ')}) v
+        WHERE NOT EXISTS (SELECT 1 FROM recuperacion_casos_chat_center c
+                           WHERE c.id_usuario = v.id_usuario AND c.estado = 'abierto')`,
       { replacements: values.flat(), type: db.QueryTypes.INSERT },
     );
   }
@@ -738,8 +767,10 @@ async function embudo({ id_sub_usuario, id_usuario, rol = null }) {
   }
 
   const r2 = (n) => Math.round(n * 100) / 100;
+  const actividad = await actividadAsesores();
   return {
     generado: new Date().toISOString(),
+    actividad,
     expertos: {
       id_configuracion: expertos.id_configuracion,
       nombre: expertos.nombre,
@@ -765,6 +796,190 @@ async function embudo({ id_sub_usuario, id_usuario, rol = null }) {
     },
     filas,
   };
+}
+
+/**
+ * Cuánto están trabajando los asesores: seguimientos registrados hoy / 7 días
+ * / 30 días, en total y por asesor, junto con sus casos abiertos y cuántos de
+ * esos no tienen ni un registro desde que se abrieron. Pedido del 22-10-2026:
+ * el panel mostraba 1.159 casos abiertos y 1.061 asignados, pero en 14 días
+ * solo había 2 seguimientos; sin este dato nadie lo veía. Incluye a todo
+ * asesor activo aunque tenga cero, que es justo lo que hay que ver.
+ */
+async function actividadAsesores() {
+  const [asesores, seguimientos, casos] = await Promise.all([
+    db.query(
+      `SELECT id_sub_usuario, nombre FROM recuperacion_asesores_chat_center WHERE activo = 1`,
+      { type: db.QueryTypes.SELECT },
+    ),
+    db.query(
+      `SELECT ejecutado_por_id, ejecutado_por_nombre,
+              SUM(fecha_seguimiento >= CURDATE()) AS hoy,
+              SUM(fecha_seguimiento >= CURDATE() - INTERVAL 6 DAY) AS semana,
+              COUNT(*) AS mes,
+              COUNT(DISTINCT CASE WHEN fecha_seguimiento >= CURDATE() - INTERVAL 6 DAY THEN id_usuario END) AS clientes_semana,
+              MAX(fecha_seguimiento) AS ultimo
+         FROM seguimiento_clientes_chat_center
+        WHERE fecha_seguimiento >= CURDATE() - INTERVAL 29 DAY
+        GROUP BY ejecutado_por_id, ejecutado_por_nombre`,
+      { type: db.QueryTypes.SELECT },
+    ),
+    db.query(
+      `SELECT c.asignado_a_id,
+              COUNT(*) AS abiertos,
+              SUM(NOT EXISTS (SELECT 1 FROM seguimiento_clientes_chat_center s
+                               WHERE s.id_usuario = c.id_usuario
+                                 AND s.fecha_seguimiento >= c.abierto_en)) AS sin_tocar
+         FROM recuperacion_casos_chat_center c
+        WHERE c.estado = 'abierto'
+        GROUP BY c.asignado_a_id`,
+      { type: db.QueryTypes.SELECT },
+    ),
+  ]);
+
+  const porId = new Map();
+  const fila = (id, nombre) => {
+    const k = id == null ? 'sin_asignar' : String(id);
+    if (!porId.has(k)) {
+      porId.set(k, {
+        id_sub_usuario: id ?? null,
+        nombre: id == null ? 'Sin asignar' : nombre || `Subusuario ${id}`,
+        es_asesor: false,
+        abiertos: 0,
+        sin_tocar: 0,
+        hoy: 0,
+        semana: 0,
+        mes: 0,
+        clientes_semana: 0,
+        ultimo: null,
+      });
+    }
+    return porId.get(k);
+  };
+  for (const a of asesores) fila(a.id_sub_usuario, a.nombre).es_asesor = true;
+  for (const c of casos) {
+    const x = fila(c.asignado_a_id, null);
+    x.abiertos += Number(c.abiertos);
+    x.sin_tocar += Number(c.sin_tocar);
+  }
+  const tot = { hoy: 0, semana: 0, mes: 0 };
+  for (const s of seguimientos) {
+    tot.hoy += Number(s.hoy);
+    tot.semana += Number(s.semana);
+    tot.mes += Number(s.mes);
+    if (s.ejecutado_por_id == null) continue;
+    const x = fila(s.ejecutado_por_id, s.ejecutado_por_nombre);
+    if (!x.nombre || x.nombre.startsWith('Subusuario ')) x.nombre = s.ejecutado_por_nombre || x.nombre;
+    x.hoy += Number(s.hoy);
+    x.semana += Number(s.semana);
+    x.mes += Number(s.mes);
+    x.clientes_semana += Number(s.clientes_semana);
+    x.ultimo = s.ultimo;
+  }
+  const lista = [...porId.values()]
+    .filter((x) => x.id_sub_usuario != null)
+    .sort((a, b) => b.semana - a.semana || b.hoy - a.hoy || b.abiertos - a.abiertos);
+  const sinAsignar = porId.get('sin_asignar');
+  return {
+    ...tot,
+    asesores_activos_semana: lista.filter((x) => x.semana > 0).length,
+    asesores_total: lista.filter((x) => x.es_asesor).length,
+    sin_asignar: sinAsignar ? { abiertos: sinAsignar.abiertos, sin_tocar: sinAsignar.sin_tocar } : { abiertos: 0, sin_tocar: 0 },
+    asesores: lista,
+  };
+}
+
+/**
+ * Busca un cliente por empresa, correo o WhatsApp e informa su ÚLTIMO caso,
+ * esté abierto o cerrado. El embudo solo lista casos abiertos: cuando un
+ * cliente ya canceló (como JNstore el 21-10-2026) desaparece de la lista y el
+ * asesor no tenía cómo saber qué pasó con él sin ir a Resultados.
+ */
+async function buscarCasos(q) {
+  await ensureTablas();
+  const texto = String(q || '').trim();
+  if (texto.length < 3) return [];
+  const like = `%${texto}%`;
+  const digits = texto.replace(/\D/g, '');
+  // Primero los clientes (20 máx.) y recién después sus casos y seguimientos:
+  // con subconsultas correlacionadas sobre todos los usuarios tardaba minutos.
+  const usuarios = await db.query(
+    `SELECT u.id_usuario, u.nombre AS empresa, u.email_propietario AS email,
+            u.estado, u.stripe_subscription_status AS stripe_status,
+            u.cancel_at, u.canceled_at, u.fecha_renovacion,
+            p.nombre_plan, p.precio_plan
+       FROM usuarios_chat_center u
+       LEFT JOIN planes_chat_center p ON p.id_plan = u.id_plan
+      WHERE u.nombre LIKE :like OR u.email_propietario LIKE :like
+         ${digits.length >= 6 ? 'OR u.whatsapp_lead LIKE :digits' : ''}
+      ORDER BY u.updated_at DESC
+      LIMIT 20`,
+    { replacements: { like, digits: `%${digits}%` }, type: db.QueryTypes.SELECT },
+  );
+  if (!usuarios.length) return [];
+  const ids = usuarios.map((u) => u.id_usuario);
+
+  const [casos, seguimientos, autos] = await Promise.all([
+    db.query(
+      `SELECT c.*, m.total AS total_casos
+         FROM recuperacion_casos_chat_center c
+         JOIN (SELECT id_usuario, MAX(id_caso) AS mx, COUNT(*) AS total
+                 FROM recuperacion_casos_chat_center WHERE id_usuario IN (:ids)
+                GROUP BY id_usuario) m ON m.mx = c.id_caso`,
+      { replacements: { ids }, type: db.QueryTypes.SELECT },
+    ),
+    db.query(
+      `SELECT id_usuario, fecha_seguimiento FROM seguimiento_clientes_chat_center WHERE id_usuario IN (:ids)`,
+      { replacements: { ids }, type: db.QueryTypes.SELECT },
+    ),
+    db.query(
+      `SELECT id_usuario, COUNT(*) AS n FROM recuperacion_automatizacion_envios
+        WHERE id_usuario IN (:ids) AND estado = 'enviado' GROUP BY id_usuario`,
+      { replacements: { ids }, type: db.QueryTypes.SELECT },
+    ),
+  ]);
+  const casoDe = new Map(casos.map((c) => [c.id_usuario, c]));
+  const autosDe = new Map(autos.map((a) => [a.id_usuario, Number(a.n)]));
+  const segsDe = new Map();
+  for (const s of seguimientos) {
+    if (!segsDe.has(s.id_usuario)) segsDe.set(s.id_usuario, []);
+    segsDe.get(s.id_usuario).push(new Date(s.fecha_seguimiento));
+  }
+
+  const filas = usuarios.map((u) => {
+    const c = casoDe.get(u.id_usuario) || null;
+    const segs = segsDe.get(u.id_usuario) || [];
+    const desde = c?.abierto_en ? new Date(c.abierto_en) : null;
+    return {
+      ...u,
+      precio_plan: u.precio_plan != null ? Number(u.precio_plan) : null,
+      id_caso: c?.id_caso ?? null,
+      cohorte: c?.cohorte ?? null,
+      cohorte_label: c ? COHORTES[c.cohorte]?.label || c.cohorte : null,
+      estado_caso: c?.estado ?? null,
+      asignado_a_id: c?.asignado_a_id ?? null,
+      asignado_a_nombre: c?.asignado_a_nombre ?? null,
+      asignado_en: c?.asignado_en ?? null,
+      abierto_en: c?.abierto_en ?? null,
+      cerrado_en: c?.cerrado_en ?? null,
+      cerrado_por: c?.cerrado_por ?? null,
+      cierre_motivo: c?.cierre_motivo ?? null,
+      estado_final: c?.estado_final ?? null,
+      estado_final_label: c?.estado_final ? ESTADO_FINAL[c.estado_final] || c.estado_final : null,
+      caso_updated_at: c?.updated_at ?? null,
+      total_casos: Number(c?.total_casos || 0),
+      seguimientos_caso: desde ? segs.filter((d) => d >= desde).length : segs.length,
+      total_seguimientos: segs.length,
+      ultimo_seguimiento: segs.length ? new Date(Math.max(...segs)) : null,
+      automatizaciones_enviadas: autosDe.get(u.id_usuario) || 0,
+    };
+  });
+  // Con caso primero (el más reciente arriba); los que nunca entraron, al final.
+  filas.sort((a, b) => {
+    if (!!a.id_caso !== !!b.id_caso) return a.id_caso ? -1 : 1;
+    return new Date(b.caso_updated_at || 0) - new Date(a.caso_updated_at || 0);
+  });
+  return filas;
 }
 
 // ── Casos ───────────────────────────────────────────────────────────────
@@ -899,8 +1114,12 @@ async function resultados({ dias = 30 }) {
       ),
       db.query(
         `SELECT c.id_caso, c.id_usuario, c.cohorte, c.estado, c.monto_plan, c.asignado_a_nombre,
-                c.abierto_en, c.cerrado_en, c.cerrado_por, c.cierre_motivo,
-                u.nombre AS empresa, u.email_propietario AS email
+                c.asignado_en, c.abierto_en, c.cerrado_en, c.cerrado_por, c.cierre_motivo, c.estado_final,
+                u.nombre AS empresa, u.email_propietario AS email,
+                (SELECT COUNT(*) FROM seguimiento_clientes_chat_center s
+                  WHERE s.id_usuario = c.id_usuario AND s.fecha_seguimiento >= c.abierto_en) AS seguimientos_caso,
+                (SELECT COUNT(*) FROM recuperacion_automatizacion_envios e
+                  WHERE e.id_usuario = c.id_usuario AND e.estado = 'enviado') AS automatizaciones_enviadas
            FROM recuperacion_casos_chat_center c
            JOIN usuarios_chat_center u ON u.id_usuario = c.id_usuario
           WHERE c.estado <> 'abierto' AND c.cerrado_en >= DATE_SUB(NOW(), INTERVAL :d DAY)
@@ -1183,6 +1402,8 @@ async function abrirChatExpertos({ id_usuario, sessionUser }) {
 module.exports = {
   COHORTES,
   embudo,
+  actividadAsesores,
+  buscarCasos,
   clientesEnRiesgo,
   sincronizarCasosGlobal,
   situacionDeUsuario,
