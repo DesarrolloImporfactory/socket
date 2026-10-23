@@ -154,6 +154,11 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
   };
   const cfgCita = configDe('agendar_cita');
   const citaEnElItem = cfgCita.lugar_cita === 'item';
+  /* Servicio a domicilio (tableros adaptados: serenatas, limpieza, eventos):
+     la sede es la base y la cobertura; el lugar lo pone la persona. */
+  const citaEnCliente = cfgCita.lugar_cita === 'cliente';
+  // Local y domicilio a la vez: la persona elige, y el bloque lleva Sede o Lugar.
+  const citaMixta = citaEnCliente && cfgCita.lugar_mixto === true;
   const citaEsSolicitud = cfgCita.modo === 'solicitud';
 
   /* Con la cita en modo solicitud, lo que el bot NO puede hacer es darla por
@@ -287,10 +292,28 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
         });
 
         bloque +=
-          `🏢 ${citaEnElItem ? 'Nuestras oficinas' : 'Sedes donde atendemos'} ` +
+          `🏢 ${citaEnElItem ? 'Nuestras oficinas' : citaMixta ? 'Nuestras sedes y zona de cobertura' : citaEnCliente ? 'Nuestra base y zona de cobertura' : 'Sedes donde atendemos'} ` +
           `(ÚNICAS ciudades con cobertura):\n${lineas.join('\n')}\n\n` +
           `Si la persona escribe desde una ciudad que NO está en esta lista, está fuera de cobertura.\n` +
-          (citaEnElItem
+          (citaMixta
+            ? `DÓNDE SE HACE LA CITA: la persona elige. Si viene a una sede, usa el ` +
+              `nombre EXACTO de la lista en la línea "🏢 Sede" y pega su enlace de ` +
+              `Google Maps al confirmar. Si prefiere que vayan donde está, la ` +
+              `dirección que ella dé va en la línea "📍 Lugar" y NO escribas la ` +
+              `línea de sede. Pregunta cuál prefiere una sola vez.\n`
+            : citaEnCliente
+            ? /* El servicio se hace donde está la persona. Sin esto el modelo
+                 la cita en la base, que es lo que dice la lista que tiene
+                 delante. */
+              `OJO CON EL LUGAR: el servicio NO se hace en nuestra base. Se hace ` +
+              `EN LA DIRECCIÓN QUE DÉ LA PERSONA (su casa, el salón del evento, ` +
+              `donde ella diga), y esa dirección va en la línea "📍 Lugar:" del ` +
+              `bloque de reserva, tal como la escribió. La base de arriba es solo ` +
+              `para saber a qué ciudades llegamos: nunca la ofrezcas como lugar ` +
+              `del servicio ni pegues su enlace de mapa.\n` +
+              `Si la persona dio solo el sector, pídele una referencia o un enlace ` +
+              `de Google Maps antes de cerrar: quien va tiene que poder llegar.\n`
+            : citaEnElItem
             ? /* La oficina coordina; el lugar de la cita es el inmueble. Sin
                  decirlo así, el modelo cita en la oficina a quien quiere ver una
                  casa: es lo que dice la lista que tiene delante. */

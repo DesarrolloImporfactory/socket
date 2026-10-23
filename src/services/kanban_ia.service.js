@@ -3584,7 +3584,24 @@ async function procesarMensajeKanban(params) {
         }
       }
 
-      if (res && res.ok === false) {
+      /* Bloque con huecos ("🧑 Nombre: [Solicita el nombre]"): no es una cita
+         fallida, es una cita que todavía no toca. El bot ya le pidió el dato a
+         la persona en ese mismo mensaje, así que la tarjeta vuelve a la
+         columna donde estaba y el turno siguiente, ya con el nombre, escribe
+         el bloque bueno. Mandarlo a asesor acá apagaba el bot justo antes de
+         cerrar. */
+      if (res && res.ok === false && res.incompleto) {
+        await db.query(
+          `UPDATE clientes_chat_center SET estado_contacto = ? WHERE id = ?`,
+          {
+            replacements: [columna.estado_db, id_cliente],
+            type: db.QueryTypes.UPDATE,
+          },
+        );
+        await log(
+          `↩️ La cita no se creó (${res.motivo}): el contacto ${id_cliente} se queda en "${columna.estado_db}" hasta que el bloque venga completo`,
+        );
+      } else if (res && res.ok === false) {
         const [colAsesor] = await db.query(
           `SELECT id FROM kanban_columnas
             WHERE id_configuracion = ? AND estado_db = 'asesor' AND activo = 1
@@ -5059,7 +5076,13 @@ async function procesarAgendarCita(
   opciones = {},
 ) {
   const moment = require('moment-timezone');
-  const lugarCita = opciones?.lugar_cita === 'item' ? 'item' : 'sede';
+  /* 'sede' (lo de siempre), 'item' (la cita es en el inmueble/ítem) o
+     'cliente' (el servicio se hace donde diga la persona: serenatas, limpieza
+     a domicilio, fotografía de eventos). En 'cliente' el bloque trae una
+     línea "📍 Lugar:" que pasa tal cual como ubicación de la cita. */
+  const lugarCita = ['item', 'cliente'].includes(opciones?.lugar_cita)
+    ? opciones.lugar_cita
+    : 'sede';
   const modo = opciones?.modo === 'solicitud' ? 'solicitud' : 'auto';
 
   /* El bloque llega tal como lo escribió el modelo, y el modelo pone negritas
@@ -5075,6 +5098,11 @@ async function procesarAgendarCita(
   const nombre = campo('Nombre');
   const correo = campo('Correo');
   const servicio = campo('Servicio que desea');
+  // Solo vale con lugar_cita 'cliente'; en los otros modos se ignora.
+  const lugarTexto =
+    lugarCita === 'cliente'
+      ? campo('Lugar') || campo('Direcci[oó]n') || campo('Ubicaci[oó]n')
+      : '';
 
   /* El teléfono que vale es el que la persona DIO: puede querer que la llamen a
      otro número distinto del que usa para escribir. El del webhook es el
@@ -5100,6 +5128,28 @@ async function procesarAgendarCita(
   const telefono = esReferencia
     ? contacto?.celular_cliente || ''
     : telefonoBloque;
+
+  /* Bloque con huecos. El modelo a veces escribe el bloque entero con el tag y
+     deja "🧑 Nombre: [Solicita el nombre]" o "<nombre>" para preguntarlo en el
+     mismo mensaje (visto en el tablero adaptado de la 1387, 2026-10-23). Si eso
+     se agenda, la cita queda a nombre de un corchete y el turno siguiente —ya
+     con el nombre real— crea OTRA cita a la misma hora con otro teléfono. Se
+     corta acá: sin cita, la tarjeta no se mueve (ver quien llama) y el modelo
+     vuelve a escribir el bloque cuando tenga el dato. */
+  const esHueco = (s) =>
+    /[\[<>]|solicita|pendiente|por confirmar|falta|completar|\?\?/i.test(
+      String(s || ''),
+    );
+  if (!nombre || esHueco(nombre)) {
+    await log(
+      `⛔ agendar_cita: el bloque trae el nombre vacío o como hueco ("${nombre}"); la cita NO se creó`,
+    );
+    return {
+      ok: false,
+      incompleto: true,
+      motivo: 'bloque de agendamiento con el nombre sin completar',
+    };
+  }
 
   if (esReferencia && telefonoBloque) {
     await log(
@@ -5393,6 +5443,7 @@ async function procesarAgendarCita(
     inicio_utc,
     fin_utc,
     profesional_pedido: campo('Atiende'),
+    lugar_texto: lugarTexto || null,
   });
 
   return resultado;
