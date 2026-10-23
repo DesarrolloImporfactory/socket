@@ -562,8 +562,8 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
   console.log('\n14. Ajustes de la cuenta y candado antes de leer audios e imágenes');
   const n = ajustes.normalizar;
   prueba('sin el ajuste, `soporte_expertos` es null (ninguna cuenta cambia)', n(null).soporte_expertos === null && n({ espera_rafaga_seg: 20 }).soporte_expertos === null && n({ soporte_expertos: false }).soporte_expertos === null);
-  prueba('`true` enciende las tres partes', igual(n({ soporte_expertos: true }).soporte_expertos, { cargas: true, fichas: true, guardia: true }));
-  prueba('un objeto apaga solo lo que trae en false', igual(n({ soporte_expertos: { cargas: false } }).soporte_expertos, { cargas: false, fichas: true, guardia: true }));
+  prueba('`true` enciende las tres partes', igual(n({ soporte_expertos: true }).soporte_expertos, { cargas: true, fichas: true, guardia: true, herramientas: false }));
+  prueba('un objeto apaga solo lo que trae en false', igual(n({ soporte_expertos: { cargas: false } }).soporte_expertos, { cargas: false, fichas: true, guardia: true, herramientas: false }));
   prueba('un valor raro no enciende nada', n({ soporte_expertos: 'si' }).soporte_expertos === null && n({ soporte_expertos: [1] }).soporte_expertos === null);
   const ec = (hora) => new Date(`2026-10-12T${hora}:00-05:00`);
   const noche = n({ horario: { desde: '16:00', hasta: '08:00' } });

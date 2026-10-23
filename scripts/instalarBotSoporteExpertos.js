@@ -36,6 +36,8 @@
  *                                     marca o la cotización y pasa a logística, como la v1)
  *   ... --sin-fichas                  no manda fichas por turno: pega la base ENTERA en el
  *                                     prompt (más caro en cada mensaje)
+ *   ... --herramientas                el bot (solo con Claude) puede consultar la carga a
+ *                                     mitad de la respuesta y pasar a un asesor
  *
  * Antes de instalar conviene ver qué leería el bot de un número real, sin
  * escribir nada:  node scripts/probarCargaExpertos.js --telefono=5939XXXXXXXX
@@ -51,6 +53,7 @@ const { db } = require('../src/database/config');
 const {
   promptSoporteExpertos,
   MENSAJE_FALLBACK,
+  SECCION_HERRAMIENTAS,
 } = require('../src/utils/prompt_soporte_expertos.data');
 const { buscadorDeArchivo } = require('../src/utils/soporteExpertos/fichas');
 const ajustesIA = require('../src/utils/ajustesIA');
@@ -76,7 +79,15 @@ const DIAS_COMPLETOS = arg('dias-completos')
 const SOLO = lista('solo');
 const EXCLUIR = lista('excluir');
 const SIN_CARGAS = process.argv.includes('--sin-cargas');
+// Herramientas de Claude (consultar la carga a mitad de la respuesta, pasar a
+// un asesor). Solo sirven si la cuenta usa Claude; ver utils/claude/herramientas.js.
+const HERRAMIENTAS = process.argv.includes('--herramientas');
 const SIN_FICHAS = process.argv.includes('--sin-fichas');
+if (HERRAMIENTAS && SIN_CARGAS) {
+  // El prompt de herramientas describe ver_mi_carga, que con la carga apagada no se ofrece.
+  console.error('--herramientas y --sin-cargas no van juntos: las herramientas necesitan la carga encendida.');
+  process.exit(1);
+}
 
 // La pausa vale en la columna donde vive el bot: de 16:00 a 17:30 el equipo
 // todavía atiende, y si un asesor escribió hace poco el chat es suyo.
@@ -114,7 +125,9 @@ async function main() {
   const base = buscadorDeArchivo();
   if (!base.total) throw new Error('src/utils/soporteExpertos/fichas_bot.json no tiene fichas válidas. No se instala.');
 
-  const prompt = promptSoporteExpertos({ baseCompleta: SIN_FICHAS ? base.fichas : null });
+  const prompt =
+    promptSoporteExpertos({ baseCompleta: SIN_FICHAS ? base.fichas : null }) +
+    (HERRAMIENTAS ? `\n\n${SECCION_HERRAMIENTAS}` : '');
   // El panel no deja guardar un prompt de más de 60.000 caracteres
   // (public_config.controller → botEditarColumna): si se instala uno más
   // largo, después nadie lo puede editar desde ahí.
@@ -160,7 +173,7 @@ async function main() {
     horario,
     solo_numeros: ABRIR ? [] : [...new Set([...(previo.solo_numeros || []), ...SOLO])],
     numeros_excluidos: [...new Set([...(previo.numeros_excluidos || []), ...EXCLUIR])],
-    soporte_expertos: { cargas: !SIN_CARGAS, fichas: !SIN_FICHAS, guardia: true },
+    soporte_expertos: { cargas: !SIN_CARGAS, fichas: !SIN_FICHAS, guardia: true, herramientas: HERRAMIENTAS },
   };
   const leidos = ajustesIA.normalizar(ajustesNuevos);
   if (leidos.horario_invalido || !leidos.horario) {
@@ -175,7 +188,7 @@ async function main() {
 
   console.log(`Cfg ${CFG} (${cfg.nombre_configuracion}) · columna ${col.id} "${col.nombre}"`);
   console.log(`  prompt: ${String(col.instrucciones || '').length} → ${prompt.length} chars · base: ${base.version}${SIN_FICHAS ? ' (pegada entera en el prompt)' : ' (viaja por turno, 3 fichas por mensaje)'}`);
-  console.log(`  bot de soporte v2: carga del cliente por su teléfono ${SIN_CARGAS ? 'APAGADA' : 'encendida (solo lectura, base de Imporsuit)'} · fichas por turno ${SIN_FICHAS ? 'APAGADAS' : 'encendidas'} · guardia de respuestas encendida`);
+  console.log(`  bot de soporte v2: carga del cliente por su teléfono ${SIN_CARGAS ? 'APAGADA' : 'encendida (solo lectura, base de Imporsuit)'} · fichas por turno ${SIN_FICHAS ? 'APAGADAS' : 'encendidas'} · guardia de respuestas encendida · herramientas ${HERRAMIENTAS ? 'ENCENDIDAS (solo con Claude)' : 'apagadas'}`);
   console.log(`  modelo: ${col.modelo} → ${MODELO} · max_tokens ${col.max_tokens} → ${MAX_TOKENS}`);
   console.log(`  IA de la columna: ${col.activa_ia} → 1 · assistant_id: ${col.assistant_id || '—'} → ${assistantId}`);
   console.log(`  catálogo: vector ${col.vector_store_id || '—'} · inline ${col.catalogo_inline_tokens || 0} tokens → sin catálogo`);

@@ -279,8 +279,20 @@ function textoBase(fichas) {
   return `\n\nBASE COMPLETA (cada ficha empieza con su id entre corchetes; el id es para ti, nunca lo escribas):\n${lineas.join('\n')}`;
 }
 
+/* Solo para cuentas con `soporte_expertos.herramientas`: el instalador la pega
+   al final del prompt con --herramientas. Ver utils/soporteExpertos/herramientas.js. */
+const SECCION_HERRAMIENTAS = `## Herramientas
+
+Tienes dos herramientas. Úsalas solo cuando hagan falta; si ya tienes la información, responde sin ellas.
+
+- ver_mi_carga: lee el estado de la carga de ESTE cliente, por el número de WhatsApp desde el que escribe. Úsala cuando pregunte por su carga, su contenedor, cuándo llega o en qué va, y no tengas ya el bloque 📦 con su carga. Nunca le pidas su número de teléfono: la herramienta ya lo tiene. Si el resultado dice que no hay carga, que el número está en varios clientes o que no se pudo consultar, sigue lo que diga el resultado y no inventes estados ni fechas.
+- pasar_a_humano: cuando el caso necesite a una persona. Responde exactamente el texto que te devuelve, sin agregar nada.
+
+Lo que digas de la carga sale solo de lo que devuelve ver_mi_carga o del bloque 📦. No prometas consultar algo después: o lo consultas ahora con la herramienta, o pasas el caso a una persona.`;
+
 module.exports = {
   promptSoporteExpertos,
+  SECCION_HERRAMIENTAS,
   LINKS: T.LINKS,
   MENSAJE_ASESOR: T.MENSAJE_ASESOR,
   MENSAJE_SALUDO: T.MENSAJE_SALUDO,
