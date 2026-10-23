@@ -58,15 +58,26 @@ async function crearLlamador({ modelo = 'gpt-4.1', max_tokens = 900 } = {}) {
   prompt, no el modelo de producción. No toca la base: la llave llega de afuera.
   Claude no guarda la conversación, así que cada respuesta se guarda aquí con un
   id propio y el siguiente turno la retoma, como previous_response_id.
+
+  Con `herramientas: true` corre como la 265 con herramientas encendidas: el
+  mismo bucle y las mismas herramientas que el motor (ejecutarConClaudeHerramientas
+  + crearHerramientas), el prompt con la sección de herramientas, y la carga
+  sale de `consultar` (la base de mentira). `cliente` permite pasar uno falso.
 */
-function crearLlamadorClaude({ apiKey, modelo = 'claude-sonnet-5-5', max_tokens = 4000, esfuerzo = 'low' } = {}) {
-  if (!apiKey) throw new Error('falta la llave de Claude');
-  const Anthropic = require('@anthropic-ai/sdk');
-  const cliente = new Anthropic({ apiKey });
-  const instructions = promptSoporteExpertos();
+function crearLlamadorClaude({
+  apiKey, modelo = 'claude-sonnet-5-5', max_tokens = 4000, esfuerzo = 'low', herramientas = false, cliente: inyectado = null,
+} = {}) {
+  if (!apiKey && !inyectado) throw new Error('falta la llave de Claude');
+  let cliente = inyectado;
+  if (!cliente) {
+    const Anthropic = require('@anthropic-ai/sdk');
+    cliente = new Anthropic({ apiKey });
+  }
+  const { SECCION_HERRAMIENTAS } = require('../../src/utils/prompt_soporte_expertos.data');
+  const instructions = promptSoporteExpertos() + (herramientas ? `\n\n${SECCION_HERRAMIENTAS}` : '');
   const historias = new Map();
   let n = 0;
-  const llamar = async (input, prev) => {
+  const llamarSimple = async (input, prev) => {
     const messages = [...(historias.get(prev) || []), { role: 'user', content: input }];
     const r = await cliente.messages.create({
       model: modelo, max_tokens, output_config: { effort: esfuerzo },
@@ -83,13 +94,35 @@ function crearLlamadorClaude({ apiKey, modelo = 'claude-sonnet-5-5', max_tokens 
         cache_lee: u.cache_read_input_tokens || 0, cache_escribe: u.cache_creation_input_tokens || 0 },
     };
   };
-  return { llamar, instructions, cliente, cerrar: async () => {} };
+  // Con herramientas, la memoria guarda solo el texto de cada turno (como el
+  // motor, que tampoco guarda las vueltas de herramientas entre mensajes).
+  const llamarConHerramientas = async (input, prev, turno = {}) => {
+    const { ejecutarConClaudeHerramientas } = require('../../src/utils/claude/herramientas');
+    const { crearHerramientas } = require('../../src/utils/soporteExpertos/herramientas');
+    const previos = historias.get(prev) || [];
+    const h = crearHerramientas({
+      telefono: turno.telefono, mensaje: turno.mensaje, canalVerificable: true,
+      deps: { consultar: turno.consultar, hoy: turno.hoy },
+    });
+    const r = await ejecutarConClaudeHerramientas({
+      instructions, input, model: modelo, max_tokens, herramientas: h.lista,
+      mensajesPrevios: previos, deps: { client: cliente },
+    });
+    const id = `claude_${++n}`;
+    historias.set(id, [...previos, { role: 'user', content: input }, { role: 'assistant', content: r.respuesta || '…' }]);
+    return {
+      respuesta: r.respuesta, response_id: id,
+      usage: { input: r.usage.input - r.usage.cached - r.cacheEscrito, output: r.usage.output, cache_lee: r.usage.cached, cache_escribe: r.cacheEscrito },
+      hechosHerramientas: r.hechosHerramientas, cargaConsultada: h.cargaConsultada(), llamadas: r.llamadas,
+    };
+  };
+  return { llamar: herramientas ? llamarConHerramientas : llamarSimple, instructions, cliente, cerrar: async () => {} };
 }
 
 /*
   Un turno completo. `llamar` es el de crearLlamador; sin él se usa `doble`
   (texto o función del contexto) como respuesta del modelo.
-  Devuelve { crudo, enviado, ctx, response_id, usage, guardia, modelo }:
+  Devuelve { crudo, enviado, ctx, response_id, usage, guardia, modelo, llamadas }:
   `modelo` es lo que escribió el modelo, `crudo` lo que deja la guardia y
   `enviado` lo que vería el cliente.
 */
@@ -104,16 +137,22 @@ async function responderTurno({
   let respuesta;
   let response_id = previous_response_id;
   let usage = null;
+  let llamadas = 0;
   if (llamar) {
-    const r = await llamar(entrada(ctx, { cliente: mensaje, contexto_motor }), previous_response_id);
+    const r = await llamar(entrada(ctx, { cliente: mensaje, contexto_motor }), previous_response_id, { telefono, mensaje, consultar, hoy });
     response_id = r.response_id || previous_response_id;
+    if (r.hechosHerramientas?.length) {
+      const { sumarHechosHerramientas } = require('../../src/utils/soporteExpertos/herramientas');
+      sumarHechosHerramientas(ctx.hechos, r.hechosHerramientas, r.cargaConsultada, { mensaje, respuesta: r.respuesta });
+    }
+    llamadas = r.llamadas || 1;
     usage = r.usage || null;
     respuesta = r.respuesta || '';
   } else {
     respuesta = typeof doble === 'function' ? doble(ctx) : doble || '';
   }
   const p = procesar(respuesta, ctx.hechos);
-  return { crudo: p.crudo, enviado: p.texto, ctx, response_id, usage, guardia: p.guardia, modelo: respuesta };
+  return { crudo: p.crudo, enviado: p.texto, ctx, response_id, usage, guardia: p.guardia, modelo: respuesta, llamadas };
 }
 
 module.exports = { procesar, entrada, crearLlamador, crearLlamadorClaude, responderTurno };

@@ -104,14 +104,17 @@ function normalizarHorario(h) {
   };
 }
 
-/* true → todo encendido; un objeto apaga lo que traiga en false. */
+/* true → todo encendido (menos las herramientas); un objeto apaga lo que traiga en false. */
 function normalizarSoporteExpertos(v) {
-  if (v === true) return { cargas: true, fichas: true, guardia: true };
+  if (v === true) return { cargas: true, fichas: true, guardia: true, herramientas: false };
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   return {
     cargas: v.cargas !== false,
     fichas: v.fichas !== false,
     guardia: v.guardia !== false,
+    // Herramientas de Claude (consultar la carga, pasar a un asesor): apagadas
+    // salvo que la cuenta las pida explícito. Ver utils/claude/herramientas.js.
+    herramientas: v.herramientas === true,
   };
 }
 

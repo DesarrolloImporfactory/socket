@@ -2200,6 +2200,9 @@ async function procesarMensajeKanban(params) {
      Sin el ajuste este bloque no corre: ninguna otra cuenta cambia. Si algo
      falla acá el turno sigue como siempre, sin el contexto extra. */
   let turnoExpertos = null;
+  /* El número del remitente solo es verificable en WhatsApp real. Lo usan la
+     carga del 6.9 y las herramientas del bot (utils/soporteExpertos/herramientas). */
+  const canalVerificableExpertos = canal.source === 'wa' && !params.es_prueba;
   if (ajustesIA.soporte_expertos) {
     try {
       const { prepararTurno } = require('../utils/soporteExpertos/turno');
@@ -2217,7 +2220,7 @@ async function procesarMensajeKanban(params) {
              usa el panel. Consultar ahí sería dejar que cualquiera con sesión
              vea la carga de un número ajeno con solo teclearlo. */
         opciones:
-          canal.source === 'wa' && !params.es_prueba
+          canalVerificableExpertos
             ? ajustesIA.soporte_expertos
             : { ...ajustesIA.soporte_expertos, cargas: false },
         log,
@@ -2579,6 +2582,9 @@ async function procesarMensajeKanban(params) {
      deja como estaba para que el diff sea legible. */
   const soltarTurnoCliente = await tomarTurnoCliente(id_cliente);
   let resultado;
+  // Herramientas del bot de Expertos de este turno (si la cuenta las tiene);
+  // la guardia del 9.5 lee lo que trajeron.
+  let herramientasTurno = null;
   try {
   /* Releer la cadena: si otra corrida guardó mientras se esperaba el turno,
      acá se recoge. Si pasó de null a un id, el input ya se armó con la
@@ -2622,7 +2628,7 @@ async function procesarMensajeKanban(params) {
         instruccionesClaude = `${prefacioWizard}\n\n${instruccionesClaude}`;
       }
 
-      resultado = await ejecutarConClaude({
+      const parametrosClaude = {
         instructions: instruccionesClaude,
         additional_instructions: prefacioWizard
           ? null
@@ -2632,8 +2638,30 @@ async function procesarMensajeKanban(params) {
         max_tokens: columna.max_tokens || 500,
         api_key_claude,
         log,
-      });
+      };
+      /* Bot de Expertos con herramientas: el modelo puede consultar la carga
+         o pasar a un asesor a mitad de la respuesta. Solo si la cuenta lo
+         pide y el 6.9 corrió (sin hechos del turno no hay guardia completa). */
+      if (ajustesIA.soporte_expertos?.herramientas && turnoExpertos) {
+        const { crearHerramientas } = require('../utils/soporteExpertos/herramientas');
+        const { ejecutarConClaudeHerramientas } = require('../utils/claude/herramientas');
+        herramientasTurno = crearHerramientas({
+          telefono,
+          mensaje,
+          canalVerificable: canalVerificableExpertos,
+          cargas: ajustesIA.soporte_expertos.cargas !== false,
+        });
+        resultado = await ejecutarConClaudeHerramientas({
+          ...parametrosClaude,
+          herramientas: herramientasTurno.lista,
+        });
+      } else {
+        resultado = await ejecutarConClaude(parametrosClaude);
+      }
     } else if (USAR_RESPONSES_API) {
+      if (ajustesIA.soporte_expertos?.herramientas) {
+        await log(`🛠️ herramientas solo con Claude: esta cuenta va sin ellas`);
+      }
       await log(`🚨 entro sin polling NUEVO SISTEMA`);
 
       let instruccionesFinales = bloqueCatalogo
@@ -2869,6 +2897,16 @@ async function procesarMensajeKanban(params) {
         revisarTurno,
         hechosDeEmergencia,
       } = require('../utils/soporteExpertos/turno');
+      // Lo que trajeron las herramientas cuenta como respaldo de la guardia.
+      if (resultado?.hechosHerramientas?.length && turnoExpertos?.hechos) {
+        const { sumarHechosHerramientas } = require('../utils/soporteExpertos/herramientas');
+        sumarHechosHerramientas(
+          turnoExpertos.hechos,
+          resultado.hechosHerramientas,
+          herramientasTurno?.cargaConsultada?.(),
+          { mensaje, respuesta: respuestaRaw },
+        );
+      }
       // Si el 6.9 falló no hay hechos del turno: se revisa con los mínimos.
       const rev = revisarTurno(
         respuestaRaw,
