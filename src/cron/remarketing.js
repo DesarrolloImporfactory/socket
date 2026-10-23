@@ -1097,10 +1097,54 @@ cron.schedule('*/1 * * * *', async () => {
                 `🟦 [DEBUG IA] colRow: assistant_id=${colRow?.assistant_id || 'NO'} max_tokens=${colRow?.max_tokens}`,
               );
 
-              const prompt_ia_resuelto = await resolverPlazoEnPrompt(
+              let prompt_ia_resuelto = await resolverPlazoEnPrompt(
                 record.prompt_ia,
                 record.id_configuracion,
               );
+
+              /* Ángulo "preguntó el precio y calló". Es el corte #1 del
+                 embudo (7 días al 17-10-2026: 4.276 chats EC y 1.275 MX
+                 terminan así) y la secuencia global le mandaba "tu pedido
+                 está empacado" a quien nunca pidió nada; un cliente contestó
+                 "¿qué es lo que me va a enviar? no me acuerdo" (cfg 822). Si
+                 el último mensaje del cliente fue la pregunta de precio y el
+                 bot respondió con el precio, el remarketing retoma ESE precio
+                 en vez de inventar un pedido. Queda marcado en ruta_archivo
+                 (angulo) para medirlo con scripts/analisis_bot/remk.js. */
+              record._angulo = null;
+              try {
+                const { preguntaPorPrecio } = require('../services/kanban_ia.service');
+                const ult = await db.query(
+                  `SELECT rol_mensaje, responsable, LEFT(texto_mensaje, 400) AS t
+                     FROM mensajes_clientes
+                    WHERE celular_recibe = ? AND id_configuracion = ?
+                      AND rol_mensaje IN (0, 1) AND deleted_at IS NULL
+                      AND tipo_mensaje NOT IN ('notificacion', 'template')
+                      AND created_at >= NOW() - INTERVAL 3 DAY
+                    ORDER BY id DESC LIMIT 6`,
+                  {
+                    replacements: [record.id_cliente_chat_center, record.id_configuracion],
+                    type: db.QueryTypes.SELECT,
+                  },
+                );
+                const ultCliente = ult.find((m) => Number(m.rol_mensaje) === 0 && m.t);
+                const iCli = ult.indexOf(ultCliente);
+                const respuestaBot = iCli > 0 ? ult.slice(0, iCli).reverse().find((m) => Number(m.rol_mensaje) === 1 && /^IA_/.test(m.responsable || '') && m.t) : null;
+                const dioPrecio = respuestaBot && /\$\s?\d|\d+[.,]\d\d(?!\d)|\bcuesta\b|\d+ (pesos|dolares|usd|mxn)/i.test(respuestaBot.t);
+                if (ultCliente && preguntaPorPrecio(ultCliente.t) && dioPrecio) {
+                  record._angulo = 'precio_sin_respuesta';
+                  prompt_ia_resuelto =
+                    `${prompt_ia_resuelto || ''}\n\n` +
+                    `⚠️ ÁNGULO OBLIGATORIO PARA ESTE CLIENTE (manda sobre el ángulo de arriba): preguntó el precio, se lo dimos y no volvió a escribir. ` +
+                    `NO hay pedido: NO digas que está empacado, apartado, listo para salir ni reservado. ` +
+                    `Escribe 3 o 4 líneas: retoma el producto y el precio de UNA unidad tal como se le dio en la conversación (sin inventar otro ni descuentos), ` +
+                    `UN beneficio concreto del producto, "envío gratis y pagas al recibir", y cierra con UNA pregunta: si quiere que se lo enviemos o si el precio fue lo que lo frenó. ` +
+                    `Sin urgencia falsa, sin "última oportunidad".`;
+                  console.log(`🟦 [DEBUG IA] ángulo precio_sin_respuesta aplicado (cliente ${record.id_cliente_chat_center})`);
+                }
+              } catch (eAng) {
+                console.log(`🟦 [DEBUG IA] ángulo precio: no se pudo evaluar (${eAng?.message})`);
+              }
 
               let textoIA;
 
@@ -1766,6 +1810,7 @@ cron.schedule('*/1 * * * *', async () => {
               ruta_archivo: JSON.stringify({
                 source: 'cron_remarketing_ia',
                 secuencia: record.secuencia,
+                angulo: record._angulo || null,
                 prompt_usado: String(record.prompt_ia || '').slice(0, 2000),
               }),
               visto: 1,
