@@ -10,6 +10,7 @@ router.use(requireSuperAdmin);
 router.get('/resumen', ctrl.resumen);
 router.get('/cuentas', ctrl.cuentas);
 router.get('/embudo', ctrl.embudo);
+router.get('/paises', ctrl.paises);
 router.post('/recalcular', ctrl.recalcular);
 
 module.exports = router;

@@ -89,6 +89,46 @@ const Configuraciones = db.define(
       type: DataTypes.STRING(1000),
       allowNull: true,
     },
+    /* A qué cuenta pertenece cada llave (utils/cuentaIA.js). Se llena al
+       guardar la llave y solo se vuelve a consultar al cambiarla; así la vista
+       de Asistentes no pregunta a OpenAI/Anthropic en cada visita y se puede
+       buscar por correo con un SELECT. OpenAI: {nombre, email, organizacion,
+       organizacion_id, organizacion_personal, proyecto, proyecto_id}. Claude:
+       {organizacion, organizacion_id, workspace_id} (Anthropic no da el
+       correo con una llave normal). *_cuenta_at = cuándo se consultó; NULL en
+       cuenta con fecha = la consulta falló (llave revocada, red). */
+    openai_cuenta: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    openai_cuenta_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    claude_cuenta: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    claude_cuenta_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    /* Aviso al dueño sobre su cuenta de OpenAI que NO apaga el bot (a
+       diferencia de openai_activo=0). Hoy solo ORG_NO_VERIFICADA: la
+       organización no está verificada para gpt-5 y el bot responde con el
+       modelo de respaldo. Ver utils/openia/avisoOpenAI.js. */
+    openai_aviso_codigo: {
+      type: DataTypes.STRING(40),
+      allowNull: true,
+    },
+    openai_aviso_msg: {
+      type: DataTypes.STRING(500),
+      allowNull: true,
+    },
+    openai_aviso_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
     created_at: {
       type: DataTypes.DATE,
       allowNull: true,

@@ -92,10 +92,36 @@ function esApiKeyInvalida(err) {
   return status === 401;
 }
 
+// La organización de OpenAI del cliente no pasó la verificación de identidad
+// que OpenAI exige para la familia gpt-5. Llega como 404 model_not_found con
+// "Your organization must be verified to use the model `gpt-5-mini`" (cfg 1478,
+// 2026-10-22: el bot se quedaba mudo en toda columna con gpt-5-mini y el
+// cliente lo "arregló" bajando el modelo). No es saldo ni llave: la llave
+// funciona con gpt-4.1-mini. El arreglo es que el dueño verifique la
+// organización en platform.openai.com/settings/organization/general (tarda
+// hasta 15 min en propagar); mientras tanto se responde con un modelo de
+// respaldo (ver ejecutarConResponsesAPI en kanban_ia.service).
+function esOrganizacionNoVerificada(err) {
+  const texto = mensajeErrorOpenAI(err).toLowerCase();
+  return texto.includes('must be verified');
+}
+
+// Con qué modelo se responde cuando gpt-5* está bloqueado por verificación.
+// gpt-4.1-mini y no gpt-4o-mini: mismo rango de precio, modelo más nuevo y es
+// el que el propio cliente comprobó que le funciona. En código y no en .env a
+// propósito: se cambia aquí con un commit.
+const MODELO_RESPALDO_GPT5 = 'gpt-4.1-mini';
+
+const URL_VERIFICAR_ORGANIZACION =
+  'https://platform.openai.com/settings/organization/general';
+
 module.exports = {
   esSinSaldoOpenAI,
   esRateLimitTransitorio,
   esApiKeyInvalida,
+  esOrganizacionNoVerificada,
+  MODELO_RESPALDO_GPT5,
+  URL_VERIFICAR_ORGANIZACION,
   mensajeErrorOpenAI,
   FRASES_SIN_SALDO,
 };

@@ -417,8 +417,44 @@ const fs = require('fs').promises;
 // encabezado de utils/openia/sinSaldo.js.
 const {
   esSinSaldoOpenAI: esSinSaldo,
+  esOrganizacionNoVerificada,
+  MODELO_RESPALDO_GPT5,
+  URL_VERIFICAR_ORGANIZACION,
   mensajeErrorOpenAI,
 } = require('../utils/openia/sinSaldo');
+
+/* Cuentas cuya organización de OpenAI NO está verificada para gpt-5 (ver
+   esOrganizacionNoVerificada). Se recuerda por id_configuracion durante unas
+   horas para no pagar un 404 por cada turno antes de caer al respaldo; pasado
+   el plazo se vuelve a intentar gpt-5 por si el dueño ya la verificó. */
+const ORG_NO_VERIFICADA_TTL_MS = 6 * 60 * 60 * 1000;
+const orgNoVerificadaHasta = new Map();
+// Cuentas a las que ya se les dejó el aviso en configuraciones.openai_aviso_*:
+// cuando gpt-5 vuelva a responder para una de ellas, se limpia.
+const avisoOrgEscrito = new Set();
+const {
+  AVISO_ORG_NO_VERIFICADA,
+  registrarAvisoOpenAI,
+  limpiarAvisoOpenAI,
+} = require('../utils/openia/avisoOpenAI');
+
+// Lo llama el controlador cuando el dueño pulsa "Ya verifiqué" y la
+// comprobación en vivo con gpt-5 pasó: el próximo turno vuelve a gpt-5 ya.
+function olvidarBloqueoGpt5(id_configuracion) {
+  orgNoVerificadaHasta.delete(Number(id_configuracion));
+  avisoOrgEscrito.delete(Number(id_configuracion));
+}
+
+function gpt5BloqueadoPara(id_configuracion) {
+  if (!id_configuracion) return false;
+  const hasta = orgNoVerificadaHasta.get(Number(id_configuracion));
+  if (!hasta) return false;
+  if (hasta < Date.now()) {
+    orgNoVerificadaHasta.delete(Number(id_configuracion));
+    return false;
+  }
+  return true;
+}
 
 /* Aviso dentro del chat cuando el bot NO pudo responder (sin saldo, error de
    OpenAI). Antes el turno moría en silencio y la única pista quedaba en el
@@ -945,6 +981,15 @@ const AVISO_SIN_SALDO =
   'Al recargar, el bot retoma este chat automáticamente.';
 
 function avisoErrorOpenAI(err) {
+  // Caso con arreglo propio: no es saldo ni llave, es la verificación de la
+  // organización que OpenAI exige para gpt-5. El texto dice qué hacer.
+  if (esOrganizacionNoVerificada(err)) {
+    return (
+      `🤖 El bot no pudo responder con el modelo elegido: tu organización de OpenAI ` +
+      `no está verificada para la familia GPT-5. Verifícala en ${URL_VERIFICAR_ORGANIZACION} ` +
+      `(tarda hasta 15 min) o cambia la columna a ${MODELO_RESPALDO_GPT5}.`
+    );
+  }
   const detalle = String(
     err?.response?.data?.error?.message || err?.message || 'error desconocido',
   )
@@ -4427,39 +4472,87 @@ async function ejecutarConResponsesAPI({
     tools.push(toolBusqueda);
   }
 
-  const body = {
-    model: model || 'gpt-4o-mini',
-    instructions: finalInstructions,
-    input,
-    store: true,
-    max_output_tokens: max_tokens || 500,
+  const modeloPedido = model || 'gpt-4o-mini';
+  const pideGpt5 = /^gpt-5/i.test(modeloPedido);
+
+  // Arma el cuerpo para un modelo dado. Separado en función porque el mismo
+  // turno puede tener que rearmarse con el modelo de respaldo (abajo).
+  const armarBody = (modelo) => {
+    const b = {
+      model: modelo,
+      instructions: finalInstructions,
+      input,
+      store: true,
+      max_output_tokens: max_tokens || 500,
+    };
+    if (previous_response_id) b.previous_response_id = previous_response_id;
+    if (tools.length > 0) b.tools = tools;
+    // gpt-5* son modelos de razonamiento: los tokens de razonamiento descuentan
+    // de max_output_tokens, así que con el tope de 500 de una columna normal la
+    // respuesta puede volver VACÍA (status "incomplete"). Se razona poco
+    // (effort low), se sube el piso del tope y, si aun así vuelve vacío, se
+    // reintenta UNA vez con más tope y razonamiento mínimo. No aplica
+    // temperature (gpt-5 no la acepta) — acá nunca se mandó, así que no cambia.
+    if (/^gpt-5/i.test(modelo)) {
+      b.reasoning = { effort: 'low' };
+      b.max_output_tokens = Math.max(Number(b.max_output_tokens) || 0, 2000);
+    }
+    return b;
   };
 
-  if (previous_response_id) {
-    body.previous_response_id = previous_response_id;
+  /* Organización sin verificar para gpt-5 (cfg 1478, 2026-10-22): OpenAI
+     responde 404 "must be verified" en TODOS los turnos y el bot quedaba mudo
+     en cada columna con gpt-5-mini (1.511 columnas de 396 cuentas lo usan).
+     Se responde con el modelo de respaldo y se recuerda unas horas para no
+     pagar el 404 en cada mensaje. El dueño ve el motivo en el aviso del chat
+     y en la vista previa del wizard; el arreglo de fondo es verificar la
+     organización, no bajar el modelo. */
+  let body;
+  if (pideGpt5 && gpt5BloqueadoPara(id_configuracion)) {
+    body = armarBody(MODELO_RESPALDO_GPT5);
+  } else {
+    body = armarBody(modeloPedido);
   }
-
-  if (tools.length > 0) {
-    body.tools = tools;
-  }
-
-  // gpt-5* son modelos de razonamiento: los tokens de razonamiento descuentan
-  // de max_output_tokens, así que con el tope de 500 de una columna normal la
-  // respuesta puede volver VACÍA (status "incomplete"). Se razona poco
-  // (effort low), se sube el piso del tope y, si aun así vuelve vacío, se
-  // reintenta UNA vez con más tope y razonamiento mínimo. No aplica
-  // temperature (gpt-5 no la acepta) — acá nunca se mandó, así que no cambia.
-  const esGpt5 = /^gpt-5/i.test(body.model);
-  if (esGpt5) {
-    body.reasoning = { effort: 'low' };
-    body.max_output_tokens = Math.max(Number(body.max_output_tokens) || 0, 2000);
-  }
-
   const t0OpenAI = Date.now();
-  let res = await axios.post('https://api.openai.com/v1/responses', body, {
-    headers,
-    timeout: 60000,
-  });
+  let res;
+  try {
+    res = await axios.post('https://api.openai.com/v1/responses', body, {
+      headers,
+      timeout: 60000,
+    });
+  } catch (e) {
+    if (!(/^gpt-5/i.test(body.model) && esOrganizacionNoVerificada(e))) throw e;
+    if (id_configuracion) {
+      orgNoVerificadaHasta.set(
+        Number(id_configuracion),
+        Date.now() + ORG_NO_VERIFICADA_TTL_MS,
+      );
+    }
+    await log(
+      `⚠️ OpenAI: la organización de config=${id_configuracion ?? '?'} no está verificada para ${body.model}; ` +
+        `respondo con ${MODELO_RESPALDO_GPT5}. El dueño debe verificarla en ${URL_VERIFICAR_ORGANIZACION}`,
+    );
+    // Aviso visible para el dueño (Asistentes + ventana al entrar): el bot
+    // sigue respondiendo, pero con otro modelo, y él es el único que puede
+    // arreglarlo. Se escribe una vez por bloqueo; nunca tumba el turno.
+    if (id_configuracion && !avisoOrgEscrito.has(Number(id_configuracion))) {
+      avisoOrgEscrito.add(Number(id_configuracion));
+      registrarAvisoOpenAI(
+        id_configuracion,
+        AVISO_ORG_NO_VERIFICADA,
+        `Tu organización de OpenAI no está verificada para ${body.model}. ` +
+          `El bot está respondiendo con ${MODELO_RESPALDO_GPT5} mientras tanto.`,
+      ).catch(() => {});
+    }
+    body = armarBody(MODELO_RESPALDO_GPT5);
+    res = await axios.post('https://api.openai.com/v1/responses', body, {
+      headers,
+      timeout: 60000,
+    });
+  }
+  // Se calcula DESPUÉS del posible respaldo: el reintento por respuesta vacía
+  // de abajo manda `reasoning`, que un modelo no-gpt-5 rechaza con 400.
+  const esGpt5 = /^gpt-5/i.test(body.model);
 
   const leerTexto = (data) => {
     const items = data?.output || [];
@@ -4503,6 +4596,14 @@ async function ejecutarConResponsesAPI({
         `reasoning=${res.data?.usage?.output_tokens_details?.reasoning_tokens ?? 0}`,
     );
   } catch (_) {}
+
+  // gpt-5 volvió a responder en una cuenta que tenía el aviso: ya verificó la
+  // organización, se limpia el aviso para que no le siga saliendo.
+  if (esGpt5 && id_configuracion && avisoOrgEscrito.has(Number(id_configuracion))) {
+    olvidarBloqueoGpt5(id_configuracion);
+    limpiarAvisoOpenAI(id_configuracion, AVISO_ORG_NO_VERIFICADA).catch(() => {});
+    await log(`🟢 OpenAI: config=${id_configuracion} ya responde con ${body.model}; aviso de organización retirado`);
+  }
 
   const response_id = res.data.id;
   const total_tokens = res.data.usage?.total_tokens || 0;
@@ -4579,6 +4680,9 @@ async function textoDeUbicacion(texto) {
     `- Dirección: ${geo.direccion || '(sin calle identificable en el mapa)'}\n` +
     `- Ciudad: ${geo.ciudad || '(no identificada)'}\n` +
     `- Provincia: ${geo.provincia || '(no identificada)'}\n` +
+    (geo.codigo_postal
+      ? `- Código postal: ${geo.codigo_postal} (sale del mapa: NO se lo pidas al cliente)\n`
+      : '') +
     `Ya tienes su ubicación: NO se la vuelvas a pedir ni le pidas la ` +
     `dirección "en palabras", y NO le vuelvas a preguntar la ciudad ni la ` +
     `provincia si aquí aparecen. Si estás cerrando un pedido con entrega, usa ` +
@@ -5525,10 +5629,12 @@ module.exports = {
   // Lo usa simular_conversacion.js para armar el catálogo inline EXACTAMENTE
   // como producción: si el puente cambia acá, la simulación cambia sola.
   PUENTE_INLINE,
+  preguntaPorPrecio,
   // Exportados para reutilizar la generación IA desde el remarketing de IG
   // (no cambian el comportamiento de WhatsApp; son helpers puros de OpenAI).
   ejecutarAsistente,
   ejecutarConResponsesAPI,
+  olvidarBloqueoGpt5,
   // Lo usa el cron de remarketing: los mensajes que redacta con el asistente de
   // una columna pueden traer tags de acción, y ahí nadie los interpretaba ni los
   // limpiaba (ver cron/remarketing.js → generarMensajeRemarketingIA).

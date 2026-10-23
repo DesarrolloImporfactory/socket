@@ -20,7 +20,7 @@ function fmt(obj) { const out = {}; for (const [k, v] of Object.entries(obj).sor
   const desde = new Date(Date.now() - (dias + 1) * 864e5); desde.setHours(0, 0, 0, 0);
   const hasta = new Date(); hasta.setHours(0, 0, 0, 0);
   const R = { chats_ia: 0, con_pregunta_precio: 0, cerr_con_pregunta: 0, sin_pregunta_precio: 0, cerr_sin_pregunta: 0,
-    quien: {}, dio_precio: {}, cruce: {}, por_cuenta: {}, latencia: {}, foto: {}, video: {}, combos: {}, pregunta_final: {}, largo: {}, momento: {}, respondio_antes: {},
+    quien: {}, dio_precio: {}, cruce: {}, por_cuenta: {}, ab: {}, ab_detalle: {}, latencia: {}, foto: {}, video: {}, combos: {}, pregunta_final: {}, largo: {}, momento: {}, respondio_antes: {},
     remk_despues: { n: 0, volvio: 0, cerr: 0 }, remk_texto: new Map(), remk_horas: {}, sin_respuesta_ia: 0, ej_sin_volver: [], ej_cerraron: [] };
   for (const { id: cfg } of cfgs) {
     const clientes = await db.query(`SELECT id, estado_contacto FROM clientes_chat_center WHERE id_configuracion=? AND deleted_at IS NULL AND created_at >= ? AND created_at < ?`, { replacements: [cfg, desde, hasta], type: db.QueryTypes.SELECT });
@@ -61,6 +61,11 @@ function fmt(obj) { const out = {}; for (const [k, v] of Object.entries(obj).sor
       cel(R.dio_precio, dioPrecio ? 'dio_precio' : 'NO_dio_precio', cerrado, volvio);
       cel(R.cruce, `${dioPrecio ? 'precio' : 'SIN_precio'}+${combos ? 'combos' : 'sin_combos'}+${preg}`, cerrado, volvio);
       const pc = R.por_cuenta[cfg] || (R.por_cuenta[cfg] = {}); cel(pc, `${dioPrecio ? 'precio' : 'SIN_precio'}+${combos ? 'combos' : 'sin_combos'}`, cerrado, volvio);
+      /* A/B de México (kanban_ia AB_PRECIO_MX): brazo B = id de cliente par.
+         Se registra siempre; en EC sirve de control (ahí no hay experimento). */
+      const brazo = Number(c.id) % 2 === 0 ? 'B_par' : 'A_impar';
+      cel(R.ab, brazo, cerrado, volvio);
+      cel(R.ab_detalle, `${brazo}+${combos ? 'combos' : 'sin_combos'}+${preg}`, cerrado, volvio);
       cel(R.latencia, latK, cerrado, volvio); cel(R.foto, hayFoto ? 'con_foto' : 'sin_foto', cerrado, volvio);
       cel(R.video, hayVideo ? 'con_video' : 'sin_video', cerrado, volvio); cel(R.combos, combos ? 'menciona_combos' : 'sin_combos', cerrado, volvio);
       cel(R.pregunta_final, preg, cerrado, volvio); cel(R.largo, largo, cerrado, volvio); cel(R.momento, momento, cerrado, volvio);
@@ -73,7 +78,7 @@ function fmt(obj) { const out = {}; for (const [k, v] of Object.entries(obj).sor
     }
   }
   const out = { pais, solo_modelo: SOLO_MODELO, chats_ia: R.chats_ia, con_pregunta_precio: `${R.con_pregunta_precio} (cierre ${pct(R.cerr_con_pregunta, R.con_pregunta_precio)}%)`, sin_pregunta_precio: `${R.sin_pregunta_precio} (cierre ${pct(R.cerr_sin_pregunta, R.sin_pregunta_precio)}%)`, sin_respuesta_ia: R.sin_respuesta_ia,
-    quien: fmt(R.quien), dio_precio: fmt(R.dio_precio), cruce: fmt(R.cruce),
+    quien: fmt(R.quien), dio_precio: fmt(R.dio_precio), cruce: fmt(R.cruce), ab: fmt(R.ab), ab_detalle: fmt(R.ab_detalle),
     por_cuenta: Object.fromEntries(Object.entries(R.por_cuenta).filter(([, v]) => Object.values(v).reduce((a, o) => a + o.n, 0) >= 80).map(([k, v]) => [k, fmt(v)])),
     latencia: fmt(R.latencia), foto: fmt(R.foto), video: fmt(R.video), combos: fmt(R.combos), pregunta_final: fmt(R.pregunta_final), largo: fmt(R.largo), momento: fmt(R.momento), respondio_antes: fmt(R.respondio_antes),
     remarketing_tras_precio_sin_volver: { ...R.remk_despues, pct_volvio: pct(R.remk_despues.volvio, R.remk_despues.n), horas: R.remk_horas, textos: top(R.remk_texto, 12) }, ej_sin_volver: R.ej_sin_volver, ej_cerraron: R.ej_cerraron };
