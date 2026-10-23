@@ -13,6 +13,7 @@ const { db } = require('../database/config');
 const logger = require('../utils/logger');
 const launcher = require('../services/metaAdsLauncher.service');
 const reglasSvc = require('../services/metaAdsReglas.service');
+const { explicarError } = require('../utils/metaAdsErrores');
 
 async function getAdConnection(id_configuracion) {
   const rows = await db.query(
@@ -709,23 +710,33 @@ exports.lanzar = async (req, res) => {
           type: db.QueryTypes.INSERT,
         },
       );
-      // 1487246 = "This WhatsApp phone number is not linked to your account":
-      // el número de la cuenta no está vinculado a la página/cuenta
-      // publicitaria en Meta. Se explica en claro qué hacer.
-      const numeroNoVinculado =
-        Number(err.meta_error?.error_subcode) === 1487246 ||
-        err.paso === 'verificar número de WhatsApp';
+      // El error de Meta se traduce a "no puedes por X, haz Y" (ver
+      // utils/metaAdsErrores). El paso "verificar número de WhatsApp" lo
+      // levanta el launcher antes de llamar a Meta, así que no trae subcode:
+      // se le pone el del caso equivalente (1487246) para que caiga en la
+      // misma ficha del catálogo.
+      const crudo =
+        err.paso === 'verificar número de WhatsApp' &&
+        !err.meta_error?.error_subcode
+          ? { code: 100, error_subcode: 1487246 }
+          : err.meta_error || err.message;
+      const motivo = explicarError(crudo, {
+        paso: err.paso,
+        numero: whatsapp?.numero,
+        pagina: plantilla.page_name || plantilla.page_id,
+      });
+      // Queda en el log del servidor: es el único rastro en vivo que tiene el
+      // lanzador, y sin esto un fallo solo se ve consultando la tabla.
+      logger.warn(
+        `[ADS_LANZAR] cfg=${id_configuracion} plantilla=${id_plantilla} ` +
+          `paso="${err.paso || '?'}" codigo=${motivo.codigo || '-'} ` +
+          `culpa=${motivo.culpa} · ${motivo.titulo}`,
+      );
       return res.json({
         success: false,
-        message: numeroNoVinculado
-          ? `No se creó la campaña: el WhatsApp de esta cuenta (${whatsapp.numero}) no está vinculado a la página "${
-              plantilla.page_name || plantilla.page_id
-            }" en Meta. Vincúlalo en la configuración de la página (WhatsApp) o en el Business Manager y vuelve a lanzar.`
-          : `Meta rechazó el lanzamiento en el paso "${err.paso || '?'}": ${
-              err.meta_error?.error_user_msg ||
-              err.meta_error?.message ||
-              err.message
-            }`,
+        // `message` se mantiene porque hay avisos del front que solo leen eso.
+        message: `${motivo.titulo}. ${motivo.porque}`,
+        motivo,
         meta_error: err.meta_error || null,
         whatsapp_numero: whatsapp.numero,
       });
@@ -1097,7 +1108,20 @@ exports.listarLanzamientos = async (req, res) => {
         LIMIT 50`,
       { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
     );
-    return res.json({ success: true, data: rows });
+    // Cada intento fallido se acompaña de su explicación en español, así la
+    // bitácora deja de mostrar el inglés crudo de Meta. Se traduce aquí y no
+    // en el front para que el catálogo viva en un solo sitio.
+    const data = rows.map((r) => {
+      if (r.resultado === 'ok' || !r.error_meta) return r;
+      let crudo = r.error_meta;
+      try {
+        crudo = JSON.parse(r.error_meta);
+      } catch {
+        /* se guardó como texto suelto: vale igual */
+      }
+      return { ...r, motivo: explicarError(crudo) };
+    });
+    return res.json({ success: true, data });
   } catch (err) {
     logger.error(`launcher listarLanzamientos: ${err.message}`);
     return res.status(500).json({ success: false, message: err.message });
