@@ -73,6 +73,22 @@ const CATALOGO = [
     enlace: { texto: 'Abrir el centro de facturación', url: FACTURACION },
   },
   {
+    subcode: 3858013,
+    culpa: 'cuenta',
+    titulo: 'Tu cuenta publicitaria no tiene un teléfono verificado',
+    porque:
+      'Meta exige un número de teléfono verificado en la cuenta publicitaria antes de dejarla publicar. Sale casi siempre la primera vez que una cuenta va a lanzar: se verifica una sola vez y no lo vuelve a pedir.',
+    pasos: [
+      'Abre la configuración de tu cuenta publicitaria en el Administrador de anuncios.',
+      'Agrega tu número de teléfono y confirma el código que te llega por SMS.',
+      'Vuelve aquí y lanza otra vez.',
+    ],
+    enlace: {
+      texto: 'Abrir la configuración de la cuenta publicitaria',
+      url: 'https://adsmanager.facebook.com/adsmanager/manage/accountsettings',
+    },
+  },
+  {
     subcode: 2859024,
     culpa: 'cuenta',
     titulo: 'Falta aceptar la política de no discriminación de Meta',
