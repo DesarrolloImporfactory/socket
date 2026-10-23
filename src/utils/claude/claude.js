@@ -79,6 +79,13 @@ function esRateLimitClaude(err) {
   return err instanceof Anthropic.RateLimitError || err?.status === 429;
 }
 
+/* El modelo de la columna no existe en Anthropic (404 not_found_error
+   «model: claude-xyz»): el bot calla en esa columna hasta cambiarlo. */
+function esModeloClaudeNoDisponible(err) {
+  if (err instanceof Anthropic.NotFoundError || err?.status === 404) return true;
+  return /model: claude|not_found_error/i.test(String(err?.message || ''));
+}
+
 /** Texto corto y legible del error, para el cartel del chat y el log. */
 function mensajeErrorClaude(err) {
   const m = String(err?.error?.error?.message || err?.error?.message || err?.message || 'error desconocido');
@@ -357,6 +364,7 @@ module.exports = {
   esSinSaldoClaude,
   esApiKeyClaudeInvalida,
   esRateLimitClaude,
+  esModeloClaudeNoDisponible,
   mensajeErrorClaude,
   // Fase 2
   MODELO_EXTRACTOR,

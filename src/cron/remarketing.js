@@ -59,6 +59,7 @@ function isTemplateNotFoundError(err) {
 // cambió el texto al saldo prepago ("You have no credits remaining").
 const {
   esSinSaldoOpenAI: isOpenAISinSaldo,
+  esApiKeyInvalida,
   mensajeErrorOpenAI,
 } = require('../utils/openia/sinSaldo');
 
@@ -1369,7 +1370,11 @@ cron.schedule('*/1 * * * *', async () => {
               if (isMetaRateLimit(iaErr)) {
                 throw iaErr;
               }
-              if (isOpenAISinSaldo(iaErr)) {
+              if (isOpenAISinSaldo(iaErr) || esApiKeyInvalida(iaErr)) {
+                // Mismo criterio que el motor del chat: sin saldo o llave
+                // revocada apagan la cuenta, y el texto deja claro cuál de
+                // las dos es (de él sale el motivo que ve /conexiones).
+                const keyMuerta = esApiKeyInvalida(iaErr);
                 await db.query(
                   `UPDATE configuraciones
                    SET openai_activo = 0,
@@ -1378,7 +1383,11 @@ cron.schedule('*/1 * * * *', async () => {
                    WHERE id = ?`,
                   {
                     replacements: [
-                      `Sin saldo OpenAI (cron remarketing): ${
+                      `${
+                        keyMuerta
+                          ? 'API Key de OpenAI inválida o revocada'
+                          : 'Sin saldo OpenAI'
+                      } (cron remarketing): ${
                         mensajeErrorOpenAI(iaErr) || 'sin detalle'
                       }`.slice(0, 500),
                       record.id_configuracion,
@@ -1387,7 +1396,9 @@ cron.schedule('*/1 * * * *', async () => {
                   },
                 );
                 console.log(
-                  `🚨 [remarketing] id=${record.id} OpenAI SIN SALDO, marcado inactivo. Fallback a template.`,
+                  `🚨 [remarketing] id=${record.id} OpenAI ${
+                    keyMuerta ? 'API KEY INVÁLIDA' : 'SIN SALDO'
+                  }, marcado inactivo. Fallback a template.`,
                 );
               } else {
                 console.log(

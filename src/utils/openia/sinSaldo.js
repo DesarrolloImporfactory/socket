@@ -106,6 +106,51 @@ function esOrganizacionNoVerificada(err) {
   return texto.includes('must be verified');
 }
 
+// El modelo de la columna no existe o la cuenta no tiene acceso a él (404
+// model_not_found: "The model `gpt-4o-xyz` does not exist or you do not have
+// access to it"; también el 400 de un id mal escrito). NO es la verificación
+// de organización (esa tiene su propio respaldo): acá el bot se queda mudo
+// en esa columna hasta que el dueño cambie el modelo, y hay que decírselo.
+function esModeloNoDisponible(err) {
+  if (esOrganizacionNoVerificada(err)) return false;
+  const code = err?.response?.data?.error?.code;
+  const texto = mensajeErrorOpenAI(err).toLowerCase();
+  if (code === 'model_not_found') return true;
+  if (texto.includes('model_not_found')) return true;
+  if (texto.includes('does not exist or you do not have access')) return true;
+  return texto.includes('invalid model');
+}
+
+/* Por qué está apagada la IA de una cuenta (openai_activo=0), a partir del
+   texto guardado en configuraciones.openai_error_msg. La vista de conexiones
+   y la ventana al entrar necesitan el motivo, no solo el 0: "sin saldo" se
+   arregla recargando; una llave inválida, cargando otra (cfg 1325, ZivaShop,
+   2026-10-23: la llave llevaba el día revocada, el chat se llenaba de
+   carteles y /conexiones decía "Servicios al día"). Se deduce del texto para
+   no sumar una columna: los textos los escribimos nosotros (motor, cron de
+   remarketing, rama de Claude) o son los de OpenAI que ya reconocen los
+   detectores de arriba. */
+const CODIGO_SIN_SALDO = 'SIN_SALDO';
+const CODIGO_KEY_INVALIDA = 'KEY_INVALIDA';
+const CODIGO_ERROR = 'ERROR';
+
+function codigoErrorIA(msg) {
+  const texto = String(msg || '').toLowerCase();
+  // Marcas viejas sin texto: hasta hoy solo se marcaba por saldo.
+  if (!texto) return CODIGO_SIN_SALDO;
+  if (
+    texto.includes('api key inválida') ||
+    texto.includes('api key invalida') ||
+    esApiKeyInvalida({ message: texto })
+  ) {
+    return CODIGO_KEY_INVALIDA;
+  }
+  if (texto.includes('sin saldo') || esSinSaldoOpenAI({ message: texto })) {
+    return CODIGO_SIN_SALDO;
+  }
+  return CODIGO_ERROR;
+}
+
 // Con qué modelo se responde cuando gpt-5* está bloqueado por verificación.
 // gpt-4.1-mini y no gpt-4o-mini: mismo rango de precio, modelo más nuevo y es
 // el que el propio cliente comprobó que le funciona. En código y no en .env a
@@ -120,6 +165,11 @@ module.exports = {
   esRateLimitTransitorio,
   esApiKeyInvalida,
   esOrganizacionNoVerificada,
+  esModeloNoDisponible,
+  codigoErrorIA,
+  CODIGO_SIN_SALDO,
+  CODIGO_KEY_INVALIDA,
+  CODIGO_ERROR,
   MODELO_RESPALDO_GPT5,
   URL_VERIFICAR_ORGANIZACION,
   mensajeErrorOpenAI,

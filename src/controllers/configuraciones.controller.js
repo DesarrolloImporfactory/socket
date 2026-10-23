@@ -16,6 +16,33 @@ const {
 const {
   SQL_STATUS_WHATSAPP,
 } = require('../services/whatsapp_numero_health.service');
+const { codigoErrorIA } = require('../utils/openia/sinSaldo');
+
+/* Columnas de estado de la IA que /conexiones necesita para decir QUÉ pasa
+   con el bot y no solo "sin saldo": por qué está apagado (openai_error_msg,
+   que el front recibe ya clasificado en openai_error_codigo) y el aviso no
+   bloqueante (modelo no disponible, organización sin verificar, último turno
+   fallido). Hasta 2026-10-23 solo viajaba openai_activo y una llave revocada
+   se veía como "Servicios al día". */
+const SQL_ESTADO_IA = `
+        c.openai_error_msg,
+        c.openai_error_at,
+        c.proveedor_ia,
+        c.openai_aviso_codigo,
+        c.openai_aviso_msg,
+        c.openai_aviso_at,`;
+
+function anexarCodigoErrorIA(rows) {
+  for (const r of rows) {
+    r.openai_error_codigo =
+      r.openai_activo !== null &&
+      r.openai_activo !== undefined &&
+      Number(r.openai_activo) === 0
+        ? codigoErrorIA(r.openai_error_msg)
+        : null;
+  }
+  return rows;
+}
 
 exports.validarConexionUsuario = catchAsync(async (req, res, next) => {
   const { id_usuario, id_configuracion } = req.body;
@@ -105,7 +132,7 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
         c.id_whatsapp,       -- WABA_ID        (WPP)
         c.webhook_url,
         c.metodo_pago,
-        c.openai_activo,
+        c.openai_activo,${SQL_ESTADO_IA}
         c.suspendido,
         c.tipo_configuracion,
         c.sincronizo_coexistencia,
@@ -178,7 +205,7 @@ exports.listarConexiones = catchAsync(async (req, res, next) => {
       { replacements: [id_usuario] },
     );
 
-    return res.json({ status: 'success', data: rows });
+    return res.json({ status: 'success', data: anexarCodigoErrorIA(rows) });
   } catch (e) {
     console.error('listar_conexiones:', e);
     return res.status(500).json({ status: 'error', message: 'Error interno' });
@@ -232,10 +259,11 @@ exports.listarConexionesSubUser = catchAsync(async (req, res) => {
       c.id_whatsapp,
       c.webhook_url,
       c.metodo_pago,
-      -- Estado del saldo de OpenAI (0 = el motor marcó una falla por saldo y
-      -- el asistente está en pausa). La vista de conexiones lo pinta junto al
-      -- pago de Meta para que la tarjeta no diga "al día" con el bot muerto.
-      c.openai_activo,
+      -- Estado de la IA (0 = el motor la apagó: sin saldo o llave inválida;
+      -- el motivo va en openai_error_msg). La vista de conexiones lo pinta
+      -- junto al pago de Meta para que la tarjeta no diga "al día" con el
+      -- bot muerto.
+      c.openai_activo,${SQL_ESTADO_IA}
       c.suspendido,
       c.tipo_configuracion,
       c.sincronizo_coexistencia,
@@ -339,7 +367,7 @@ exports.listarConexionesSubUser = catchAsync(async (req, res) => {
     },
   );
 
-  return res.json({ status: 'success', data: rows });
+  return res.json({ status: 'success', data: anexarCodigoErrorIA(rows) });
 });
 
 exports.listarAdminConexiones = catchAsync(async (req, res, next) => {
