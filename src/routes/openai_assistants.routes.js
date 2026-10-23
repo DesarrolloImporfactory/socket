@@ -124,4 +124,12 @@ router.post(
   openai_assistantsController.openai_reintentar,
 );
 
+/* "Ya verifiqué mi organización": prueba gpt-5 en vivo y retira el aviso
+   ORG_NO_VERIFICADA. Con protect por la misma razón que el anterior. */
+router.post(
+  '/openai_comprobar_gpt5',
+  protect,
+  openai_assistantsController.openai_comprobar_gpt5,
+);
+
 module.exports = router;

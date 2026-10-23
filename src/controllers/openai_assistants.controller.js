@@ -8,7 +8,13 @@ const OpenaiAssistants = require('../models/openai_assistants.model');
 const { responderImporia } = require('../services/imporia.service');
 const { olvidarCliente } = require('../utils/dedupeMedia');
 const { invalidarInterruptorBot } = require('../utils/interruptorBot');
-const { obtenerCuentaOpenAI } = require('../utils/openia/cuentaOpenAI');
+// La cuenta dueña de cada llave se guarda en configuraciones.openai_cuenta /
+// claude_cuenta y solo se vuelve a consultar al cambiar la llave (utils/cuentaIA).
+const {
+  consultarYGuardarCuentaIA,
+  limpiarCuentaIA,
+  obtenerCuentaIA,
+} = require('../utils/cuentaIA');
 const {
   leerApiKeyOpenAI,
   prepararApiKeyParaGuardar,
@@ -24,10 +30,20 @@ const {
   esApiKeyClaudeInvalida,
   mensajeErrorClaude,
 } = require('../utils/claude/claude');
+// Aviso no bloqueante al dueño (organización sin verificar para gpt-5): ver
+// utils/openia/avisoOpenAI.js y el respaldo en kanban_ia.service.
+const {
+  AVISO_ORG_NO_VERIFICADA,
+  leerAvisoOpenAI,
+  limpiarAvisoOpenAI,
+} = require('../utils/openia/avisoOpenAI');
 const {
   esSinSaldoOpenAI,
   esApiKeyInvalida,
   esRateLimitTransitorio,
+  esOrganizacionNoVerificada,
+  MODELO_RESPALDO_GPT5,
+  URL_VERIFICAR_ORGANIZACION,
   mensajeErrorOpenAI,
 } = require('../utils/openia/sinSaldo');
 const {
@@ -308,6 +324,8 @@ exports.info_asistentes = catchAsync(async (req, res, next) => {
         // solo enmascarada («sk-ant-••••AbCd»).
         proveedor_ia: configuracion.proveedor_ia || 'openai',
         api_key_claude: enmascararApiKeyClaude(configuracion.api_key_claude),
+        // Aviso no bloqueante (p. ej. organización sin verificar para gpt-5).
+        openai_aviso: await leerAvisoOpenAI(id_configuracion),
         logistico: logistico || {},
         ventas: ventas || {},
       },
@@ -628,6 +646,15 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
     },
   );
 
+  // 2.a) El aviso de "organización sin verificar" era de la llave anterior:
+  //      con la nueva se vuelve a comprobar en el primer turno.
+  await limpiarAvisoOpenAI(id_configuracion);
+  try {
+    require('../services/kanban_ia.service').olvidarBloqueoGpt5(id_configuracion);
+  } catch (_) {
+    /* motor no cargado en este proceso */
+  }
+
   // 2.b) Si los assistants estaban suspendidos (soft delete por eliminar la
   //      key), se reviven — el cliente vuelve a conectar y todo queda como antes.
   await db.query(
@@ -659,8 +686,18 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
   );
 
   // 4) De qué cuenta de OpenAI es la key: el front lo muestra para que el
-  //    cliente sepa DÓNDE recargar. null si no se pudo — nunca frena el guardado.
-  const cuenta = await obtenerCuentaOpenAI(api_key);
+  //    cliente sepa DÓNDE recargar. Se guarda en la BD junto con la llave y
+  //    no se vuelve a preguntar hasta que la cambie. null si no se pudo —
+  //    nunca frena el guardado.
+  let cuenta = null;
+  try {
+    cuenta = await consultarYGuardarCuentaIA(id_configuracion, 'openai', api_key);
+  } catch (e) {
+    console.error(
+      `[api_key_openai] cfg ${id_configuracion}: no se pudo guardar la cuenta de OpenAI:`,
+      e?.message,
+    );
+  }
 
   return res.status(200).json({
     status: '200',
@@ -676,10 +713,11 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
 });
 
 /* ── A qué cuenta de OpenAI pertenece la key guardada ────────────────────────
-   Se consulta en vivo y no se persiste: así sirve también para las keys que ya
-   estaban cargadas y nunca queda desfasada de la key actual.
+   Sale de configuraciones.openai_cuenta (guardada al cargar la llave). Solo se
+   pregunta a OpenAI si nunca se consultó (llaves anteriores a la columna), si
+   la consulta anterior falló hace más de un día, o con ?refrescar=1.
    Va con protect porque devuelve el correo del dueño de la cuenta de OpenAI.
-   GET /api/v1/openai_assistants/openai_cuenta?id_configuracion=
+   GET /api/v1/openai_assistants/openai_cuenta?id_configuracion=[&refrescar=1]
 ─────────────────────────────────────────────────────────────────────────── */
 exports.openai_cuenta = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.query;
@@ -688,17 +726,17 @@ exports.openai_cuenta = catchAsync(async (req, res, next) => {
     return next(new AppError('Falta el campo id_configuracion', 400));
   }
 
-  const [row] = await db.query(
-    `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-  );
+  const r = await obtenerCuentaIA(id_configuracion, 'openai', {
+    refrescar: String(req.query.refrescar || '') === '1',
+  });
+  if (!r) return next(new AppError('Configuración no encontrada', 404));
 
-  if (!row) return next(new AppError('Configuración no encontrada', 404));
-
-  const apiKey = leerApiKeyOpenAI(row.api_key_openai);
-  const cuenta = apiKey ? await obtenerCuentaOpenAI(apiKey) : null;
-
-  res.status(200).json({ status: '200', cuenta });
+  res.status(200).json({
+    status: '200',
+    cuenta: r.cuenta,
+    consultada_at: r.consultada_at,
+    origen: r.origen,
+  });
 });
 
 // Elimina la API Key de OpenAI de la configuración y SUSPENDE los asistentes
@@ -726,6 +764,13 @@ exports.eliminar_api_key_openai = catchAsync(async (req, res, next) => {
       type: db.QueryTypes.UPDATE,
     },
   );
+  // Sin llave no hay cuenta donde recargar: fuera la guardada. Nunca frena
+  // el borrado de la llave (p. ej. si la migración aún no corrió).
+  try {
+    await limpiarCuentaIA(id_configuracion, 'openai');
+  } catch (e) {
+    console.error(`[api_key_openai] cfg ${id_configuracion}: no se pudo limpiar la cuenta:`, e?.message);
+  }
 
   await db.query(
     `UPDATE openai_assistants
@@ -785,9 +830,17 @@ exports.actualizar_api_key_claude = catchAsync(async (req, res, next) => {
   );
 
   // De qué organización de Anthropic es la llave (mismo fin que con OpenAI:
-  // saber dónde recargar). null si no se pudo; nunca frena el guardado.
-  const { obtenerCuentaClaude } = require('../utils/claude/cuentaClaude');
-  const cuenta = await obtenerCuentaClaude(api_key);
+  // saber dónde recargar). Se guarda en la BD junto con la llave; null si no
+  // se pudo; nunca frena el guardado.
+  let cuenta = null;
+  try {
+    cuenta = await consultarYGuardarCuentaIA(id_configuracion, 'claude', api_key);
+  } catch (e) {
+    console.error(
+      `[api_key_claude] cfg ${id_configuracion}: no se pudo guardar la organización de Claude:`,
+      e?.message,
+    );
+  }
 
   return res.status(200).json({
     status: '200',
@@ -796,22 +849,26 @@ exports.actualizar_api_key_claude = catchAsync(async (req, res, next) => {
   });
 });
 
-/* De qué organización de Anthropic es la llave de Claude guardada.
-   GET /api/v1/openai_assistants/claude_cuenta?id_configuracion= */
+/* De qué organización de Anthropic es la llave de Claude guardada. Misma
+   política que openai_cuenta: sale de configuraciones.claude_cuenta y solo se
+   consulta a Anthropic si nunca se hizo, si falló hace más de un día o con
+   ?refrescar=1.
+   GET /api/v1/openai_assistants/claude_cuenta?id_configuracion=[&refrescar=1] */
 exports.claude_cuenta = catchAsync(async (req, res, next) => {
   const { id_configuracion } = req.query;
   if (!id_configuracion) {
     return next(new AppError('Falta el campo id_configuracion', 400));
   }
-  const [row] = await db.query(
-    `SELECT api_key_claude FROM configuraciones WHERE id = ? LIMIT 1`,
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-  );
-  if (!row) return next(new AppError('Configuración no encontrada', 404));
-  const apiKey = leerApiKeyClaude(row.api_key_claude);
-  const { obtenerCuentaClaude } = require('../utils/claude/cuentaClaude');
-  const cuenta = apiKey ? await obtenerCuentaClaude(apiKey) : null;
-  res.status(200).json({ status: '200', cuenta });
+  const r = await obtenerCuentaIA(id_configuracion, 'claude', {
+    refrescar: String(req.query.refrescar || '') === '1',
+  });
+  if (!r) return next(new AppError('Configuración no encontrada', 404));
+  res.status(200).json({
+    status: '200',
+    cuenta: r.cuenta,
+    consultada_at: r.consultada_at,
+    origen: r.origen,
+  });
 });
 
 /* Borra la llave de Claude. Si el bot estaba respondiendo con Claude, vuelve
@@ -832,6 +889,11 @@ exports.eliminar_api_key_claude = catchAsync(async (req, res, next) => {
       WHERE id = ?`,
     { replacements: [id_configuracion], type: db.QueryTypes.UPDATE },
   );
+  try {
+    await limpiarCuentaIA(id_configuracion, 'claude');
+  } catch (e) {
+    console.error(`[api_key_claude] cfg ${id_configuracion}: no se pudo limpiar la cuenta:`, e?.message);
+  }
 
   return res.status(200).json({
     status: '200',
@@ -1629,6 +1691,96 @@ exports.openai_status = catchAsync(async (req, res, next) => {
     openai_activo: row?.openai_activo ?? 1,
     openai_error_at: row?.openai_error_at || null,
     openai_error_msg: row?.openai_error_msg || null,
+    // Aviso NO bloqueante (el bot responde, pero el dueño debe actuar).
+    openai_aviso: await leerAvisoOpenAI(id_configuracion),
+  });
+});
+
+/* ── "Ya verifiqué mi organización": comprobar gpt-5 en vivo ─────────────────
+   El aviso ORG_NO_VERIFICADA se retira solo cuando gpt-5 vuelve a responder en
+   un turno real, pero quien acaba de verificar quiere saberlo ya. Se hace una
+   llamada mínima con gpt-5-mini a la cuenta del cliente (GET /v1/models no
+   sirve: responde 200 aunque la organización no esté verificada).
+   POST /api/v1/openai_assistants/openai_comprobar_gpt5 { id_configuracion } */
+exports.openai_comprobar_gpt5 = catchAsync(async (req, res, next) => {
+  const id_configuracion =
+    req.body?.id_configuracion || req.query?.id_configuracion;
+  if (!id_configuracion) {
+    return next(new AppError('Falta el campo id_configuracion', 400));
+  }
+  const [row] = await db.query(
+    `SELECT api_key_openai FROM configuraciones WHERE id = ? LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  if (!row) return next(new AppError('Configuración no encontrada', 404));
+  const apiKey = leerApiKeyOpenAI(row.api_key_openai);
+  if (!apiKey) {
+    return res.status(200).json({
+      status: '200',
+      ok: false,
+      motivo: 'sin_key',
+      mensaje: 'Esta cuenta no tiene una API Key de OpenAI cargada.',
+    });
+  }
+
+  try {
+    await axios.post(
+      'https://api.openai.com/v1/responses',
+      { model: 'gpt-5-mini', input: 'ping', max_output_tokens: 16 },
+      { headers: getClientHeaders(apiKey), timeout: 30000 },
+    );
+  } catch (err) {
+    const detalle = mensajeErrorOpenAI(err).slice(0, 300);
+    if (esOrganizacionNoVerificada(err)) {
+      return res.status(200).json({
+        status: '200',
+        ok: false,
+        motivo: 'org_no_verificada',
+        mensaje:
+          'OpenAI todavía no reconoce tu organización como verificada. Si acabas de hacerlo, puede tardar hasta 15 minutos en activarse. ' +
+          `Mientras tanto el bot sigue respondiendo con ${MODELO_RESPALDO_GPT5}.`,
+        url: URL_VERIFICAR_ORGANIZACION,
+        detalle,
+      });
+    }
+    if (esSinSaldoOpenAI(err)) {
+      return res.status(200).json({
+        status: '200',
+        ok: false,
+        motivo: 'sin_saldo',
+        mensaje: 'Tu cuenta de OpenAI no tiene saldo: la verificación no se puede comprobar hasta recargar.',
+        detalle,
+      });
+    }
+    if (esApiKeyInvalida(err)) {
+      return res.status(200).json({
+        status: '200',
+        ok: false,
+        motivo: 'key_invalida',
+        mensaje: 'Tu API Key de OpenAI ya no es válida. Carga una nueva desde Asistentes.',
+        detalle,
+      });
+    }
+    return res.status(200).json({
+      status: '200',
+      ok: false,
+      motivo: 'indeterminado',
+      mensaje: 'No pudimos comprobarlo con OpenAI en este momento. Inténtalo de nuevo en unos minutos.',
+      detalle,
+    });
+  }
+
+  // gpt-5 responde: fuera el aviso y que el próximo turno ya no use respaldo.
+  await limpiarAvisoOpenAI(id_configuracion, AVISO_ORG_NO_VERIFICADA);
+  try {
+    require('../services/kanban_ia.service').olvidarBloqueoGpt5(id_configuracion);
+  } catch (_) {
+    /* el motor no cargó en este proceso: el TTL lo soltará solo */
+  }
+  return res.status(200).json({
+    status: '200',
+    ok: true,
+    mensaje: 'Tu organización ya está verificada: el bot vuelve a responder con GPT-5.',
   });
 });
 
