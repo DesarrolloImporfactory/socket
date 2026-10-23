@@ -367,4 +367,7 @@ module.exports = {
   parsearJsonTolerante,
   claudeJson,
   describirImagenClaude,
+  // Para el bucle de herramientas (utils/claude/herramientas.js)
+  cliente,
+  PISO_MAX_TOKENS,
 };

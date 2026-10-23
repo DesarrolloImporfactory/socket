@@ -14,7 +14,7 @@
 
   Uso:
     node scripts/simular_conversaciones_expertos.js --etiqueta=v2 [--n=63] [--guiones] [--solo-guiones]
-         [--persona=<id>] [--modelo-bot=gpt-4.1] [--paralelo=4] [--real] [--proveedor=claude]
+         [--persona=<id>] [--modelo-bot=gpt-4.1] [--paralelo=4] [--real] [--proveedor=claude] [--herramientas]
          [--guiones-archivo=<ruta>.json] [--repeticiones=1]
     (sin --real corre en seco: no llama a OpenAI. Con --real muestra el costo estimado
      y espera 10 segundos antes de empezar, para cortarlo con Ctrl+C.)
@@ -37,6 +37,14 @@ const SECO = !tiene('real');
 // --proveedor=claude: bot y cliente con Claude (prueba el prompt, no gpt-4.1). La llave sale de
 // ANTHROPIC_API_KEY o de ~/.config/impor/anthropic_key; no lee la base, así que corre en la Mac.
 const CLAUDE = arg('proveedor') === 'claude';
+// --herramientas (solo con --proveedor=claude): el bot corre como la 265 con
+// herramientas encendidas (ver_mi_carga, pasar_a_humano) y con el modelo de
+// producción de Claude (claude-opus-5-5) salvo que se pida otro.
+const HERRAMIENTAS = tiene('herramientas');
+if (HERRAMIENTAS && !CLAUDE) {
+  console.error('--herramientas solo funciona con --proveedor=claude');
+  process.exit(1);
+}
 const CARPETA = path.join(__dirname, 'soporte_expertos', 'simulaciones');
 
 /* ── Rúbrica del juez ──────────────────────────────────────────────────── */
@@ -195,7 +203,7 @@ async function conversar(ctx, conv) {
     const t = {
       turno: i + 1, cliente: entradaCliente.cliente, tipo: entradaCliente.tipo || 'text',
       contexto, fichas: r.ctx.hechos.fichas, carga: Boolean(r.ctx.hechos.carga),
-      modelo: r.modelo, enviado: r.enviado,
+      modelo: r.modelo, enviado: r.enviado, llamadas: r.llamadas,
       guardia: r.guardia.cambiada ? { corregida: Boolean(r.guardia.corregida), motivos: r.guardia.motivos } : null,
     };
     const { corregirVoseo } = require('../src/utils/soporteExpertos/guardia');
@@ -223,8 +231,11 @@ async function correr() {
   const { GUIONES } = require('./soporte_expertos/guiones_fijos');
 
   const etiqueta = arg('etiqueta') || 'prueba';
-  const modeloBot = arg('modelo-bot') || (CLAUDE ? 'claude-sonnet-5-5' : 'gpt-4.1');
+  // Los precios de Claude de abajo son los de sonnet; opus se estima a 2,5× (5/25 por
+  // millón). Es un estimado para avisar antes de gastar: revisa el precio de lista.
+  const modeloBot = arg('modelo-bot') || (CLAUDE ? (HERRAMIENTAS ? 'claude-opus-5-5' : 'claude-sonnet-5-5') : 'gpt-4.1');
   const paralelo = Number(arg('paralelo')) || 4;
+  const PRECIO_BOT = /opus/.test(modeloBot) ? 2.5 : 1;
   const buscador = buscadorDeArchivo();
   const base = baseDeMentira(DATOS);
   let llamar = null;
@@ -234,7 +245,7 @@ async function correr() {
   if (!SECO && CLAUDE) {
     const archivoLlave = path.join(require('os').homedir(), '.config', 'impor', 'anthropic_key');
     const llave = process.env.ANTHROPIC_API_KEY || (fs.existsSync(archivoLlave) ? fs.readFileSync(archivoLlave, 'utf8').trim() : '');
-    const bot = crearLlamadorClaude({ apiKey: llave, modelo: modeloBot });
+    const bot = crearLlamadorClaude({ apiKey: llave, modelo: modeloBot, herramientas: HERRAMIENTAS });
     ({ llamar, cerrar } = bot);
     claude = bot.cliente;
   } else if (!SECO) {
@@ -266,16 +277,18 @@ async function correr() {
   }
 
   const prompt = promptSoporteExpertos();
-  console.log(`${SECO ? 'EN SECO' : `REAL · bot ${modeloBot} · cliente ${MODELO_CLIENTE}`} · prompt ${prompt.length} caracteres · ${convs.length} conversaciones · ${paralelo} a la vez`);
+  console.log(`${SECO ? 'EN SECO' : `REAL · bot ${modeloBot}${HERRAMIENTAS ? ' con herramientas' : ''} · cliente ${MODELO_CLIENTE}`} · prompt ${prompt.length} caracteres · ${convs.length} conversaciones · ${paralelo} a la vez`);
   if (!SECO) {
     // Estimado grueso: ~4,5 turnos por conversación y ~9.000 tokens de entrada por turno del
     // bot (prompt + fichas + la conversación guardada), más el cliente simulado.
     // Con Claude el prompt va en caché (5.500 tokens a 0,1×) y la salida trae el razonamiento.
     const turnos = convs.length * 4.5;
     const usd = CLAUDE
-      ? turnos * (4000 * 2 + 5500 * 0.2 + 600 * 10) / 1e6 + turnos * (1500 * 0.1 + 300 * 0.5) / 1e6
+      ? turnos * (4000 * 2 + 5500 * 0.2 + 600 * 10) * PRECIO_BOT / 1e6 + turnos * (1500 * 0.1 + 300 * 0.5) / 1e6
       : turnos * (9000 * 2 + 150 * 8) / 1e6 + turnos * (1500 * 0.4 + 60 * 1.6) / 1e6;
-    console.log(`Costo estimado: ~${usd.toFixed(2)} USD de la llave ${CLAUDE ? 'de Claude' : 'de la cuenta 10'}. Empieza en 10 s (Ctrl+C para cortar).`);
+    // Con herramientas, algunos turnos son 2-3 llamadas: ~+40% del bot (estimado del plan).
+    const usdFinal = HERRAMIENTAS ? usd * 1.4 : usd;
+    console.log(`Costo estimado: ~${usdFinal.toFixed(2)} USD de la llave ${CLAUDE ? 'de Claude' : 'de la cuenta 10'}. Empieza en 10 s (Ctrl+C para cortar).`);
     await new Promise((r) => setTimeout(r, 10000));
   }
   const ctx = { responderTurno, llamar, consultar: base.consultar, buscador, hoy: HOY, apiKey, claude };
@@ -303,7 +316,7 @@ async function correr() {
   // Precios de lista por millón de tokens (USD). OpenAI sin descontar caché: gpt-4.1 2/8,
   // gpt-4.1-mini 0,4/1,6. Claude: sonnet-5-5 2/10 (caché: leer 0,2, escribir 2,5), haiku-5-5 0,1/0,5.
   const costo = CLAUDE
-    ? (uso.botIn * 2 + uso.botCacheLee * 0.2 + uso.botCacheEscribe * 2.5 + uso.botOut * 10 + uso.cliIn * 0.1 + uso.cliOut * 0.5) / 1e6
+    ? ((uso.botIn * 2 + uso.botCacheLee * 0.2 + uso.botCacheEscribe * 2.5 + uso.botOut * 10) * PRECIO_BOT + uso.cliIn * 0.1 + uso.cliOut * 0.5) / 1e6
     : (uso.botIn * 2 + uso.botOut * 8 + uso.cliIn * 0.4 + uso.cliOut * 1.6) / 1e6;
   const fecha = new Date().toISOString().slice(0, 10);
   fs.mkdirSync(CARPETA, { recursive: true });
