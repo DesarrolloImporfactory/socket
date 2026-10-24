@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
-const { esEquipo, puedeTenerRolEquipo, EMISOR_TEAM, DESTINO_TEAM } = require('../utils/rolEquipo');
+const { ROL_EQUIPO, esEquipo, enPruebaDeTeam, puedeTenerRolEquipo, EMISOR_TEAM, DESTINO_TEAM } = require('../utils/rolEquipo');
 const { taparTelefonos } = require('../utils/taparTelefonos');
 
 /*  Rutas de Team para el rol «equipo» (ver utils/rolEquipo.js). */
@@ -11,8 +11,8 @@ const DURACION_SESION = '8h';
 
 /*  POST /api/v1/equipo/sesion — servidor de Team, con TEAM_EQUIPO_TOKEN.
  *  Team ya validó a su usuario y dice qué sub-usuario de IMPORCHAT le toca.
- *  Solo se emite para un sub-usuario vigente, con rol «equipo» y de una cuenta
- *  autorizada (ROL_EQUIPO_CUENTAS). El token lleva `origen: 'team'`: protect
+ *  Solo se emite para un sub-usuario vigente, con rol «equipo» o de prueba
+ *  (ROL_EQUIPO_PRUEBA_SUBS), y de una cuenta autorizada (ROL_EQUIPO_CUENTAS). El token lleva `origen: 'team'`: protect
  *  lo limita a /api/v1/equipo/ y le tapa los teléfonos.
  */
 exports.sesion = catchAsync(async (req, res, next) => {
@@ -27,7 +27,7 @@ exports.sesion = catchAsync(async (req, res, next) => {
     ? 'NO_EXISTE'
     : Number(sub.suspendido) === 1
       ? 'SUSPENDIDO'
-      : !esEquipo(sub)
+      : !esEquipo(sub) && !enPruebaDeTeam(sub)
         ? 'SIN_ROL_EQUIPO'
         : !puedeTenerRolEquipo(sub.id_usuario)
           ? 'CUENTA_NO_HABILITADA'
@@ -35,7 +35,7 @@ exports.sesion = catchAsync(async (req, res, next) => {
 
   console.log(
     '[EQUIPO_SESION]',
-    JSON.stringify({ id_sub_usuario, team_usuario, ok: !motivo, motivo }),
+    JSON.stringify({ id_sub_usuario, team_usuario, ok: !motivo, motivo, prueba: !!sub && !esEquipo(sub) && enPruebaDeTeam(sub) }),
   );
   if (motivo) {
     // Un solo mensaje para todos los casos: no dice qué sub-usuarios existen.
@@ -137,7 +137,10 @@ exports.chats = catchAsync(async (req, res, next) => {
   const cursorId = Number(req.query.cursorId) || null;
   const cursorFecha = cursorId && req.query.cursorFecha ? String(req.query.cursorFecha).slice(0, 40) : null;
 
-  const chats = await new ChatService().findChats(cfg.id, u.id_sub_usuario, u.rol, {
+  // Siempre con el alcance de un asesor (sus chats y los en espera de sus
+  // canales), aunque sea un sub-usuario de prueba con otro rol: en Team nadie
+  // ve la lista entera de la línea.
+  const chats = await new ChatService().findChats(cfg.id, u.id_sub_usuario, ROL_EQUIPO, {
     cursorFecha,
     cursorId,
     limit,

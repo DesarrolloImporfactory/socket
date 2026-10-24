@@ -16,6 +16,11 @@ const { taparTelefonos, taparTexto } = require('./taparTelefonos');
  *  El rol solo se puede asignar en las cuentas de ROL_EQUIPO_CUENTAS (vacío =
  *  ninguna). Hasta que el canal en vivo tenga salas por cuenta (tramo 2), un
  *  usuario «equipo» no entra al socket.
+ *
+ *  Prueba sin cambiar el rol (ROL_EQUIPO_PRUEBA_SUBS): esos sub-usuarios
+ *  conservan su rol y su ImporChat de siempre, y además entran a Team. Lo que
+ *  queda limitado y tapado es la sesión de Team, no la persona: con su token de
+ *  login siguen viendo lo de siempre.
  */
 
 const ROL_EQUIPO = 'equipo';
@@ -36,6 +41,11 @@ function puedeTenerRolEquipo(id_usuario) {
   return cuentasEquipo().has(Number(id_usuario));
 }
 
+// Sub-usuarios de prueba: entran a Team sin el rol «equipo». Vacío = nadie.
+function subsDePrueba(valor = process.env.ROL_EQUIPO_PRUEBA_SUBS) {
+  return cuentasEquipo(valor);
+}
+
 // Sin mayúsculas ni espacios: «Equipo» o « equipo» también son el rol, para
 // que nunca quede un usuario que se guardó así viendo todo.
 function normalizarRol(rol) {
@@ -46,16 +56,26 @@ function esEquipo(user) {
   return normalizarRol(user?.rol) === ROL_EQUIPO;
 }
 
+function enPruebaDeTeam(user) {
+  return subsDePrueba().has(Number(user?.id_sub_usuario));
+}
+
+// Quién puede tener una sesión de Team: el rol «equipo» o un sub-usuario de
+// prueba, y siempre de una cuenta de ROL_EQUIPO_CUENTAS.
+function puedeEntrarDesdeTeam(user) {
+  return (esEquipo(user) || enPruebaDeTeam(user)) && puedeTenerRolEquipo(user?.id_usuario);
+}
+
 // Una sesión de Team vale solo si trae su sello y si el usuario y la cuenta
-// siguen autorizados. Sacar la cuenta de ROL_EQUIPO_CUENTAS corta al instante
-// las sesiones vivas; no hay que esperar las 8 h.
+// siguen autorizados. Sacar la cuenta de ROL_EQUIPO_CUENTAS (o al sub-usuario
+// de ROL_EQUIPO_PRUEBA_SUBS) corta al instante las sesiones vivas; no hay que
+// esperar las 8 h.
 function sesionTeamValida(decoded, user) {
   return (
     decoded?.origen === 'team' &&
     decoded?.iss === EMISOR_TEAM &&
     decoded?.aud === DESTINO_TEAM &&
-    esEquipo(user) &&
-    puedeTenerRolEquipo(user?.id_usuario)
+    puedeEntrarDesdeTeam(user)
   );
 }
 
@@ -126,6 +146,9 @@ module.exports = {
   sesionTeamValida,
   cuentasEquipo,
   puedeTenerRolEquipo,
+  subsDePrueba,
+  enPruebaDeTeam,
+  puedeEntrarDesdeTeam,
   normalizarRol,
   esEquipo,
   rutaPermitidaEquipo,

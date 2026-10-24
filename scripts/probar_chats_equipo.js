@@ -214,6 +214,18 @@ async function caso(nombre, fn) {
     await pedir(s, '/api/v1/equipo/chats?id_configuracion=265&scope=espera', TEAM);
     assert.ok(sqlChats().sql.includes('id_encargado IS NULL'));
   });
+  await caso('un admin de prueba en Team ve solo lo suyo, no la línea entera', async () => {
+    SUBS[2] = { id_sub_usuario: 2, id_usuario: 254, rol: 'administrador', suspendido: 0 };
+    process.env.ROL_EQUIPO_PRUEBA_SUBS = '2';
+    const t = jwt.sign({ id_sub_usuario: 2, rol: 'administrador', origen: 'team' }, process.env.SECRET_JWT_SEED, { expiresIn: '1h', issuer: 'chatcenter', audience: 'team' });
+    const r = await pedir(s, '/api/v1/equipo/chats?id_configuracion=265', t);
+    delete process.env.ROL_EQUIPO_PRUEBA_SUBS;
+    delete SUBS[2];
+    assert.equal(r.status, 200);
+    const q = sqlChats();
+    assert.ok(q.sql.includes('id_encargado = :id_sub_usuario'), q.sql);
+    assert.equal(q.opts.replacements.id_sub_usuario, 2);
+  });
   await caso('conexión de otra cuenta → 404 y no consulta chats', async () => {
     const r = await pedir(s, '/api/v1/equipo/chats?id_configuracion=999', TEAM);
     assert.equal(r.status, 404);

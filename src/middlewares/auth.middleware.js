@@ -95,6 +95,9 @@ exports.protect = catchAsync(async (req, res, next) => {
       });
     }
     envolverParaEquipo(res);
+    // Las rutas de Team miran esto, no el rol: un sub-usuario de prueba
+    // (ROL_EQUIPO_PRUEBA_SUBS) entra con su rol de siempre.
+    req.sesionTeam = true;
   }
 
   req.sessionUser = user;

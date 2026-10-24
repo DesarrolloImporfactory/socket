@@ -1100,6 +1100,16 @@ exports.logoutGlobal = catchAsync(async (req, res, next) => {
  * volver a poner credenciales. Validado por Acceso::sso_from_chatcenter.
  */
 exports.issueImporsuitToken = catchAsync(async (req, res) => {
+  // Una sesión de Team (utils/rolEquipo.js) no se canjea por una de login:
+  // protect ya la frena fuera de /api/v1/equipo/, esto es la segunda llave.
+  if (req.sesionTeam) {
+    return res.status(403).json({
+      status: 'fail',
+      code: 'EQUIPO_SOLO_TEAM',
+      message: 'Tu usuario entra solo desde Team.',
+    });
+  }
+
   const subUser = req.sessionUser;
   const email = subUser?.email || '';
   const usuario = subUser?.usuario || '';
@@ -1233,6 +1243,16 @@ exports.updatePassword = catchAsync(async (req, res, next) => {
  *  un Sub_usuarios_chat_center (id_sub_usuario / id_usuario), nunca id_users.
  */
 exports.renew = catchAsync(async (req, res, next) => {
+  // Una sesión de Team (utils/rolEquipo.js) no se canjea por una de login:
+  // protect ya la frena fuera de /api/v1/equipo/, esto es la segunda llave.
+  if (req.sesionTeam) {
+    return res.status(403).json({
+      status: 'fail',
+      code: 'EQUIPO_SOLO_TEAM',
+      message: 'Tu usuario entra solo desde Team.',
+    });
+  }
+
   const { id_sub_usuario } = req.sessionUser;
 
   if (!id_sub_usuario) {

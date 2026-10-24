@@ -12,16 +12,20 @@ const jwt = require('jsonwebtoken');
 
 process.env.SECRET_JWT_SEED = 'semilla-de-prueba';
 process.env.ROL_EQUIPO_CUENTAS = '254';
+process.env.ROL_EQUIPO_PRUEBA_SUBS = '7,8';
 delete process.env.RUTAS_SESION_EXIGIR;
 const SRC = path.join(__dirname, '..', 'src');
 
 // Sub-usuarios de mentira: 1 ventas, 3 equipo (cuenta 254), 4 equipo de una
-// cuenta no habilitada, 5 equipo suspendido.
+// cuenta no habilitada, 5 equipo suspendido; 7 y 8 ventas de prueba
+// (ROL_EQUIPO_PRUEBA_SUBS), 7 en la 254 y 8 en una cuenta no habilitada.
 const SUBS = {
   1: { id_sub_usuario: 1, id_usuario: 9, rol: 'ventas', suspendido: 0, nombre_encargado: 'V' },
   3: { id_sub_usuario: 3, id_usuario: 254, rol: 'equipo', suspendido: 0, nombre_encargado: 'E' },
   4: { id_sub_usuario: 4, id_usuario: 77, rol: 'equipo', suspendido: 0, nombre_encargado: 'X' },
   5: { id_sub_usuario: 5, id_usuario: 254, rol: 'equipo', suspendido: 1, nombre_encargado: 'S' },
+  7: { id_sub_usuario: 7, id_usuario: 254, rol: 'ventas', suspendido: 0, nombre_encargado: 'P' },
+  8: { id_sub_usuario: 8, id_usuario: 77, rol: 'ventas', suspendido: 0, nombre_encargado: 'Q' },
 };
 const fila = (o) => (o ? { ...o, toJSON: () => ({ ...o }) } : null);
 
@@ -327,6 +331,87 @@ async function caso(nombre, fn) {
     assert.ok(d.exp - d.iat <= 8 * 3600);
     assert.equal((await pedir(s, 'GET', '/api/v1/equipo/yo', { token: r.body.token })).status, 200);
     assert.equal((await pedir(s, 'GET', '/api/v1/chats', { token: r.body.token })).status, 403);
+  });
+
+  console.log('Prueba sin cambiar el rol (ROL_EQUIPO_PRUEBA_SUBS)');
+  const sesionDe = (id) =>
+    pedir(s, 'POST', '/api/v1/equipo/sesion', { cabeceras: { 'x-team-token': SECRETO }, cuerpo: { id_sub_usuario: id } });
+  let tPrueba = null;
+  await caso('ventas de prueba de la 254 → sesión de Team', async () => {
+    const r = await sesionDe(7);
+    assert.equal(r.status, 200);
+    tPrueba = r.body.token;
+    assert.equal(jwt.decode(tPrueba).origen, 'team');
+    const yo = await pedir(s, 'GET', '/api/v1/equipo/yo', { token: tPrueba });
+    assert.equal(yo.status, 200);
+    assert.equal(yo.body.data.rol, 'ventas');
+  });
+  await caso('con la sesión de Team le llega tapado', async () => {
+    const r = await pedir(s, 'GET', '/api/v1/equipo/_datos', { token: tPrueba });
+    assert.equal(r.body.celular_cliente, '•••• 4567');
+  });
+  await caso('con la sesión de Team, rutas viejas → 403', async () => {
+    const r = await pedir(s, 'GET', '/api/v1/chats', { token: tPrueba });
+    assert.equal(r.status, 403);
+    assert.equal(r.body.code, 'EQUIPO_RUTA_NO_PERMITIDA');
+  });
+  await caso('con la sesión de Team, ruta A1 sin sesión → 403', async () => {
+    const r = await pedir(s, 'GET', '/api/v1/whatsapp_managment/programados_por_config', { token: tPrueba });
+    assert.equal(r.status, 403);
+  });
+  await caso('con la sesión de Team no entra al canal en vivo', () => {
+    assert.equal(cerradoParaEquipo(jwt.decode(tPrueba), SUBS[7]), true);
+  });
+  await caso('con su token de login sigue igual: ve el número y entra al socket', async () => {
+    const tLogin = firmar({ id_sub_usuario: 7, rol: 'ventas' });
+    const r = await pedir(s, 'GET', '/api/v1/chats', { token: tLogin });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.celular_cliente, CEL);
+    assert.equal(cerradoParaEquipo(jwt.decode(tLogin), SUBS[7]), false);
+  });
+  await caso('con su token de login, las rutas de Team → 403 SOLO_EQUIPO', async () => {
+    const r = await pedir(s, 'GET', '/api/v1/equipo/yo', { token: firmar({ id_sub_usuario: 7, rol: 'ventas' }) });
+    assert.equal(r.status, 403);
+    assert.equal(r.body.code, 'SOLO_EQUIPO');
+  });
+  await caso('ventas de prueba de una cuenta no habilitada → 403', async () => {
+    assert.equal((await sesionDe(8)).status, 403);
+  });
+  await caso('ventas fuera de la lista sigue sin sesión de Team', async () => {
+    assert.equal((await sesionDe(1)).status, 403);
+  });
+  await caso('sacarlo de la lista corta la sesión viva', async () => {
+    process.env.ROL_EQUIPO_PRUEBA_SUBS = '8';
+    const r = await pedir(s, 'GET', '/api/v1/equipo/yo', { token: tPrueba });
+    process.env.ROL_EQUIPO_PRUEBA_SUBS = '7,8';
+    assert.equal(r.status, 401);
+    assert.equal(r.body.code, 'EQUIPO_SOLO_TEAM');
+    assert.equal((await pedir(s, 'GET', '/api/v1/equipo/yo', { token: tPrueba })).status, 200);
+  });
+  await caso('sacar la cuenta también la corta', async () => {
+    process.env.ROL_EQUIPO_CUENTAS = '';
+    const r = await pedir(s, 'GET', '/api/v1/equipo/yo', { token: tPrueba });
+    process.env.ROL_EQUIPO_CUENTAS = '254';
+    assert.equal(r.status, 401);
+  });
+  await caso('renew e issue-imporsuit-token no canjean una sesión de Team', async () => {
+    // auth.controller crea clientes de servicios al cargarse: llaves de mentira.
+    for (const k of ['OPENAI_API_KEY', 'STRIPE_SECRET_KEY', 'RESEND_API_KEY']) process.env[k] = process.env[k] || 'llave-de-prueba';
+    const auth = require(path.join(SRC, 'controllers/auth.controller'));
+    for (const fn of [auth.renew, auth.issueImporsuitToken]) {
+      let st = null;
+      let cuerpo = null;
+      const res = { status: (c) => ((st = c), { json: (b) => (cuerpo = b) }) };
+      await fn({ sesionTeam: true, sessionUser: { ...SUBS[7], email: 'e', usuario: 'u' } }, res, (e) => (st = e));
+      assert.equal(st, 403);
+      assert.equal(cuerpo.code, 'EQUIPO_SOLO_TEAM');
+    }
+  });
+  await caso('ROL_EQUIPO_PRUEBA_SUBS vacío: nadie de prueba', async () => {
+    process.env.ROL_EQUIPO_PRUEBA_SUBS = '';
+    const r = await sesionDe(7);
+    process.env.ROL_EQUIPO_PRUEBA_SUBS = '7,8';
+    assert.equal(r.status, 403);
   });
 
   s.close();
