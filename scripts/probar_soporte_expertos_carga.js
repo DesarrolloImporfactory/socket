@@ -26,6 +26,8 @@ const { buscadorDeArchivo } = require('../src/utils/soporteExpertos/fichas');
 const { prepararTurno, revisarTurno, olvidarTodo } = require('../src/utils/soporteExpertos/turno');
 const T = require('../src/utils/soporteExpertos/textos');
 const { baseDeMentira, DATOS, TEL, HOY } = require('./soporte_expertos/base_de_mentira');
+// Estas pruebas describen el bot de noche: la hora queda fija un sábado a las 21:00 de Ecuador.
+require('../src/utils/soporteExpertos/horario').fijarHoraParaPruebas(Date.parse('2026-10-24T21:00:00-05:00'));
 
 let ok = 0;
 let fallos = 0;

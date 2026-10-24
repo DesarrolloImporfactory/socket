@@ -31,6 +31,7 @@ const { revisarRespuesta } = require('./guardia');
 const { paisDelTelefono } = require('./telefono');
 const { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad, esMensajeDeBot, noPideNada } = require('./senales');
 const T = require('./textos');
+const { equipoAtendiendo, textoAlHorario } = require('./horario');
 
 const MINUTOS_MEMORIA = 20; // la carga leída y las fichas mostradas siguen valiendo para los mensajes que siguen
 const MAX_MEMORIA = 3000;
@@ -192,6 +193,18 @@ async function prepararTurno(p) {
     );
   }
 
+  // ── ¿El equipo está atendiendo? ───────────────────────────────────────
+  /* Los textos fijos dicen «apenas abramos»; de día eso es falso. El modelo los
+     sigue usando tal cual (la guardia no le deja prometer tiempos) y al final
+     del turno revisarTurno cambia «apenas abramos» por «en breve». */
+  const atendiendo = equipoAtendiendo(deps.ahora, opciones.horario_equipo);
+  if (atendiendo) {
+    bloques.push(
+      '🕘 AHORA EL EQUIPO ESTÁ ATENDIENDO (horario de oficina). No digas que estamos cerrados, que es fuera de horario ni que es de noche o fin de semana. ' +
+        'Usa los textos fijos tal cual están escritos: el sistema ajusta solo cuándo te escribe el asesor.',
+    );
+  }
+
   // ── Hechos del turno: con esto revisa la guardia ──────────────────────
   const fichasVistas = new Map(previo?.fichas || []);
   for (const { ficha } of fichas) fichasVistas.set(ficha.id, ficha);
@@ -268,7 +281,8 @@ async function prepararTurno(p) {
       (saludoSinContestar ? ' · primer saludo' : '') +
       (mensajeDeBot ? ' · mensaje de un bot de tienda' : '') +
       (sinPedido ? ' · no pide nada' : '') +
-      (cargaYaDicha ? ' · el estado de la carga ya se dijo' : ''),
+      (cargaYaDicha ? ' · el estado de la carga ya se dijo' : '') +
+      (atendiendo ? ' · equipo atendiendo' : ''),
   );
 
   return {
@@ -286,6 +300,7 @@ async function prepararTurno(p) {
       mensajeDeBot,
       noPideNada: sinPedido,
       cargaYaDicha,
+      equipoAtendiendo: atendiendo,
       huellasCarga: huellasDeCarga(textoCarga),
       clave,
       dioCantidad: cantidadDicha,
@@ -319,6 +334,7 @@ function hechosDeEmergencia(mensaje = '') {
     mensajeDeBot: false,
     noPideNada: false,
     cargaYaDicha: false,
+    equipoAtendiendo: false,
     huellasCarga: [],
     clave: null,
     dioCantidad: false,
@@ -327,22 +343,32 @@ function hechosDeEmergencia(mensaje = '') {
   };
 }
 
+/* Con el equipo atendiendo, «apenas abramos» → «en breve» (horario.js). No
+   cuenta como respuesta cambiada: es el mismo texto aprobado, ajustado a la hora. */
+function alHorario(rev, h) {
+  if (!h.equipoAtendiendo || !rev?.texto) return rev;
+  return { ...rev, texto: textoAlHorario(rev.texto, true) };
+}
+
 /** Pasa la respuesta del modelo por la guardia con los hechos del turno. */
 function revisarTurno(respuesta, hechos, { ahora = Date.now() } = {}) {
   const h = hechos || hechosDeEmergencia();
-  const rev = revisarRespuesta(respuesta, h);
+  const rev = alHorario(revisarRespuesta(respuesta, h), h);
   /* ¿La respuesta trae el estado de la carga? Si ya se le había dicho y no lo
      volvió a pedir, se cambia por el paso a asesor; si no, se anota que ya se
      le dijo (para el próximo mensaje de esta conversación). */
   const huellas = h.huellasCarga || [];
   if (huellas.length && huellas.some((x) => String(rev.texto || '').includes(x))) {
     if (h.cargaYaDicha) {
-      return {
-        texto: T.MENSAJE_ASESOR,
-        cambiada: true,
-        corregida: false,
-        motivos: [...(rev.motivos || []), 'repetía el estado de la carga que ya se le había dado'],
-      };
+      return alHorario(
+        {
+          texto: T.MENSAJE_ASESOR,
+          cambiada: true,
+          corregida: false,
+          motivos: [...(rev.motivos || []), 'repetía el estado de la carga que ya se le había dado'],
+        },
+        h,
+      );
     }
     const m = h.clave && memoria.get(h.clave);
     if (m) m.cargaDichaTs = ahora;

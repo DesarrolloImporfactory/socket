@@ -42,6 +42,8 @@ function prueba(nombre, pasa, detalle = '') {
 }
 
 const { TEL, AHORA, conexion, columna, chats, escenario, baseFalsa, PERMITIDO, NIEGA } = require('./soporte_expertos/cuenta_imporchat_de_mentira');
+// Estas pruebas describen el bot de noche: la hora queda fija un sábado a las 21:00 de Ecuador.
+require('../src/utils/soporteExpertos/horario').fijarHoraParaPruebas(Date.parse('2026-10-24T21:00:00-05:00'));
 
 function revisar(cambios = {}, o = {}) {
   const b = baseFalsa(escenario(cambios));

@@ -35,6 +35,8 @@ const ajustes = require('../src/utils/ajustesIA');
 const { baseDeMentira, DATOS, TEL, HOY } = require('./soporte_expertos/base_de_mentira');
 const { CASOS, HOY: HOY_CASOS } = require('./soporte_expertos/casos_estado_carga.entrada.js');
 const ESPERADO_PHP = require('./soporte_expertos/casos_estado_carga.esperado.json');
+// Estas pruebas describen el bot de noche: la hora queda fija un sábado a las 21:00 de Ecuador.
+require('../src/utils/soporteExpertos/horario').fijarHoraParaPruebas(Date.parse('2026-10-24T21:00:00-05:00'));
 
 let ok = 0;
 let fallos = 0;
@@ -649,6 +651,35 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
     const noAutos = ['Gracias por tu mensaje, ¿cuándo llega mi carga?', '¿Cuál es el horario de atención de la bodega?', 'Un asesor me dijo que me contactaría en breve y nada'];
     prueba('una persona que pregunta por el horario no se calla', !noAutos.some(esMensajeDeBot), noAutos.filter(esMensajeDeBot).join(' | '));
     prueba('callar_bots = false se guarda en los ajustes', n({ soporte_expertos: { callar_bots: false } }).soporte_expertos.callar_bots === false);
+  }
+
+  console.log('\n── Horario del equipo: de día no se dice «apenas abramos» ──');
+  {
+    const { equipoAtendiendo, textoAlHorario, normalizarHorarioEquipo } = require('../src/utils/soporteExpertos/horario');
+    const { revisarTurno } = require('../src/utils/soporteExpertos/turno');
+    const ec = (iso) => Date.parse(`${iso}-05:00`);
+    prueba('viernes 10:00 de Ecuador: atendiendo', equipoAtendiendo(ec('2026-10-23T10:00:00')));
+    prueba('viernes 08:00 en punto: atendiendo', equipoAtendiendo(ec('2026-10-23T08:00:00')));
+    prueba('viernes 17:30 en punto: ya no', !equipoAtendiendo(ec('2026-10-23T17:30:00')));
+    prueba('viernes 07:59: no', !equipoAtendiendo(ec('2026-10-23T07:59:00')));
+    prueba('sábado 10:00: no', !equipoAtendiendo(ec('2026-10-24T10:00:00')));
+    prueba('domingo 12:00: no', !equipoAtendiendo(ec('2026-10-25T12:00:00')));
+    prueba('un horario que no se puede leer cae al de oficina', igual(normalizarHorarioEquipo({ dias: [1], desde: '25:00', hasta: '17:30' }), { dias: [1, 2, 3, 4, 5], desde: '08:00', hasta: '17:30', utc: -5 }));
+    prueba('horario propio: sábado 09:00-13:00', equipoAtendiendo(ec('2026-10-24T10:00:00'), { dias: [6], desde: '09:00', hasta: '13:00', utc: -5 }));
+    prueba('«apenas abramos» → «en breve» con el equipo atendiendo', textoAlHorario(T.MENSAJE_ASESOR, true) === 'Recibí tu mensaje. Un asesor lo revisa y te escribe en breve.');
+    prueba('fuera de horario el texto no cambia', textoAlHorario(T.MENSAJE_ASESOR, false) === T.MENSAJE_ASESOR);
+    const quedan = Object.entries(T.TEXTOS_FIJOS).filter(([, v]) => /abramos|cerrad|fuera de horario/i.test(textoAlHorario(v, true)));
+    prueba('ningún texto fijo dice «abramos» de día', !quedan.length, quedan.map(([k]) => k).join(', '));
+    olvidarTodo();
+    const dia = await prepararTurno({ mensaje: 'necesito hablar con mi asesor', telefono: '593999000111', id_configuracion: 265, id_cliente: 3, opciones: { cargas: false, fichas: false }, deps: { ahora: ec('2026-10-23T10:00:00') } });
+    prueba('de día el turno lo sabe y se lo dice al modelo', dia.hechos.equipoAtendiendo === true && /EQUIPO ESTÁ ATENDIENDO/.test(dia.bloque));
+    const rDia = revisarTurno(T.MENSAJE_ASESOR, dia.hechos);
+    prueba('de día la respuesta sale con «en breve»', /en breve\.$/.test(rDia.texto) && !/abramos/.test(rDia.texto), rDia.texto);
+    olvidarTodo();
+    const noche = await prepararTurno({ mensaje: 'necesito hablar con mi asesor', telefono: '593999000111', id_configuracion: 265, id_cliente: 3, opciones: { cargas: false, fichas: false }, deps: { ahora: ec('2026-10-23T21:00:00') } });
+    prueba('de noche sigue «apenas abramos» y no va el aviso', noche.hechos.equipoAtendiendo === false && !/EQUIPO ESTÁ ATENDIENDO/.test(noche.bloque) && revisarTurno(T.MENSAJE_ASESOR, noche.hechos).texto === T.MENSAJE_ASESOR);
+    olvidarTodo();
+    prueba('horario_equipo se guarda en los ajustes', igual(n({ soporte_expertos: { horario_equipo: { dias: [1], desde: '09:00', hasta: '12:00' } } }).soporte_expertos.horario_equipo, { dias: [1], desde: '09:00', hasta: '12:00' }));
   }
 
   console.log('\n── No pide nada: «ok», «gracias», «el lunes te lo paso» (23/24-oct) ──');

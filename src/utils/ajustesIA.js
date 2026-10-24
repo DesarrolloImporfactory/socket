@@ -123,6 +123,8 @@ function normalizarSoporteExpertos(v) {
     // encendidos salvo que la cuenta los apague (senales.js).
     callar_bots: v.callar_bots !== false,
     callar_acuses: v.callar_acuses !== false,
+    // Horario del equipo (soporteExpertos/horario.js): solo si la cuenta lo trae.
+    ...(v.horario_equipo && typeof v.horario_equipo === 'object' ? { horario_equipo: v.horario_equipo } : {}),
   };
 }
 

@@ -3059,9 +3059,10 @@ async function procesarMensajeKanban(params) {
       await log(
         `⚠️ soporte_expertos (guardia): ${eGuardia.message} — se manda el texto seguro en lugar de la respuesta sin revisar`,
       ).catch(() => {});
-      respuestaRaw =
-        turnoExpertos?.hechos?.textoSeguro ||
-        require('../utils/soporteExpertos/textos').MENSAJE_ASESOR;
+      respuestaRaw = require('../utils/soporteExpertos/horario').textoAlHorario(
+        turnoExpertos?.hechos?.textoSeguro || require('../utils/soporteExpertos/textos').MENSAJE_ASESOR,
+        Boolean(turnoExpertos?.hechos?.equipoAtendiendo),
+      );
     }
   }
 

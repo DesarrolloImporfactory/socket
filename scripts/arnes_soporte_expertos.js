@@ -65,6 +65,8 @@ const { baseDeMentira, DATOS, TEL, HOY } = require('./soporte_expertos/base_de_m
 const { crearHerramientas, sumarHechosHerramientas } = require('../src/utils/soporteExpertos/herramientas');
 const ajustesIA = require('../src/utils/ajustesIA');
 const CUENTA = require('./soporte_expertos/cuenta_imporchat_de_mentira');
+// Estas pruebas describen el bot de noche: la hora queda fija un sábado a las 21:00 de Ecuador.
+require('../src/utils/soporteExpertos/horario').fijarHoraParaPruebas(Date.parse('2026-10-24T21:00:00-05:00'));
 
 const FICHAS = buscadorDeArchivo();
 const ESPERA = '[espera]:true';
