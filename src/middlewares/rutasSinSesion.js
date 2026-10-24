@@ -24,10 +24,10 @@ const { protect } = require('./auth.middleware');
  */
 
 const CADA_MS = 10 * 60 * 1000;
-// Tope de combinaciones distintas por resumen: el user-agent lo elige quien
-// llama, así que sin tope la memoria y el log crecerían a su gusto.
-const MAX_CLAVES = 300;
-const POR_LINEA = 40;
+// Tope de programas distintos por ruta en cada resumen: el user-agent lo elige
+// quien llama, así que sin tope la memoria y el log crecerían a su gusto.
+const MAX_CLIENTES = 10;
+const POR_LINEA = 20;
 
 function escapar(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -114,36 +114,53 @@ function quien(req) {
   return { cliente, ip };
 }
 
+// Una fila por lote+método+ruta+code (como mucho ~700: las reglas por los
+// códigos posibles), siempre. El tope solo aplica a cuántos programas
+// distintos se guardan por fila: así llenar el registro con user-agents
+// falsos no esconde que otra ruta tuvo una llamada sin sesión.
 const vistos = new Map();
-let desbordados = 0;
 
 function anotar(regla, code, req) {
-  const q = quien(req);
-  const clave = [regla.lote, regla.metodo, regla.ruta, code, q.cliente].join(' ');
-  const fila = vistos.get(clave);
-  if (fila) {
-    fila.n += 1;
-    return;
-  }
   iniciarResumen();
-  if (vistos.size >= MAX_CLAVES) {
-    desbordados += 1;
+  const q = quien(req);
+  const clave = [regla.lote, regla.metodo, regla.ruta, code].join(' ');
+  let fila = vistos.get(clave);
+  if (!fila) {
+    fila = { lote: regla.lote, metodo: regla.metodo, ruta: regla.ruta, code, n: 0, clientes: new Map(), otros: 0 };
+    vistos.set(clave, fila);
+  }
+  fila.n += 1;
+  const c = fila.clientes.get(q.cliente);
+  if (c) {
+    c.n += 1;
     return;
   }
-  const nueva = { lote: regla.lote, metodo: regla.metodo, ruta: regla.ruta, code, ...q, n: 1 };
-  vistos.set(clave, nueva);
-  console.log('[RUTA_SIN_SESION] nueva', JSON.stringify(nueva));
+  if (fila.clientes.size >= MAX_CLIENTES) {
+    fila.otros += 1;
+    return;
+  }
+  fila.clientes.set(q.cliente, { ip: q.ip, n: 1 });
+  console.log(
+    '[RUTA_SIN_SESION] nueva',
+    JSON.stringify({ lote: regla.lote, metodo: regla.metodo, ruta: regla.ruta, code, ...q }),
+  );
 }
 
 function resumir() {
-  if (!vistos.size && !desbordados) return;
-  const filas = [...vistos.values()];
+  if (!vistos.size) return;
+  const filas = [...vistos.values()].map((f) => ({
+    lote: f.lote,
+    metodo: f.metodo,
+    ruta: f.ruta,
+    code: f.code,
+    n: f.n,
+    clientes: Object.fromEntries(f.clientes),
+    ...(f.otros ? { otros: f.otros } : {}),
+  }));
   for (let i = 0; i < filas.length; i += POR_LINEA) {
     console.log('[RUTA_SIN_SESION] resumen', JSON.stringify(filas.slice(i, i + POR_LINEA)));
   }
-  if (desbordados) console.log('[RUTA_SIN_SESION] resumen desbordados', desbordados);
   vistos.clear();
-  desbordados = 0;
 }
 
 let reloj = null;

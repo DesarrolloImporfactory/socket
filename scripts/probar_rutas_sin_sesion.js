@@ -151,7 +151,7 @@ async function caso(nombre, fn) {
   await caso('con token válido pasa', async () => {
     assert.equal((await pedir(s, 'GET', R_A1, valido)).status, 200);
   });
-  await caso('el tope de combinaciones aguanta 2.000 user-agents distintos', async () => {
+  await caso('2.000 user-agents falsos: tope por ruta y otra ruta no se esconde', async () => {
     for (let i = 0; i < 2000; i += 1) {
       mod.vigilar(
         { method: 'GET', path: R_A1, headers: { 'user-agent': 'bot' + i + '/1' } },
@@ -159,6 +159,7 @@ async function caso(nombre, fn) {
         () => {},
       );
     }
+    mod.vigilar({ method: 'POST', path: R_A3, headers: { 'user-agent': 'sistema/2' } }, {}, () => {});
     const lineas = [];
     const log = console.log;
     console.log = (...a) => lineas.push(a.join(' '));
@@ -167,7 +168,11 @@ async function caso(nombre, fn) {
     } finally {
       console.log = log;
     }
-    assert.ok(lineas.some((l) => l.includes('desbordados')), 'sin línea de desbordados');
+    const filas = lineas.flatMap((l) => JSON.parse(l.replace('[RUTA_SIN_SESION] resumen ', '')));
+    const f = filas.find((x) => x.ruta === R_A1 && x.code === 'TOKEN_MISSING');
+    assert.ok(f && f.otros > 0, 'sin contador de otros');
+    assert.ok(Object.keys(f.clientes).length <= 10, 'más de 10 clientes');
+    assert.ok(filas.some((x) => x.ruta === R_A3), 'la ruta A3 quedó escondida');
     assert.ok(lineas.every((l) => l.length < 20000), 'línea demasiado larga');
   });
   s.close();
