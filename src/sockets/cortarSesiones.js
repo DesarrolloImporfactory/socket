@@ -29,11 +29,14 @@ function socketsConSesion(io) {
   return out;
 }
 
+// disconnect() sin `true`: corta solo este namespace. Con `true` se cerraría
+// la conexión entera del navegador y el otro namespace (chat o presence) se
+// iría sin recibir su SESION_TERMINADA.
 function cortar(socket, code) {
   try {
     socket.emit('SESION_TERMINADA', { code });
   } finally {
-    socket.disconnect(true);
+    socket.disconnect();
   }
 }
 
@@ -118,7 +121,14 @@ async function revisarConectados(io) {
   }
 
   const cortes = aCortar(sockets, subs, logouts);
-  for (const { socket, code } of cortes) cortar(socket, code);
+  for (const { socket, code } of cortes) {
+    try {
+      cortar(socket, code);
+    } catch (err) {
+      // Un socket que falla no frena el corte de los demás.
+      console.warn('[cortarSesiones] no se pudo cortar', socket.id, '—', err.message);
+    }
+  }
   if (cortes.length) {
     console.log(
       '[SOCKET_SESION] cortados',
