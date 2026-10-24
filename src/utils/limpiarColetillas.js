@@ -53,9 +53,24 @@ function limpiarColetillas(texto) {
 
   /* Una frase que ofrece un asesor no es relleno, es información: "Si tienes
      alguna duda, un asesor te acompaña en el proceso" (soporte IMPORSHOP). */
+  /* Y solo se quita si es una frase entera. Los patrones cortan en el primer
+     punto, así que con un enlace adentro se llevaban media dirección
+     ("…en https://imporfactory." y quedaba "app/infoaduana" suelto), y tras
+     una coma dejaban colgando el arranque ("Para escoger tu nicho, Recibí tu
+     mensaje."). Si no empieza donde empieza una frase o no termina donde
+     termina una, se deja: mejor robótico que roto. */
+  const fraseEntera = (m, inicio, todo) => {
+    if (/https?:|www\.|\.(?:app|com|ec|mx|net|org)\b/i.test(m)) return false;
+    const antes = todo.slice(0, inicio).replace(/[ \t]+$/, '');
+    const despues = todo.slice(inicio + m.length);
+    if (antes && !/[.!?:\n]$|[\p{Emoji_Presentation}\p{Extended_Pictographic}]$/u.test(antes)) return false;
+    if (despues && !/^\s/.test(despues) && !/[.!?]$/.test(m)) return false;
+    if (/[.]$/.test(m) && /^[a-z0-9/]/i.test(despues)) return false;
+    return true;
+  };
   for (const patron of PATRONES) {
-    salida = salida.replace(new RegExp(patron.source, 'gi'), (m) =>
-      /asesor/i.test(m) ? m : '',
+    salida = salida.replace(new RegExp(patron.source, 'gi'), (m, inicio, todo) =>
+      /asesor/i.test(m) || !fraseEntera(m, inicio, todo) ? m : '',
     );
   }
 
