@@ -33,7 +33,10 @@ function responder(sql, opts) {
     return [{ id: 11, celular_cliente: CEL, nombre_cliente: 'Ana', texto_mensaje: 'mi cel 0991234567', mensaje_created_at: '2026-10-24 10:00:00' }];
   }
   if (/FROM clientes_chat_center\s+WHERE id = \?/.test(sql)) {
-    return Number(r[0]) === 11 ? [{ id: 11 }] : [];
+    return Number(r[0]) === 11 ? [{ id: 11, celular_cliente: CEL }] : [];
+  }
+  if (/FROM appointments a/.test(sql)) {
+    return [{ id: 7, title: 'Reunión con Ana 0991234567', status: 'Agendado', start_utc: '2026-10-27 15:00:00', end_utc: '2026-10-27 15:30:00', meeting_url: 'https://meet.google.com/abc-defg-hij' }];
   }
   return [];
 }
@@ -81,6 +84,17 @@ ClientesChatCenter.findAll = async () => [
 ];
 require(path.join(SRC, 'models/plataforma.model')).findAll = async () => [];
 require(path.join(SRC, 'models/mensaje_cliente.model')).update = async () => [1];
+
+// La lectura de la carga es la del bot de la línea; aquí se reemplaza para ver
+// qué número recibe y que lo que vuelve salga sin teléfonos.
+const cargaCliente = require(path.join(SRC, 'utils/soporteExpertos/cargaCliente'));
+const cargasReal = cargaCliente.cargasDelTelefono;
+let cargaStub = null;
+let telefonoPedido = null;
+cargaCliente.cargasDelTelefono = async (tel, o) => {
+  telefonoPedido = tel;
+  return cargaStub ? cargaStub(tel) : cargasReal(tel, o);
+};
 
 const ChatService = require(path.join(SRC, 'services/chat.service'));
 const rutas = require(path.join(SRC, 'middlewares/rutasSinSesion'));
@@ -215,6 +229,50 @@ async function caso(nombre, fn) {
   });
   await caso('mensajes con la conexión de otra cuenta → 404', async () => {
     assert.equal((await pedir(s, '/api/v1/equipo/chats/11/mensajes?id_configuracion=999', TEAM)).status, 404);
+  });
+
+  console.log('Barra lateral de Team');
+  await caso('agenda: solo las suyas de esa línea, con Meet y sin teléfono', async () => {
+    const r = await pedir(s, '/api/v1/equipo/agenda?id_configuracion=265', TEAM);
+    assert.equal(r.status, 200);
+    const q = consultas.find((c) => /FROM appointments a/.test(c.sql));
+    assert.ok(q.sql.includes('a.assigned_user_id = ?') && q.sql.includes('c.account_id = ?'), q.sql);
+    assert.deepEqual(q.opts.replacements, [265, 3]);
+    assert.ok(!/0991234567/.test(r.texto), r.texto);
+    assert.equal(r.body.data[0].meeting_url, 'https://meet.google.com/abc-defg-hij');
+  });
+  await caso('agenda con la conexión de otra cuenta → 404 y no consulta', async () => {
+    const r = await pedir(s, '/api/v1/equipo/agenda?id_configuracion=999', TEAM);
+    assert.equal(r.status, 404);
+    assert.ok(!consultas.some((c) => /FROM appointments a/.test(c.sql)));
+  });
+  await caso('carga: se busca por el número del chat y vuelve sin él', async () => {
+    telefonoPedido = null;
+    cargaStub = async () => ({
+      estado: 'encontradas',
+      hay_mas: 0,
+      cargas: [{ id_cotizacion: 4512, destino: 'Ecuador', marcas: ['ANA22'], paso: 4, paso_nombre: 'En tránsito', entregada: false, parcial: false, contenedor: 'MSKU1234567', fecha_estimada_texto: '12 de noviembre', estimada_vencida: false, marcas_pendientes: [], nota_cliente: 'Llamar al 0991234567', informable: true, motivo: null, texto_cliente: 'Hola 593991234567', telefono: CEL }],
+    });
+    const r = await pedir(s, '/api/v1/equipo/chats/11/carga?id_configuracion=265', TEAM);
+    cargaStub = null;
+    assert.equal(r.status, 200);
+    assert.equal(telefonoPedido, CEL);
+    assert.equal(r.body.data.cargas[0].paso, 4);
+    assert.equal(r.body.data.cargas[0].texto_cliente, undefined);
+    assert.ok(!r.texto.includes(CEL) && !r.texto.includes('0991234567'), r.texto);
+  });
+  await caso('carga sin nada en Imporsuit: dice el estado, no falla', async () => {
+    const r = await pedir(s, '/api/v1/equipo/chats/11/carga?id_configuracion=265', TEAM);
+    assert.equal(r.status, 200);
+    assert.ok(typeof r.body.data.estado === 'string' && r.body.data.estado !== 'encontradas', r.texto);
+  });
+  await caso('carga de un chat que no es suyo → 404 y no busca', async () => {
+    telefonoPedido = null;
+    assert.equal((await pedir(s, '/api/v1/equipo/chats/12/carga?id_configuracion=265', TEAM)).status, 404);
+    assert.equal(telefonoPedido, null);
+  });
+  await caso('un administrador no usa la agenda de Team', async () => {
+    assert.equal((await pedir(s, '/api/v1/equipo/agenda?id_configuracion=265', ADMIN)).status, 403);
   });
 
   console.log = silenciar;

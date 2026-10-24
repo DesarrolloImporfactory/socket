@@ -170,3 +170,74 @@ exports.mensajes = catchAsync(async (req, res, next) => {
   const data = await new ChatService().getChatsByClient(id_cliente, cfg.id);
   res.json({ status: 'success', data });
 });
+
+/* ───────── Barra lateral de Team: solo lectura ───────── */
+
+const { cargasDelTelefono } = require('../utils/soporteExpertos/cargaCliente');
+
+const AGENDA_DIAS = 14;
+const AGENDA_MAX = 50;
+
+/*  GET /api/v1/equipo/agenda?id_configuracion=
+ *  Las reuniones de este asesor en esa línea: de hace 2 h a 14 días, sin las
+ *  canceladas. Sin descripción ni datos del invitado: solo título, hora y Meet. */
+exports.agenda = catchAsync(async (req, res, next) => {
+  const u = req.sessionUser;
+  const cfg = await conexionDeLaCuenta(req.query.id_configuracion, u.id_usuario);
+  if (!cfg) return next(new AppError('Conexión no válida', 404));
+  const filas = await db.query(
+    `SELECT a.id, a.title, a.status, a.start_utc, a.end_utc, a.meeting_url
+       FROM appointments a
+       JOIN calendars c ON c.id = a.calendar_id
+      WHERE c.account_id = ? AND a.assigned_user_id = ?
+        AND a.status IN ('Agendado', 'Confirmado')
+        AND a.end_utc > UTC_TIMESTAMP() - INTERVAL 2 HOUR
+        AND a.start_utc < UTC_TIMESTAMP() + INTERVAL ${AGENDA_DIAS} DAY
+      ORDER BY a.start_utc ASC
+      LIMIT ${AGENDA_MAX}`,
+    { replacements: [cfg.id, Number(u.id_sub_usuario)], type: db.QueryTypes.SELECT },
+  );
+  res.json({ status: 'success', data: filas });
+});
+
+/*  GET /api/v1/equipo/chats/:id_cliente/carga?id_configuracion=
+ *  En qué va la carga del cliente de ese chat: la misma lectura que usa el
+ *  bot de la línea (ver_mi_carga), buscando por el número del chat. El número
+ *  se queda en el servidor; a Team le llega el paso, la marca y la fecha. */
+exports.carga = catchAsync(async (req, res, next) => {
+  const u = req.sessionUser;
+  const id_cliente = Number(req.params.id_cliente);
+  if (!Number.isInteger(id_cliente) || id_cliente <= 0) return next(new AppError('Chat no válido', 400));
+  const cfg = await conexionDeLaCuenta(req.query.id_configuracion, u.id_usuario);
+  if (!cfg || !(await chatVisible(id_cliente, cfg, u))) {
+    return next(new AppError('Chat no encontrado', 404));
+  }
+  const [fila] = await db.query(
+    `SELECT celular_cliente FROM clientes_chat_center WHERE id = ? AND id_configuracion = ? LIMIT 1`,
+    { replacements: [id_cliente, cfg.id], type: db.QueryTypes.SELECT },
+  );
+  const r = await cargasDelTelefono(String(fila?.celular_cliente || ''));
+  res.json({
+    status: 'success',
+    data: {
+      estado: r.estado,
+      hay_mas: r.hay_mas || 0,
+      cargas: (r.cargas || []).map((c) => ({
+        id_cotizacion: c.id_cotizacion,
+        destino: c.destino,
+        marcas: c.marcas,
+        paso: c.paso,
+        paso_nombre: c.paso_nombre,
+        entregada: c.entregada,
+        parcial: c.parcial,
+        contenedor: c.contenedor,
+        fecha_estimada_texto: c.fecha_estimada_texto,
+        estimada_vencida: c.estimada_vencida,
+        marcas_pendientes: c.marcas_pendientes,
+        nota_cliente: c.nota_cliente,
+        informable: c.informable,
+        motivo: c.motivo,
+      })),
+    },
+  });
+});
