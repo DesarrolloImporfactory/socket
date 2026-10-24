@@ -23,6 +23,7 @@
 'use strict';
 
 const { leerAdjuntos } = require('./adjuntos');
+const { sinTildes } = require('./texto');
 const { hablaDeCarga, pideDatosDeOtro } = require('./intencion');
 const { cargasDelTelefono, bloqueCarga, textoParaCliente, codigosEnMensaje } = require('./cargaCliente');
 const { buscadorDeArchivo, bloqueFichas, buscarConRescate } = require('./fichas');
@@ -54,6 +55,29 @@ function guardar(clave, valor) {
 }
 
 const decible = (f) => [f.respuesta_base, ...f.pasos, f.enlace, f.pedir].filter(Boolean).join('\n');
+
+/* Pide otra vez el ESTADO de su carga («¿cuándo llega?», «¿cómo va?»). Lo
+   que no: «hasta cuándo reciben en la bodega», «lo dejo para el contenedor del
+   15»: eso ya no es el estado, es para el asesor de logística. */
+const RE_PIDE_ESTADO =
+  /\b(?:cuando (?:llega|llegaria|sale|estaria)|donde (?:esta|va|se encuentra)|como va|en que (?:va|estado)|estado de (?:mi|la|las|mis)|fecha (?:de|estimada de) llegada|novedad\w*)\b/;
+// «ya llegó?» pregunta; «lo que ya está en bodega lo dejamos…» cuenta algo.
+const RE_YA_LLEGO = /\bya (?:llego|salio|esta en|estan en)\b/;
+const pideEstado = (t) => {
+  const l = sinTildes(String(t || '').toLowerCase());
+  return RE_PIDE_ESTADO.test(l) || (RE_YA_LLEGO.test(l) && l.includes('?'));
+};
+
+/* Huellas del texto de la carga: con ellas se sabe si la respuesta ya lo dijo
+   (cada línea de una carga, sin el «Hola,» ni el «- »). */
+function huellasDeCarga(textoCarga) {
+  if (!textoCarga) return [];
+  return textoCarga
+    .split('\n')
+    .map((l) => l.replace(/^-\s*/, '').replace(/^Hola,\s*/, '').trim())
+    .filter((l) => l.length >= 40 && !/^con este número tienes/i.test(l))
+    .map((l) => l.slice(0, 60));
+}
 
 /**
  * @param {object} p
@@ -94,6 +118,7 @@ async function prepararTurno(p) {
   // ── La carga del que escribe ──────────────────────────────────────────
   let carga = null;
   let cargaTs = null;
+  let bloqueDeCarga = '';
   // Venían hablando de su carga (el último mensaje fue hace menos de 20 minutos).
   const veniaDeCarga = Boolean(previo?.carga) && previo.telefono === String(p.telefono);
   // …y lo leído sigue vigente; si ya venció, se vuelve a leer, no se suelta.
@@ -106,9 +131,27 @@ async function prepararTurno(p) {
       carga = await cargasDelTelefono(p.telefono, { consultar: deps.consultar, hoy: deps.hoy });
       cargaTs = ahora;
     }
-    bloques.push(bloqueCarga(carga, { codigos: codigosEnMensaje(dicho), mensajeAsesor: T.MENSAJE_ASESOR }));
+    bloqueDeCarga = bloqueCarga(carga, { codigos: codigosEnMensaje(dicho), mensajeAsesor: T.MENSAJE_ASESOR });
   }
   const textoCarga = carga?.estado === 'encontradas' ? textoParaCliente(carga, T.MENSAJE_ASESOR) : null;
+  /* El estado de su carga ya se lo dijo hace menos de 20 minutos y ahora no lo
+     vuelve a pedir: no se repite el bloque entero (23-oct: a quien preguntaba
+     hasta cuándo recibe la bodega para el contenedor del 30 se le mandó dos
+     veces la lista de sus 3 cargas). Lo nuevo que pregunta es para el asesor. */
+  const cargaYaDicha =
+    Boolean(textoCarga) &&
+    Boolean(previo?.cargaDichaTs) &&
+    ahora - previo.cargaDichaTs <= MINUTOS_MEMORIA * 60 * 1000 &&
+    !pideEstado(dicho);
+  if (bloqueDeCarga) {
+    bloques.push(
+      cargaYaDicha
+        ? '📦 CARGA: el estado de su carga YA se lo diste en esta conversación y ahora no lo vuelve a pedir. NO lo repitas ni copies sus líneas. ' +
+            'Si pregunta algo que ese estado no dice (hasta cuándo recibe la bodega, pasar su mercadería a otro contenedor, una fecha de corte, otra bodega), ' +
+            `es para el asesor de logística: responde exactamente: ${T.MENSAJE_ASESOR}`
+        : bloqueDeCarga,
+    );
+  }
 
   // ── Fichas de la base ─────────────────────────────────────────────────
   let fichas = [];
@@ -155,7 +198,16 @@ async function prepararTurno(p) {
   /* Si en esta conversación ya dijo cuántas unidades quiere, se recuerda: una
      ficha de cotización que la guardia complete no se la vuelve a pedir. */
   const cantidadDicha = Boolean(previo?.dioCantidad) || dioCantidad(dicho);
-  guardar(clave, { ts: ahora, telefono: String(p.telefono), carga: carga || null, cargaTs, fichas: fichasVistas, dioCantidad: cantidadDicha });
+  guardar(clave, {
+    ts: ahora,
+    telefono: String(p.telefono),
+    carga: carga || null,
+    cargaTs,
+    // Cuándo se le dijo el estado de la carga (lo marca revisarTurno).
+    cargaDichaTs: carga ? previo?.cargaDichaTs || null : null,
+    fichas: fichasVistas,
+    dioCantidad: cantidadDicha,
+  });
 
   /* Fichas que pasan el caso a una persona (`pasar_a`): no pueden cerrar solas.
      La guardia agrega el paso a asesor si el modelo contestó con una y lo omitió
@@ -164,7 +216,6 @@ async function prepararTurno(p) {
     .filter((f) => f.pasar_a && f.respuesta_base)
     .map((f) => ({ id: f.id, partes: [f.respuesta_base, ...f.pasos], pedir: f.pedir || '' }));
 
-  const bloqueDeCarga = carga ? bloques.find((b) => b.startsWith('📦')) || '' : '';
   const firme = [
     ...Object.values(T.TEXTOS_FIJOS),
     ...Object.values(T.LINKS),
@@ -176,7 +227,8 @@ async function prepararTurno(p) {
   let textoSeguro = T.MENSAJE_ASESOR;
   if (otro.pide) textoSeguro = T.MENSAJE_SOLO_TU_NUMERO;
   else if (carga && hablaDeCarga(dicho)) {
-    if (textoCarga) textoSeguro = textoCarga;
+    if (cargaYaDicha) textoSeguro = T.MENSAJE_ASESOR;
+    else if (textoCarga) textoSeguro = textoCarga;
     else if (carga.estado === 'sin_carga' || carga.estado === 'solo_historicas') textoSeguro = T.MENSAJE_SIN_CARGA;
     else textoSeguro = T.MENSAJE_CARGA_A_LOGISTICA;
   }
@@ -215,7 +267,8 @@ async function prepararTurno(p) {
       (reclamoPorDemora ? ' · reclama por la demora' : reclamo ? ' · reclamo' : '') +
       (saludoSinContestar ? ' · primer saludo' : '') +
       (mensajeDeBot ? ' · mensaje de un bot de tienda' : '') +
-      (sinPedido ? ' · no pide nada' : ''),
+      (sinPedido ? ' · no pide nada' : '') +
+      (cargaYaDicha ? ' · el estado de la carga ya se dijo' : ''),
   );
 
   return {
@@ -232,6 +285,9 @@ async function prepararTurno(p) {
       saludoSinContestar,
       mensajeDeBot,
       noPideNada: sinPedido,
+      cargaYaDicha,
+      huellasCarga: huellasDeCarga(textoCarga),
+      clave,
       dioCantidad: cantidadDicha,
       respaldo: {
         firme,
@@ -262,6 +318,9 @@ function hechosDeEmergencia(mensaje = '') {
     saludoSinContestar: false,
     mensajeDeBot: false,
     noPideNada: false,
+    cargaYaDicha: false,
+    huellasCarga: [],
+    clave: null,
     dioCantidad: false,
     respaldo: { firme: fijos, eco: String(mensaje || ''), estado: fijos },
     textoSeguro: T.MENSAJE_ASESOR,
@@ -269,8 +328,26 @@ function hechosDeEmergencia(mensaje = '') {
 }
 
 /** Pasa la respuesta del modelo por la guardia con los hechos del turno. */
-function revisarTurno(respuesta, hechos) {
-  return revisarRespuesta(respuesta, hechos || hechosDeEmergencia());
+function revisarTurno(respuesta, hechos, { ahora = Date.now() } = {}) {
+  const h = hechos || hechosDeEmergencia();
+  const rev = revisarRespuesta(respuesta, h);
+  /* ¿La respuesta trae el estado de la carga? Si ya se le había dicho y no lo
+     volvió a pedir, se cambia por el paso a asesor; si no, se anota que ya se
+     le dijo (para el próximo mensaje de esta conversación). */
+  const huellas = h.huellasCarga || [];
+  if (huellas.length && huellas.some((x) => String(rev.texto || '').includes(x))) {
+    if (h.cargaYaDicha) {
+      return {
+        texto: T.MENSAJE_ASESOR,
+        cambiada: true,
+        corregida: false,
+        motivos: [...(rev.motivos || []), 'repetía el estado de la carga que ya se le había dado'],
+      };
+    }
+    const m = h.clave && memoria.get(h.clave);
+    if (m) m.cargaDichaTs = ahora;
+  }
+  return rev;
 }
 
 /** Solo para pruebas. */
