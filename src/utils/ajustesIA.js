@@ -116,6 +116,7 @@ function normalizarSoporteExpertos(v) {
       callar_bots: true,
       callar_acuses: true,
       escalar: false,
+      seguimiento: false,
     };
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   return {
@@ -136,6 +137,8 @@ function normalizarSoporteExpertos(v) {
     ...(v.horario_equipo && typeof v.horario_equipo === 'object' ? { horario_equipo: v.horario_equipo } : {}),
     // A quién va el caso (soporteExpertos/escalado.js): apagado salvo 'simulado' o 'real'.
     escalar: v.escalar === 'simulado' || v.escalar === 'real' ? v.escalar : false,
+    // Seguimiento al que quedó esperando (soporteExpertos/seguimiento.js): igual.
+    seguimiento: v.seguimiento === 'simulado' || v.seguimiento === 'real' ? v.seguimiento : false,
   };
 }
 

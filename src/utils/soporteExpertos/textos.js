@@ -186,6 +186,29 @@ const DIAGNOSTICO_FRASES = Object.freeze({
   error: 'No pude revisar tu cuenta de IMPORCHAT ahora.',
 });
 
+/* ── Seguimiento al cliente que quedó esperando (seguimiento.js) ──
+   PENDIENTES DE APROBACIÓN DE DANIEL. Mientras SEGUIMIENTO_APROBADO sea false,
+   el seguimiento nunca le escribe al cliente (solo cuenta y lista para el
+   equipo). Van aparte de TODOS: no respaldan respuestas en la guardia.
+   Ninguno promete hora ni día. `{quien}` = QUIEN_SEGUIMIENTO del área. */
+const SEGUIMIENTO_APROBADO = false;
+const MENSAJE_SEGUIMIENTO = 'Sigo pendiente de tu consulta: ya está con {quien}, que te escribe por este chat.';
+const QUIEN_SEGUIMIENTO = Object.freeze({
+  cotizacion: 'el área de cotizaciones',
+  logistica: 'el área de logística',
+  pago: 'el área de pagos',
+  factura: 'el área de pagos',
+  reclamo: 'tu asesor',
+  otro: 'tu asesor',
+});
+/* Fuera de la ventana de 24 h de WhatsApp solo se puede escribir con una
+   plantilla aprobada por Meta. Esta es la PROPUESTA (no existe todavía en Meta
+   y el código no la usa): */
+const PLANTILLA_SEGUIMIENTO_PROPUESTA = Object.freeze({
+  nombre: 'seguimiento_expertos_v1',
+  cuerpo: 'Hola {{1}}, seguimos con tu consulta en IMPORFACTORY. Respóndenos por aquí y tu asesor continúa contigo.',
+});
+
 module.exports = {
   LINKS,
   ...TODOS,
@@ -196,4 +219,8 @@ module.exports = {
   DIAGNOSTICO,
   DIAGNOSTICO_FRASES,
   TUTORIALES,
+  SEGUIMIENTO_APROBADO,
+  MENSAJE_SEGUIMIENTO,
+  QUIEN_SEGUIMIENTO,
+  PLANTILLA_SEGUIMIENTO_PROPUESTA,
 };

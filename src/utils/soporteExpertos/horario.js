@@ -51,6 +51,26 @@ function equipoAtendiendo(ahora, horario = HORARIO_EQUIPO) {
   return m >= aMinutos(h.desde) && m < aMinutos(h.hasta);
 }
 
+/** Minutos de oficina entre dos instantes (para contar cuánto lleva esperando
+    un cliente sin sumar noches ni fines de semana). */
+function minutosHabiles(desde, hasta, horario = HORARIO_EQUIPO) {
+  const h = normalizarHorarioEquipo(horario);
+  const off = h.utc * 3600 * 1000;
+  const a = Number(desde) + off;
+  const b = Number(hasta) + off;
+  if (!(b > a)) return 0;
+  const ini = aMinutos(h.desde) * 60000;
+  const fin = aMinutos(h.hasta) * 60000;
+  let total = 0;
+  for (let dia = Math.floor(a / 86400000) * 86400000; dia < b; dia += 86400000) {
+    if (!h.dias.includes(new Date(dia).getUTCDay())) continue;
+    const d0 = Math.max(a, dia + ini);
+    const d1 = Math.min(b, dia + fin);
+    if (d1 > d0) total += d1 - d0;
+  }
+  return Math.round(total / 60000);
+}
+
 /* «…te escribe apenas abramos» → «…te escribe en breve». Solo esa frase:
    lo demás del texto no cambia. */
 const RE_APENAS_ABRAMOS = /apenas abramos/g;
@@ -59,4 +79,4 @@ function textoAlHorario(texto, atendiendo) {
   return String(texto).replace(RE_APENAS_ABRAMOS, 'en breve');
 }
 
-module.exports = { HORARIO_EQUIPO, normalizarHorarioEquipo, equipoAtendiendo, textoAlHorario, fijarHoraParaPruebas };
+module.exports = { HORARIO_EQUIPO, normalizarHorarioEquipo, equipoAtendiendo, minutosHabiles, textoAlHorario, fijarHoraParaPruebas };
