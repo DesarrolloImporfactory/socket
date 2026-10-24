@@ -14,13 +14,23 @@
  * tiene cuenta, el alumno puede escribir el número o el correo con que se
  * registró, y solo vale si está en su mensaje de este turno. Con `pagos: true`
  * se ofrece `ver_mis_pagos`: cuotas, saldo, pagos registrados y facturas del
- * alumno de ese mismo número (pagosCliente.js), solo lectura.
+ * alumno de ese mismo número (pagosCliente.js), solo lectura. Con
+ * `agenda: true`, `ver_mi_reunion`: su próxima reunión del calendario de la
+ * cuenta y su sesión de implementación (reunionCliente.js), solo lectura; el
+ * bot no agenda.
  */
 const { cargasDelTelefono, bloqueCarga, codigosEnMensaje, textoParaCliente } = require('./cargaCliente');
 const T = require('./textos');
 const { hablaDeCarga, hablaDeImporchat } = require('./intencion');
 const { diagnosticarCuenta } = require('./diagnosticoCuenta');
 const { pagosDelTelefono, bloquePagos, textoPagosParaCliente, variantesDeMontos, pidePagos } = require('./pagosCliente');
+const {
+  reunionesDelTelefono,
+  bloqueReunion,
+  variantesDeReuniones,
+  textoReunionParaCliente,
+  pideReunion,
+} = require('./reunionCliente');
 
 const NO_VERIFICABLE =
   'No se puede consultar la carga por este canal. Pide la marca o el número de cotización y pasa el caso a logística.';
@@ -32,12 +42,14 @@ function crearHerramientas({
   cargas = true,
   diagnostico = false,
   pagos = false,
+  agenda = false,
   idConfiguracionPropia = null,
   deps = {},
 } = {}) {
   let ultimaCarga = null;
   let ultimoDiagnostico = null;
   let ultimosPagos = null;
+  let ultimasReuniones = null;
   let ultimoPase = null; // motivo de pasar_a_humano (lo usa el escalado por área)
 
   const verMiCarga = {
@@ -114,6 +126,29 @@ function crearHerramientas({
     },
   };
 
+  const verMiReunion = {
+    definicion: {
+      name: 'ver_mi_reunion',
+      description:
+        'Lee la próxima reunión que el asesor le agendó a ESTE cliente (día, hora y enlace del Meet) y el estado de su sesión de implementación (si está habilitada, cuántas clases le faltan, su cita y el enlace para agendarla), buscando solo por el número de WhatsApp desde el que escribe. ' +
+        'Úsala cuando pregunte cuándo es su reunión o llamada, a qué hora, el enlace, o cómo agendar su implementación o mentoría. ' +
+        'No recibe datos ni agenda nada: nunca propongas ni cambies un día u hora.',
+      input_schema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    ejecutar: async () => {
+      if (!canalVerificable)
+        return 'No se pueden consultar reuniones por este canal. No digas días, horas ni enlaces: pasa el caso con pasar_a_humano (motivo otro).';
+      const r = await reunionesDelTelefono(telefono, {
+        cuenta: idConfiguracionPropia,
+        consultarImporchat: deps.consultarImporchat,
+        consultarImporsuit: deps.consultar,
+        ahora: deps.ahora,
+      });
+      ultimasReuniones = r;
+      return bloqueReunion(r);
+    },
+  };
+
   const pasarAHumano = {
     definicion: {
       name: 'pasar_a_humano',
@@ -138,11 +173,13 @@ function crearHerramientas({
       ...(cargas ? [verMiCarga] : []),
       ...(diagnostico ? [revisarMiImporchat] : []),
       ...(pagos ? [verMisPagos] : []),
+      ...(agenda ? [verMiReunion] : []),
       pasarAHumano,
     ],
     cargaConsultada: () => ultimaCarga,
     diagnosticoConsultado: () => ultimoDiagnostico,
     pagosConsultados: () => ultimosPagos,
+    reunionesConsultadas: () => ultimasReuniones,
     paseConsultado: () => ultimoPase,
   };
 }
@@ -166,20 +203,24 @@ function crearHerramientas({
  * Con los pagos: cada monto leído entra al respaldo también en las formas en
  * que lo puede escribir el modelo («$1.250», «1250 USD»). Si la guardia
  * rechaza y el cliente preguntaba su saldo o su factura (no «ya pagué»), el
- * texto seguro es el armado en código con la cartera.
+ * texto seguro es el armado en código con la cartera. Igual con las
+ * reuniones: el día y la hora entran al respaldo en sus formas («mañana a las
+ * 10 am»), y si la guardia rechaza y preguntaba por su reunión o su sesión de
+ * implementación, el texto seguro es el armado en código.
  * Lo usan el motor (paso 9.5), el simulador y las pruebas.
  */
 function sumarHechosHerramientas(
   hechos,
   extraHerramientas = [],
   cargaConsultada = null,
-  { mensaje = '', respuesta = '', diagnostico = null, pagos = null } = {},
+  { mensaje = '', respuesta = '', diagnostico = null, pagos = null, reuniones = null } = {},
 ) {
   if (!extraHerramientas.length || !hechos?.respaldo) return hechos;
   const r = hechos.respaldo;
   const extra = extraHerramientas.join('\n');
   r.firme = `${String(r.firme || '')}\n${extra}`;
   if (pagos?.estado === 'encontrado') r.firme += `\n${variantesDeMontos(pagos)}`;
+  if (reuniones?.estado === 'leido') r.firme += `\n${variantesDeReuniones(reuniones)}`;
   r.estado = cargaConsultada && !hechos.carga
     ? `${Object.values(T.TEXTOS_FIJOS).join('\n')}\n${extra}`
     : `${String(r.estado || '')}\n${extra}`;
@@ -215,6 +256,11 @@ function sumarHechosHerramientas(
   const pide = pidePagos(String(mensaje || ''));
   if (pide && hechos.textoSeguro === T.MENSAJE_ASESOR) {
     const t = textoPagosParaCliente(pagos, { pideFactura: pide === 'factura' });
+    if (t) hechos.textoSeguro = t;
+  }
+  const pideR = pideReunion(String(mensaje || ''));
+  if (pideR && hechos.textoSeguro === T.MENSAJE_ASESOR) {
+    const t = textoReunionParaCliente(reuniones, { pide: pideR });
     if (t) hechos.textoSeguro = t;
   }
   return hechos;

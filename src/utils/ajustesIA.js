@@ -114,6 +114,7 @@ function normalizarSoporteExpertos(v) {
       herramientas: false,
       diagnostico: false,
       pagos: false,
+      agenda: false,
       callar_bots: true,
       callar_acuses: true,
       escalar: false,
@@ -133,6 +134,10 @@ function normalizarSoporteExpertos(v) {
     // Cuotas, saldo, pagos registrados y facturas del que escribe (ver_mis_pagos):
     // solo con herramientas y pedido explícito. Ver soporteExpertos/pagosCliente.js.
     pagos: v.herramientas === true && v.pagos === true,
+    // Reuniones agendadas y sesión de implementación del que escribe
+    // (ver_mi_reunion, solo lee): solo con herramientas y pedido explícito.
+    // Ver soporteExpertos/reunionCliente.js.
+    agenda: v.herramientas === true && v.agenda === true,
     // No contestarle al bot de la tienda del alumno ni a un «ok / gracias»:
     // encendidos salvo que la cuenta los apague (senales.js).
     callar_bots: v.callar_bots !== false,

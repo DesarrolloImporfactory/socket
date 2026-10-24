@@ -2720,7 +2720,7 @@ async function procesarMensajeKanban(params) {
       if (ajustesIA.soporte_expertos?.herramientas && turnoExpertos) {
         const { crearHerramientas } = require('../utils/soporteExpertos/herramientas');
         const { ejecutarConClaudeHerramientas } = require('../utils/claude/herramientas');
-        const { SECCION_DIAGNOSTICO, SECCION_PAGOS } = require('../utils/prompt_soporte_expertos.data');
+        const { SECCION_DIAGNOSTICO, SECCION_PAGOS, SECCION_AGENDA } = require('../utils/prompt_soporte_expertos.data');
         /* Revisar la cuenta IMPORCHAT del que escribe: bandera aparte
            (soporte_expertos.diagnostico). La sección va al final de las
            instrucciones fijas, no del bloque del producto, para que el
@@ -2728,6 +2728,8 @@ async function procesarMensajeKanban(params) {
         const conDiagnostico = ajustesIA.soporte_expertos.diagnostico === true;
         // Cuotas, saldo y facturas del que escribe: bandera aparte (soporte_expertos.pagos).
         const conPagos = ajustesIA.soporte_expertos.pagos === true;
+        // Reuniones y sesión de implementación, solo lectura: bandera aparte (soporte_expertos.agenda).
+        const conAgenda = ajustesIA.soporte_expertos.agenda === true;
         herramientasTurno = crearHerramientas({
           telefono,
           mensaje,
@@ -2735,6 +2737,7 @@ async function procesarMensajeKanban(params) {
           cargas: ajustesIA.soporte_expertos.cargas !== false,
           diagnostico: conDiagnostico,
           pagos: conPagos,
+          agenda: conAgenda,
           idConfiguracionPropia: id_configuracion,
         });
         resultado = await ejecutarConClaudeHerramientas({
@@ -2743,6 +2746,7 @@ async function procesarMensajeKanban(params) {
             parametrosClaude.instructions,
             ...(conDiagnostico ? [SECCION_DIAGNOSTICO] : []),
             ...(conPagos ? [SECCION_PAGOS] : []),
+            ...(conAgenda ? [SECCION_AGENDA] : []),
           ].join('\n\n'),
           herramientas: herramientasTurno.lista,
         });
@@ -3047,6 +3051,7 @@ async function procesarMensajeKanban(params) {
             respuesta: respuestaRaw,
             diagnostico: herramientasTurno?.diagnosticoConsultado?.(),
             pagos: herramientasTurno?.pagosConsultados?.(),
+            reuniones: herramientasTurno?.reunionesConsultadas?.(),
           },
         );
       }

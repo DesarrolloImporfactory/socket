@@ -139,7 +139,13 @@ async function pagosDelTelefono(telefono, o = {}) {
   }
 }
 
-async function buscar(telefono, cola, consultar) {
+/**
+ * Los alumnos de Imporsuit con este WhatsApp (sin cuentas de prueba).
+ * @returns {Promise<{como: Map<number,'exacto'|'nacional'>, persona: Map<number,string>}>}
+ *          `persona` = dos primeras palabras del nombre (o el correo): dos
+ *          cuentas con la misma persona se pueden sumar.
+ */
+async function alumnosDelTelefono(telefono, cola, consultar) {
   const usuarios = await consultar(SQL_USUARIOS(true), [cola]).catch((e) => {
     if (!/regexp_replace|function .* does not exist/i.test(String(e.message))) throw e;
     return consultar(SQL_USUARIOS(false), [cola]);
@@ -155,6 +161,11 @@ async function buscar(telefono, cola, consultar) {
     const nombre = sinTildes(u.nombre).replace(/[^a-z ]/g, ' ').trim().split(/\s+/).slice(0, 2).join(' ');
     persona.set(id, nombre || String(u.email || '').trim().toLowerCase() || `id:${id}`);
   }
+  return { como, persona };
+}
+
+async function buscar(telefono, cola, consultar) {
+  const { como, persona } = await alumnosDelTelefono(telefono, cola, consultar);
   if (!como.size) return VACIO('sin_cartera', 'ningún alumno con este número');
   const ids = [...como.keys()];
   const [cuotasTodas, facturasTodas] = await Promise.all([
@@ -343,6 +354,7 @@ function pidePagos(texto) {
 
 module.exports = {
   pagosDelTelefono,
+  alumnosDelTelefono,
   bloquePagos,
   textoPagosParaCliente,
   variantesDeMontos,
