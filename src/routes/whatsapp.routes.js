@@ -3,7 +3,7 @@ const multer = require('multer');
 const router = express.Router();
 
 const whatsappCtrl = require('../controllers/whatsapp.controller');
-const { protect } = require('../middlewares/auth.middleware');
+const { protect, protectConfigOwner } = require('../middlewares/auth.middleware');
 
 /* ────────────────────────────────────────────────
    Multer (memoria) + wrapper de errores limpio
@@ -98,8 +98,12 @@ router.post(
   whatsappCtrl.metodoPagoReintentar,
 );
 router.post('/obtenerConfiguracion', whatsappCtrl.obtenerConfiguracion);
+// Devuelve la fila completa de configuraciones (incluye la llave de Meta):
+// solo con sesión y si la conexión es de la cuenta. Antes no pedía sesión.
 router.post(
   '/configuracionesAutomatizador',
+  protect,
+  protectConfigOwner,
   whatsappCtrl.configuracionesAutomatizador,
 );
 router.post(
