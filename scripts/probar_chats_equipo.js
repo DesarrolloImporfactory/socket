@@ -15,6 +15,7 @@ process.env.ROL_EQUIPO_CUENTAS = '254';
 delete process.env.RUTAS_SESION_EXIGIR;
 const SRC = path.join(__dirname, '..', 'src');
 const CEL = '593991234567';
+const CEL_US = '13055550142';
 
 // Base falsa: Sequelize real (los modelos se definen) pero sin conectar.
 const falsa = () => new Sequelize('mysql://x:y@127.0.0.1:9/z', { logging: false });
@@ -33,7 +34,16 @@ function responder(sql, opts) {
     return [{ id: 11, celular_cliente: CEL, nombre_cliente: 'Ana', texto_mensaje: 'mi cel 0991234567', mensaje_created_at: '2026-10-24 10:00:00' }];
   }
   if (/FROM clientes_chat_center\s+WHERE id = \?/.test(sql)) {
-    return Number(r[0]) === 11 ? [{ id: 11, celular_cliente: CEL }] : [];
+    if (Number(r[0]) === 11) return [{ id: 11, celular_cliente: CEL }];
+    if (Number(r[0]) === 13) return [{ id: 13, celular_cliente: CEL_US }];
+    return [];
+  }
+  if (/FROM mensajes_clientes/.test(sql)) {
+    // Como la base: del más nuevo al más viejo.
+    return [
+      { id: 3, rol_mensaje: 1, tipo_mensaje: 'text', texto_mensaje: 'te escribo al 305 555 0142', responsable: 'Front 1', created_at: '2026-10-24 10:02:00' },
+      { id: 2, rol_mensaje: 0, tipo_mensaje: 'text', texto_mensaje: 'hola, mi número es 099 123 4567', created_at: '2026-10-24 10:00:00' },
+    ];
   }
   if (/FROM appointments a/.test(sql)) {
     return [{ id: 7, title: 'Reunión con Ana 0991234567', status: 'Agendado', start_utc: '2026-10-27 15:00:00', end_utc: '2026-10-27 15:30:00', meeting_url: 'https://meet.google.com/abc-defg-hij' }];
@@ -83,7 +93,11 @@ ClientesChatCenter.findAll = async () => [
   },
 ];
 require(path.join(SRC, 'models/plataforma.model')).findAll = async () => [];
-require(path.join(SRC, 'models/mensaje_cliente.model')).update = async () => [1];
+let vistosMarcados = 0;
+require(path.join(SRC, 'models/mensaje_cliente.model')).update = async () => {
+  vistosMarcados += 1;
+  return [1];
+};
 
 // La lectura de la carga es la del bot de la línea; aquí se reemplaza para ver
 // qué número recibe y que lo que vuelve salga sin teléfonos.
@@ -208,6 +222,10 @@ async function caso(nombre, fn) {
   await caso('buscar por número no se manda; por nombre sí', async () => {
     await pedir(s, '/api/v1/equipo/chats?id_configuracion=265&q=0991', TEAM);
     assert.ok(!sqlChats().sql.includes(':searchTerm'));
+    await pedir(s, '/api/v1/equipo/chats?id_configuracion=265&q=09%259%25', TEAM);
+    assert.ok(!sqlChats().sql.includes(':searchTerm'));
+    await pedir(s, '/api/v1/equipo/chats?id_configuracion=265&q=an_', TEAM);
+    assert.ok(!sqlChats().sql.includes(':searchTerm'));
     await pedir(s, '/api/v1/equipo/chats?id_configuracion=265&q=ana', TEAM);
     assert.ok(sqlChats().sql.includes(':searchTerm'));
   });
@@ -217,12 +235,26 @@ async function caso(nombre, fn) {
     assert.equal(q.opts.replacements.limit, 30);
     assert.ok(!q.sql.includes('JSON_CONTAINS'));
   });
-  await caso('mensajes de un chat visible: tapados y sin wamid', async () => {
+  await caso('mensajes de un chat visible: tapados, en orden y con tope', async () => {
     const r = await pedir(s, '/api/v1/equipo/chats/11/mensajes?id_configuracion=265', TEAM);
     assert.equal(r.status, 200);
     assert.ok(!r.texto.includes('wamid'), r.texto);
-    assert.ok(!/\d{7,}/.test(r.texto.replace(/•••• \d{4}/g, '')), r.texto);
-    assert.equal(r.body.data[0].celular_cliente, '•••• 4567');
+    assert.ok(!r.texto.includes('099 123 4567') && !r.texto.includes(CEL) && r.texto.includes('•••• 4567'), r.texto);
+    assert.deepEqual(r.body.data[0].mensajes.map((m) => m.id), [2, 3]);
+    const q = consultas.filter((c) => /FROM mensajes_clientes/.test(c.sql)).pop();
+    assert.ok(/LIMIT 200\b/.test(q.sql), q.sql);
+    assert.deepEqual(q.opts.replacements, ['11', 265]);
+  });
+  await caso('abrir un chat desde Team no lo marca como leído', async () => {
+    vistosMarcados = 0;
+    await pedir(s, '/api/v1/equipo/chats/11/mensajes?id_configuracion=265', TEAM);
+    assert.equal(vistosMarcados, 0);
+    assert.ok(!consultas.some((c) => /UPDATE\s+mensajes_clientes/i.test(c.sql)));
+  });
+  await caso('el número del chat en otro formato también sale tapado', async () => {
+    const r = await pedir(s, '/api/v1/equipo/chats/13/mensajes?id_configuracion=265', TEAM);
+    assert.equal(r.status, 200);
+    assert.ok(!r.texto.includes('305 555 0142') && r.texto.includes('•••• 0142'), r.texto);
   });
   await caso('mensajes de un chat que no es suyo → 404', async () => {
     assert.equal((await pedir(s, '/api/v1/equipo/chats/12/mensajes?id_configuracion=265', TEAM)).status, 404);
@@ -260,6 +292,13 @@ async function caso(nombre, fn) {
     assert.equal(r.body.data.cargas[0].paso, 4);
     assert.equal(r.body.data.cargas[0].texto_cliente, undefined);
     assert.ok(!r.texto.includes(CEL) && !r.texto.includes('0991234567'), r.texto);
+  });
+  await caso('carga: la nota con el número del chat en otro formato sale tapada', async () => {
+    cargaStub = async () => ({ estado: 'encontradas', hay_mas: 0, cargas: [{ id_cotizacion: 1, paso: 2, nota_cliente: 'Escribió desde 305 555 0142', informable: true }] });
+    const r = await pedir(s, '/api/v1/equipo/chats/13/carga?id_configuracion=265', TEAM);
+    cargaStub = null;
+    assert.equal(r.status, 200);
+    assert.equal(r.body.data.cargas[0].nota_cliente, 'Escribió desde •••• 0142');
   });
   await caso('carga sin nada en Imporsuit: dice el estado, no falla', async () => {
     const r = await pedir(s, '/api/v1/equipo/chats/11/carga?id_configuracion=265', TEAM);

@@ -3,6 +3,7 @@ const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const { esEquipo, puedeTenerRolEquipo, EMISOR_TEAM, DESTINO_TEAM } = require('../utils/rolEquipo');
+const { taparTelefonos } = require('../utils/taparTelefonos');
 
 /*  Rutas de Team para el rol «equipo» (ver utils/rolEquipo.js). */
 
@@ -112,11 +113,13 @@ exports.conexiones = catchAsync(async (req, res) => {
 });
 
 /*  Filtros que acepta Team. Todo lo demás se ignora: findChats arma SQL con
- *  ellos, y buscar por número dejaría adivinar teléfonos (¿existe este?). */
+ *  ellos, y buscar por número dejaría adivinar teléfonos (¿existe este?).
+ *  Sin cifras y sin comodines del LIKE: «09%9%1%» probaría el número cifra por
+ *  cifra mirando si el chat sigue saliendo. */
 function filtrosDeEquipo(q) {
   const filtros = {};
   const termino = String(q.q || '').trim().slice(0, 60);
-  if (termino && !/\d{3,}/.test(termino)) filtros.searchTerm = termino;
+  if (termino && !/[\d%_\\]/.test(termino)) filtros.searchTerm = termino;
   if (['no_leidos', 'leidos'].includes(q.lectura)) filtros.selectedLectura = { value: q.lectura };
   if (['abierto', 'resueltos'].includes(q.estado)) filtros.selectedTab = q.estado;
   if (['wa', 'ig', 'ms'].includes(q.canal)) filtros.source = q.canal;
@@ -145,18 +148,22 @@ exports.chats = catchAsync(async (req, res, next) => {
 });
 
 /*  ¿Este asesor puede abrir este chat? Lo mismo que lo deja verlo en la
- *  lista: es suyo, o está en espera en uno de sus canales. */
+ *  lista: es suyo, o está en espera en uno de sus canales. Devuelve la fila
+ *  (con el número, que no sale de acá: sirve para taparlo en otros formatos)
+ *  o null. */
 async function chatVisible(id_cliente, cfg, u) {
   const filtroCanal = sqlFiltroCanales(await canalesDeUsuarioEnConfig(u.id_sub_usuario, cfg.id));
   const [fila] = await db.query(
-    `SELECT id FROM clientes_chat_center
+    `SELECT id, celular_cliente FROM clientes_chat_center
       WHERE id = ? AND id_configuracion = ? AND propietario != 1
         AND (id_encargado = ? OR (id_encargado IS NULL${filtroCanal ? ` AND ${filtroCanal}` : ''}))
       LIMIT 1`,
     { replacements: [id_cliente, cfg.id, u.id_sub_usuario], type: db.QueryTypes.SELECT },
   );
-  return Boolean(fila);
+  return fila || null;
 }
+
+const MAX_MENSAJES = 200;
 
 /*  GET /api/v1/equipo/chats/:id_cliente/mensajes?id_configuracion= */
 exports.mensajes = catchAsync(async (req, res, next) => {
@@ -164,11 +171,22 @@ exports.mensajes = catchAsync(async (req, res, next) => {
   const id_cliente = Number(req.params.id_cliente);
   if (!Number.isInteger(id_cliente) || id_cliente <= 0) return next(new AppError('Chat no válido', 400));
   const cfg = await conexionDeLaCuenta(req.query.id_configuracion, u.id_usuario);
-  if (!cfg || !(await chatVisible(id_cliente, cfg, u))) {
-    return next(new AppError('Chat no encontrado', 404));
-  }
-  const data = await new ChatService().getChatsByClient(id_cliente, cfg.id);
-  res.json({ status: 'success', data });
+  const chat = cfg && (await chatVisible(id_cliente, cfg, u));
+  if (!chat) return next(new AppError('Chat no encontrado', 404));
+  // Lectura propia, no getChatsByClient: aquel marca los mensajes como vistos
+  // (Team sondea cada 10 s y le borraría los pendientes al encargado) y los
+  // trae todos. Acá, solo los últimos y solo lo que Team pinta.
+  const filas = await db.query(
+    `SELECT id, rol_mensaje, tipo_mensaje, texto_mensaje, ruta_archivo, responsable, created_at, eliminado_at
+       FROM mensajes_clientes
+      WHERE celular_recibe = ? AND id_configuracion = ? AND deleted_at IS NULL
+        AND (tipo_mensaje IS NULL OR tipo_mensaje NOT IN ('reaction', 'edit', 'revoke'))
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${MAX_MENSAJES}`,
+    { replacements: [String(id_cliente), cfg.id], type: db.QueryTypes.SELECT },
+  );
+  const data = [{ id: id_cliente, mensajes: filas.reverse() }];
+  res.json({ status: 'success', data: taparTelefonos(data, { telefonosConocidos: [chat.celular_cliente] }) });
 });
 
 /* ───────── Barra lateral de Team: solo lectura ───────── */
@@ -209,17 +227,14 @@ exports.carga = catchAsync(async (req, res, next) => {
   const id_cliente = Number(req.params.id_cliente);
   if (!Number.isInteger(id_cliente) || id_cliente <= 0) return next(new AppError('Chat no válido', 400));
   const cfg = await conexionDeLaCuenta(req.query.id_configuracion, u.id_usuario);
-  if (!cfg || !(await chatVisible(id_cliente, cfg, u))) {
-    return next(new AppError('Chat no encontrado', 404));
-  }
-  const [fila] = await db.query(
-    `SELECT celular_cliente FROM clientes_chat_center WHERE id = ? AND id_configuracion = ? LIMIT 1`,
-    { replacements: [id_cliente, cfg.id], type: db.QueryTypes.SELECT },
-  );
-  const r = await cargasDelTelefono(String(fila?.celular_cliente || ''));
+  const chat = cfg && (await chatVisible(id_cliente, cfg, u));
+  if (!chat) return next(new AppError('Chat no encontrado', 404));
+  const celular = String(chat.celular_cliente || '');
+  const r = await cargasDelTelefono(celular);
+  // La nota de logística puede traer el número del cliente en otro formato.
   res.json({
     status: 'success',
-    data: {
+    data: taparTelefonos({
       estado: r.estado,
       hay_mas: r.hay_mas || 0,
       cargas: (r.cargas || []).map((c) => ({
@@ -238,6 +253,6 @@ exports.carga = catchAsync(async (req, res, next) => {
         informable: c.informable,
         motivo: c.motivo,
       })),
-    },
+    }, { telefonosConocidos: [celular] }),
   });
 });
