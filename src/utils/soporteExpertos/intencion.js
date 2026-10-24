@@ -280,7 +280,10 @@ function pideDatosDeOtro(texto, telefonoRemitente) {
     (d) => !mismoTelefono(telefonoRemitente, d) && soloDigitos(telefonoRemitente).slice(-9) !== d.slice(-9),
   );
   const loSenala = HABLA_DE_NUMERO.test(t) || /\b(del|al|con el|para el)\s+\+?\d/.test(t);
-  if (ajeno && loSenala && !NO_ES_TELEFONO.test(t)) {
+  // «Me registré en IMPORCHAT con el 0987…»: es el dato que pide el diagnóstico
+  // de la cuenta (que tiene sus propios candados), no la carga de otro.
+  const deRegistro = (hablaDeImporchat(texto) || /registr/.test(t)) && !hablaDeCarga(texto);
+  if (ajeno && loSenala && !NO_ES_TELEFONO.test(t) && !deRegistro) {
     return { pide: true, motivo: 'otro número de teléfono' };
   }
   return { pide: false, motivo: null };

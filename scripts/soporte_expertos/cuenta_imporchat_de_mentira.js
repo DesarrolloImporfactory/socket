@@ -53,6 +53,8 @@ function escenario(cambios = {}) {
     columnas: [columna()],
     chats: [chats(14, 14)],
     actividad: [{ id_configuracion: 101, n: 40 }],
+    // [{ id_usuario, email, sub }]: sub = correo del administrador (sub_usuarios), si no, del dueño.
+    correos: [],
     ...cambios,
   };
 }
@@ -63,6 +65,13 @@ function baseFalsa(e) {
   const enIds = (filas, r) => filas.filter((f) => (r.ids || []).map(Number).includes(Number(f.id_configuracion)));
   const consultar = async (sql, r = {}) => {
     llamadas.push({ sql, r });
+    // Por correo (el dato que escribió el alumno): dueño de la cuenta o su administrador.
+    if (/FROM sub_usuarios_chat_center[\s\S]*:correo/.test(sql)) {
+      return (e.correos || []).filter((c) => c.sub && c.email.toLowerCase() === r.correo);
+    }
+    if (/FROM usuarios_chat_center[\s\S]*:correo/.test(sql)) {
+      return (e.correos || []).filter((c) => !c.sub && c.email.toLowerCase() === r.correo);
+    }
     if (/FROM usuarios_chat_center\s+WHERE/.test(sql)) {
       return e.usuarios.filter((u) => cola(`${u.pais || ''}${u.lead || ''}`) === r.cola);
     }

@@ -21,8 +21,17 @@
    SELECT.
 
    SEGURIDAD — de quién es la cuenta:
-     · Se entra por el número de WhatsApp del remitente, que lo entrega Meta.
-       Nunca por un número o un correo que alguien ESCRIBA en el chat.
+     · Se entra primero por el número de WhatsApp del remitente, que lo
+       entrega Meta. Solo si ese número no tiene cuenta, se busca por el
+       número o el correo que el alumno ESCRIBA (Daniel, 24-oct: «recuerda
+       que puede ser cualquiera»). Ese dato tiene que estar en el mensaje de
+       este turno (el modelo no puede inventarlo ni sacarlo del historial),
+       vale solo la coincidencia exacta y cada número prueba como mucho
+       MAX_DATOS datos distintos al día: frena que alguien recorra cuentas
+       ajenas a punta de correos. Con un número escrito se mira solo el
+       WhatsApp del registro (no el de las conexiones, que es público), y la
+       respuesta sale «discreta»: sin nombres de conexión o columna y sin
+       cifras. Aun así dice qué falla: el riesgo que queda lo acepta Daniel.
      · Solo vale la coincidencia 'exacta' (`telefono.comoCoincide`): un número
        guardado sin código de país no prueba de qué país es.
      · Si el número aparece en dos cuentas, no se revisa ninguna.
@@ -35,12 +44,14 @@
 'use strict';
 
 const T = require('./textos');
-const { comoCoincide, colaCandidatos } = require('./telefono');
+const { comoCoincide, colaCandidatos, partir, soloDigitos, PAISES } = require('./telefono');
 
 const LIMITE_MS = 7000; // la herramienta tiene 8 s de tope (TOPE_HERRAMIENTA_MS)
 const MAX_TEXTO = 1400; // la guardia corta en 1500 (guardia.js, MAX_RESPUESTA)
 const MAX_CONEXIONES = 3;
 const SANO_SI = 0.9; // el bot contestó en al menos el 90 % de los chats
+const MAX_DATOS = 3; // números o correos distintos que un mismo WhatsApp puede probar por día
+const VENTANA_DATOS_MS = 24 * 60 * 60 * 1000;
 
 /* Errores de IA guardados en configuraciones.openai_error_msg. Los de Claude
    llevan el prefijo «Claude:» (kanban_ia.service.js, marcarOpenAIInactivo). */
@@ -118,7 +129,7 @@ const llenar = (texto, vars = {}) =>
   texto.replace(/\{(\w+)\}/g, (_, k) => (vars[k] === undefined || vars[k] === null ? '' : String(vars[k])));
 
 /* ── 1. ¿De quién es este número? ─────────────────────────────────────────── */
-async function identificar(telefono, consultar, propia) {
+async function identificar(telefono, consultar, propia, soloRegistro = false) {
   const cola = colaCandidatos(telefono);
   if (!cola) return { estado: 'sin_cuenta' };
 
@@ -144,6 +155,12 @@ async function identificar(telefono, consultar, propia) {
   );
 
   const porRegistro = new Set(usuarios);
+  // Con un número escrito en el chat, solo el WhatsApp del registro: el de las
+  // conexiones es el de atención de la tienda, y ese lo conoce cualquiera.
+  if (soloRegistro) {
+    if (usuarios.size > 1) return { estado: 'ambiguo' };
+    return usuarios.size ? { estado: 'ok', idUsuario: [...usuarios][0], solo: null } : { estado: 'sin_cuenta' };
+  }
   const lineas = await consultar(
     `SELECT id, id_usuario, telefono
        FROM configuraciones
@@ -164,6 +181,85 @@ async function identificar(telefono, consultar, propia) {
   // Si solo se le encontró por el número de una conexión, se revisa solo esa:
   // en una agencia, las otras conexiones de la cuenta pueden ser de otra persona.
   return { estado: 'ok', idUsuario: [...usuarios][0], solo: porRegistro.size ? null : conexionesDelNumero };
+}
+
+/* ── 1 bis. Con el número o el correo que escribió el alumno ─────────────── */
+const ES_CORREO = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Lo que escribió el alumno → { tipo: 'correo' | 'número', valor } o null.
+    Un número sin código de país se completa con el del que escribe: es lo
+    normal («0987654321» desde un +593); si no calza con su país, no vale. */
+function leerDato(dato, telefono) {
+  const t = String(dato || '').trim();
+  if (!t) return null;
+  if (t.includes('@')) {
+    const correo = t.toLowerCase().replace(/^mailto:/, '');
+    return ES_CORREO.test(correo) && correo.length <= 120 ? { tipo: 'correo', valor: correo } : null;
+  }
+  const d = soloDigitos(t).replace(/^00/, '');
+  if (d.length < 8 || d.length > 15) return null;
+  if (/^\s*\+/.test(t) && partir(d)) return { tipo: 'número', valor: d };
+  const w = partir(telefono);
+  const nacional = d.replace(/^0+/, '');
+  const pais = w && PAISES.find((p) => p.cc === w.cc);
+  if (pais && pais.largos.includes(nacional.length)) return { tipo: 'número', valor: `${w.cc}${nacional}` };
+  if (partir(d)) return { tipo: 'número', valor: d };
+  return null;
+}
+
+/** ¿El dato está en lo que escribió el cliente en ESTE turno? Completo: el
+    correo con sus bordes y el número ya leído igual que el dato. */
+function datoEnMensaje(leido, mensaje, telefono) {
+  const m = String(mensaje || '').toLowerCase();
+  if (leido.tipo === 'correo') {
+    return (m.match(/[^\s<>()\[\],;:"'«»]+@[^\s<>()\[\],;:"'«»]+/g) || [])
+      .map((x) => x.replace(/^mailto:/, '').replace(/[.]+$/, ''))
+      .includes(leido.valor);
+  }
+  return (m.match(/[+\d][\d\s().-]{6,}\d/g) || []).some((x) => leerDato(x, telefono)?.valor === leido.valor);
+}
+
+async function identificarPorCorreo(correo, consultar) {
+  const duenos = await consultar(
+    `SELECT id_usuario FROM usuarios_chat_center
+      WHERE email_propietario = :correo AND id_usuario IS NOT NULL
+      LIMIT 5`,
+    { correo },
+  );
+  const admins = await consultar(
+    `SELECT id_usuario FROM sub_usuarios_chat_center
+      WHERE email = :correo AND rol = 'administrador' AND id_usuario IS NOT NULL
+      LIMIT 5`,
+    { correo },
+  );
+  const usuarios = new Set([...(duenos || []), ...(admins || [])].map((f) => Number(f.id_usuario)).filter(Boolean));
+  if (usuarios.size > 1) return { estado: 'ambiguo' };
+  if (!usuarios.size) return { estado: 'sin_cuenta' };
+  return { estado: 'ok', idUsuario: [...usuarios][0], solo: null };
+}
+
+/* Datos probados por cada WhatsApp: telefono → Map(dato → cuándo). En memoria
+   del proceso: un reinicio lo vacía, y está bien. Si IMPORCHAT corriera en
+   varios procesos, el tope valdría por cada uno. */
+const datosProbados = new Map();
+const LIMPIAR_DESDE = 1000; // teléfonos guardados antes de barrer los vencidos
+
+function barrerVencidos(ahoraMs) {
+  for (const [tel, propios] of datosProbados) {
+    for (const [v, t] of propios) if (ahoraMs - t > VENTANA_DATOS_MS) propios.delete(v);
+    if (!propios.size) datosProbados.delete(tel);
+  }
+}
+
+/** true si este WhatsApp todavía puede probar este dato (repetir el mismo no gasta). */
+function puedeProbar(telefono, valor, ahoraMs) {
+  if (datosProbados.size >= LIMPIAR_DESDE) barrerVencidos(ahoraMs);
+  const propios = datosProbados.get(telefono) || new Map();
+  for (const [v, t] of propios) if (ahoraMs - t > VENTANA_DATOS_MS) propios.delete(v);
+  if (!propios.has(valor) && propios.size >= MAX_DATOS) return false;
+  propios.set(valor, propios.get(valor) || ahoraMs);
+  datosProbados.set(telefono, propios);
+  return true;
 }
 
 /* ── 2. ¿Qué conexiones se revisan? ───────────────────────────────────────── */
@@ -383,10 +479,14 @@ const lineaTutorial = (clave) => {
   return t ? `Mira la clase «${t.titulo}»: ${t.enlace}` : '';
 };
 
-function bloqueConexion(c, conNombre) {
+/* `discreto`: la cuenta se encontró con un dato escrito en el chat, que podría
+   ser de otra persona. Sin nombres de conexión ni de columna, sin cifras. */
+function bloqueConexion(c, conNombre, discreto, i) {
   const [primera, ...resto] = c.fallas;
   const def = T.DIAGNOSTICO[primera.clave];
-  const partes = [`${conNombre ? `En «${c.nombre}»: ` : ''}${llenar(def.texto, primera.vars)}`];
+  const nombre = discreto ? `tu conexión ${i + 1}` : `«${c.nombre}»`;
+  const texto = discreto ? llenar(def.discreto || def.texto, {}) : llenar(def.texto, primera.vars);
+  const partes = [`${conNombre ? `En ${nombre}: ` : ''}${texto}`];
   if (def.tutorial) partes.push(lineaTutorial(def.tutorial));
   if (resto.length) partes.push(`Además: ${resto.map((f) => T.DIAGNOSTICO[f.clave].corto).join(', ')}.`);
   return partes.join('\n');
@@ -394,7 +494,8 @@ function bloqueConexion(c, conNombre) {
 
 const bloquea = (f) => !T.DIAGNOSTICO[f.clave].informativo;
 
-function redactar(conexiones) {
+function redactar(conexiones, discreto = false) {
+  const frase = (clave, vars) => llenar(T.DIAGNOSTICO_FRASES[discreto && T.DIAGNOSTICO_FRASES[`${clave}_discreto`] ? `${clave}_discreto` : clave], vars);
   const conFallas = conexiones.filter((c) => c.fallas.some(bloquea));
 
   if (!conFallas.length) {
@@ -407,7 +508,7 @@ function redactar(conexiones) {
     if (n > 0 && m >= SANO_SI * n) {
       return {
         resultado: 'sano',
-        texto: [T.DIAGNOSTICO_FRASES.inicio, llenar(T.DIAGNOSTICO_FRASES.sano, { n, m }), lineaTutorial('prompt'), ademas]
+        texto: [T.DIAGNOSTICO_FRASES.inicio, frase('sano', { n, m }), lineaTutorial('prompt'), ademas]
           .filter(Boolean)
           .join('\n'),
       };
@@ -416,7 +517,7 @@ function redactar(conexiones) {
       resultado: 'sin_causa',
       // «Te escribieron en N» solo con los chats que vio: si escribieron pero
       // ninguno es de los que el bot debe contestar, o no escribió nadie, se dice así.
-      texto: [T.DIAGNOSTICO_FRASES.inicio, `${llenar(T.DIAGNOSTICO_FRASES[n > 0 ? 'sin_causa' : t > 0 ? 'sin_chats_con_bot' : 'sin_chats'], { n, m, t })} ${T.MENSAJE_ASESOR}`, ademas]
+      texto: [T.DIAGNOSTICO_FRASES.inicio, `${frase(n > 0 ? 'sin_causa' : t > 0 ? 'sin_chats_con_bot' : 'sin_chats', { n, m, t })} ${T.MENSAJE_ASESOR}`, ademas]
         .filter(Boolean)
         .join('\n'),
     };
@@ -424,7 +525,7 @@ function redactar(conexiones) {
 
   const armar = (lista, sobran) => {
     const conNombre = conexiones.length > 1;
-    const partes = [T.DIAGNOSTICO_FRASES.inicio, ...lista.map((c) => bloqueConexion(c, conNombre))];
+    const partes = [T.DIAGNOSTICO_FRASES.inicio, ...lista.map((c, i) => bloqueConexion(c, conNombre, discreto, i))];
     if (sobran) partes.push(T.DIAGNOSTICO_FRASES.otra_conexion);
     if (lista.some((c) => c.fallas.some((f) => T.DIAGNOSTICO[f.clave].asesor))) partes.push(T.MENSAJE_ASESOR);
     return partes.join('\n\n');
@@ -451,10 +552,14 @@ const textoError = () => `${T.DIAGNOSTICO_FRASES.error} ${T.MENSAJE_ASESOR}`;
  * @param {Function} [o.verificarAcceso]  id_configuracion → { permitido, motivo } (planAcceso).
  * @param {Date}     [o.ahora]            para horario y fechas.
  * @param {number}   [o.propia]           conexión de la línea que atiende (la 265): no es del alumno.
+ * @param {string}   [o.dato]             número o correo con que dice haberse registrado (solo se usa si
+ *                                        su WhatsApp no tiene cuenta).
+ * @param {string}   [o.mensaje]          mensaje del cliente en este turno: el dato tiene que estar ahí.
  * @param {string[]} [o.estadosReconectar]
  * @param {object}   [o.ajustesIA]        { normalizar, dentroDeHorario }
  * @returns {Promise<{estado: string, resultado: string|null, conexiones: object[], texto: string}>}
- *   estado: 'sin_cuenta' | 'ambiguo' | 'error' | 'revisada'
+ *   estado: 'sin_cuenta' | 'ambiguo' | 'pide_dato' | 'limite' | 'error' | 'revisada'
+ *   por (solo con 'revisada'): 'numero' (su WhatsApp) | 'dato' (lo que escribió)
  *   resultado (solo con 'revisada'): 'con_fallas' | 'sano' | 'sin_causa'
  */
 async function diagnosticarCuenta(telefono, o = {}) {
@@ -475,14 +580,33 @@ async function revisar(telefono, o) {
     ajustesIA: o.ajustesIA || ajustesReales(),
   };
 
-  const quien = await identificar(telefono, consultar, propia);
-  if (quien.estado === 'ambiguo') return FIJO('ambiguo', `${T.DIAGNOSTICO_FRASES.ambiguo} ${T.MENSAJE_ASESOR}`);
+  const F = T.DIAGNOSTICO_FRASES;
+  const crearCuenta = `Si todavía no tienes cuenta: ${lineaTutorial('cuenta')}`;
+  let quien = await identificar(telefono, consultar, propia);
+  let porDato = null;
+  if (quien.estado === 'ambiguo') return FIJO('ambiguo', `${F.ambiguo} ${T.MENSAJE_ASESOR}`);
   if (quien.estado !== 'ok') {
-    return FIJO(
-      'sin_cuenta',
-      [`${T.DIAGNOSTICO_FRASES.sin_cuenta} ${T.MENSAJE_ASESOR}`, `Si todavía no tienes cuenta: ${lineaTutorial('cuenta')}`].join('\n'),
-    );
+    // Sin dato: se le pide el número o el correo con que se registró.
+    if (!String(o.dato || '').trim()) return FIJO('sin_cuenta', [F.sin_cuenta, crearCuenta].join('\n'));
+    const leido = leerDato(o.dato, telefono);
+    if (!leido) return FIJO('pide_dato', F.dato_invalido);
+    if (!datoEnMensaje(leido, o.mensaje, telefono)) return FIJO('pide_dato', F.dato_no_escrito);
+    if (!puedeProbar(String(telefono), leido.valor, ctx.ahora.getTime())) {
+      return FIJO('limite', `${F.limite_datos} ${T.MENSAJE_ASESOR}`);
+    }
+    quien = leido.tipo === 'correo'
+      ? await identificarPorCorreo(leido.valor, consultar)
+      : await identificar(leido.valor, consultar, propia, true);
+    const tipo = { tipo: leido.tipo };
+    if (quien.estado === 'ambiguo') return FIJO('ambiguo', `${llenar(F.ambiguo_dato, tipo)} ${T.MENSAJE_ASESOR}`);
+    if (quien.estado !== 'ok') {
+      return FIJO('sin_cuenta', [`${llenar(F.sin_cuenta_dato, tipo)} ${T.MENSAJE_ASESOR}`, crearCuenta].join('\n'));
+    }
+    porDato = llenar(F.encontrada_por_dato, tipo);
   }
+
+  const conDato = (texto) => (porDato ? `${porDato} ${texto}`.slice(0, MAX_TEXTO) : texto);
+  const por = porDato ? 'dato' : 'numero';
 
   const elegidas = await elegirConexiones(quien.idUsuario, consultar, propia, quien.solo);
   if (!elegidas.length) {
@@ -490,8 +614,9 @@ async function revisar(telefono, o) {
     return {
       estado: 'revisada',
       resultado: 'con_fallas',
+      por,
       conexiones: [],
-      texto: [T.DIAGNOSTICO_FRASES.inicio, def.texto, lineaTutorial(def.tutorial)].join('\n'),
+      texto: conDato([F.inicio, def.texto, lineaTutorial(def.tutorial)].join('\n')),
     };
   }
 
@@ -510,12 +635,13 @@ async function revisar(telefono, o) {
     });
   }
 
-  const { resultado, texto } = redactar(conexiones);
+  const { resultado, texto } = redactar(conexiones, Boolean(porDato));
   return {
     estado: 'revisada',
     resultado,
+    por,
     conexiones: conexiones.map((c) => ({ ...c, fallas: c.fallas.map((f) => f.clave) })),
-    texto,
+    texto: conDato(texto),
   };
 }
 
@@ -524,5 +650,8 @@ module.exports = {
   consultarImporchat,
   // para las pruebas
   claseErrorIA,
+  leerDato,
+  olvidarDatosProbados: () => datosProbados.clear(),
   MAX_TEXTO,
+  MAX_DATOS,
 };

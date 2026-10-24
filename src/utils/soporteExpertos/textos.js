@@ -95,6 +95,9 @@ const TODOS = {
    «Rutas del panel»). `{desde}` = « desde el 22-oct» (solo el plan: las fechas
    de WhatsApp y de la IA se reescriben en cada chequeo y no dicen cuándo empezó).
    `informativo` = se nombra, pero no explica por sí solo que el bot no conteste.
+   `discreto` = el mismo aviso sin cifras ni nombres de la cuenta: se usa cuando
+   la cuenta se encontró con un número o correo escrito en el chat (podría ser
+   de otra persona, así que no se dice nada que identifique la cuenta).
 
    Los tutoriales son las clases del curso de IMPORCHAT (curso 32) que ya usan
    las fichas del bot (fichas_bot.json, campo `enlace`). */
@@ -136,7 +139,7 @@ const DIAGNOSTICO = Object.freeze({
   interruptor_nunca: { texto: `Tu bot nunca se encendió. Entra a ${RUTA_ASISTENTES} → en la tarjeta «Agente de Ventas» o «Agente de Servicios» toca «Configurar», enciende «Bot activo» y «Guardar».`, tutorial: 'openai', corto: 'el bot nunca se encendió' },
   interruptor_apagado: { texto: `Tu bot está apagado. Entra a ${RUTA_ASISTENTES} → en la tarjeta «Agente de Ventas» o «Agente de Servicios» toca «Editar», enciende «Bot activo» y «Guardar».`, tutorial: 'openai', corto: 'el bot está apagado' },
   // ── Ajustes (D4): no se arreglan desde el panel
-  modo_prueba: { texto: 'Tu bot está en modo de prueba: solo les contesta a {n} números.', asesor: true, corto: 'el bot está en modo de prueba' },
+  modo_prueba: { texto: 'Tu bot está en modo de prueba: solo les contesta a {n} números.', discreto: 'Tu bot está en modo de prueba: solo les contesta a algunos números.', asesor: true, corto: 'el bot está en modo de prueba' },
   fuera_de_horario: { texto: 'Ahora mismo tu bot está fuera del horario en que contesta.', informativo: true, corto: 'ahora está fuera de horario' },
   // ── IA y llave (D5)
   sin_llave_openai: { texto: `Tu cuenta no tiene llave de OpenAI, y sin ella el bot no puede contestar. Entra a ${RUTA_ASISTENTES} → «Añadir API Key», pega tu llave y «Guardar».`, tutorial: 'openai', corto: 'no tienes llave de OpenAI' },
@@ -151,11 +154,11 @@ const DIAGNOSTICO = Object.freeze({
   ia_error_claude: { texto: 'Claude rechazó las últimas respuestas de tu bot.', asesor: true, corto: 'Claude dio error' },
   // ── Columnas (D6)
   sin_columnas: { texto: 'Tu conexión no tiene tablero de columnas, y el bot necesita uno para saber qué contestar. Instala una plantilla en «Agentes».', tutorial: 'kanban', corto: 'no tienes tablero' },
-  columna_sin_ia: { texto: `Tu columna «{columna}» no tiene la IA activa{chats}, así que ahí el bot no contesta. Entra a ${RUTA_COLUMNAS} → enciende «IA activa en esta columna» → «Guardar cambios».`, tutorial: 'kanban', corto: 'hay columnas sin IA' },
-  columna_sin_prompt: { texto: `La columna «{columna}» tiene la IA activa pero sin instrucciones, y así el bot no contesta. Entra a ${RUTA_COLUMNAS} → escribe las «Instrucciones (prompt)» → «Guardar cambios».`, tutorial: 'prompt', corto: 'hay columnas sin instrucciones' },
-  columna_inexistente: { texto: `Tienes {n} chats en una columna que borraste o desactivaste, y ahí el bot no contesta. Vuelve a activarla en ${RUTA_COLUMNAS}, o mueve esos chats a una columna con IA.`, tutorial: 'kanban', corto: 'hay chats en una columna desactivada' },
-  chats_bot_apagado_todos: { texto: 'Apagaste el bot dentro de tus {n} chats de las últimas 48 horas, así que no le contesta a nadie. Vuelve a encenderlo dentro de cada chat.', corto: 'el bot está apagado en todos tus chats' },
-  chats_bot_apagado: { texto: 'Apagaste el bot dentro de {n} chats: en esos el bot no contesta hasta que lo vuelvas a encender en el chat.', informativo: true, corto: 'el bot está apagado en algunos chats' },
+  columna_sin_ia: { texto: `Tu columna «{columna}» no tiene la IA activa{chats}, así que ahí el bot no contesta. Entra a ${RUTA_COLUMNAS} → enciende «IA activa en esta columna» → «Guardar cambios».`, discreto: `Tu columna de entrada no tiene la IA activa, así que ahí el bot no contesta. Entra a ${RUTA_COLUMNAS} → enciende «IA activa en esta columna» → «Guardar cambios».`, tutorial: 'kanban', corto: 'hay columnas sin IA' },
+  columna_sin_prompt: { texto: `La columna «{columna}» tiene la IA activa pero sin instrucciones, y así el bot no contesta. Entra a ${RUTA_COLUMNAS} → escribe las «Instrucciones (prompt)» → «Guardar cambios».`, discreto: `Una de tus columnas tiene la IA activa pero sin instrucciones, y así el bot no contesta. Entra a ${RUTA_COLUMNAS} → escribe las «Instrucciones (prompt)» → «Guardar cambios».`, tutorial: 'prompt', corto: 'hay columnas sin instrucciones' },
+  columna_inexistente: { texto: `Tienes {n} chats en una columna que borraste o desactivaste, y ahí el bot no contesta. Vuelve a activarla en ${RUTA_COLUMNAS}, o mueve esos chats a una columna con IA.`, discreto: `Tienes chats en una columna que borraste o desactivaste, y ahí el bot no contesta. Vuelve a activarla en ${RUTA_COLUMNAS}, o mueve esos chats a una columna con IA.`, tutorial: 'kanban', corto: 'hay chats en una columna desactivada' },
+  chats_bot_apagado_todos: { texto: 'Apagaste el bot dentro de tus {n} chats de las últimas 48 horas, así que no le contesta a nadie. Vuelve a encenderlo dentro de cada chat.', discreto: 'Apagaste el bot dentro de todos tus chats de las últimas 48 horas, así que no le contesta a nadie. Vuelve a encenderlo dentro de cada chat.', corto: 'el bot está apagado en todos tus chats' },
+  chats_bot_apagado: { texto: 'Apagaste el bot dentro de {n} chats: en esos el bot no contesta hasta que lo vuelvas a encender en el chat.', discreto: 'Apagaste el bot dentro de algunos chats: en esos el bot no contesta hasta que lo vuelvas a encender en el chat.', informativo: true, corto: 'el bot está apagado en algunos chats' },
 });
 
 /* Frases de armado del texto del diagnóstico (no son fallas). */
@@ -163,12 +166,23 @@ const DIAGNOSTICO_FRASES = Object.freeze({
   inicio: 'Revisé tu IMPORCHAT.',
   sano: 'En las últimas 48 horas te escribieron en {n} chats y tu bot contestó en {m}: tu cuenta está bien conectada. Si lo que falla es lo que contesta tu bot, esta clase explica cómo mejorar su prompt; y si quieres, te paso con un asesor.',
   sin_causa: 'En las últimas 48 horas te escribieron en {n} chats y tu bot contestó en {m}. No encuentro la causa en tu cuenta.',
+  // Las mismas, sin cifras (cuenta encontrada con un dato escrito en el chat).
+  sano_discreto: 'Tu bot contestó en las últimas 48 horas: tu cuenta está bien conectada. Si lo que falla es lo que contesta tu bot, esta clase explica cómo mejorar su prompt; y si quieres, te paso con un asesor.',
+  sin_causa_discreto: 'No encuentro la causa en tu cuenta.',
+  sin_chats_con_bot_discreto: 'En las últimas 48 horas ningún chat quedó donde el bot contesta (están en columnas sin IA, como «Asesor», o con el bot apagado en el chat). No encuentro otra falla en tu cuenta.',
   sin_chats: 'En las últimas 48 horas nadie le escribió a tu número, así que no puedo comprobar si tu bot contesta. No encuentro una falla en tu cuenta.',
   sin_chats_con_bot: 'En las últimas 48 horas te escribieron en {t} chats, pero ninguno está donde el bot contesta (están en columnas sin IA, como «Asesor», o con el bot apagado en el chat). No encuentro otra falla en tu cuenta.',
   otra_conexion: 'Tienes otra conexión; pregúntame por ella si también falla.',
   no_verificable: 'Por este canal no puedo revisar tu cuenta de IMPORCHAT: escríbeme por WhatsApp desde el número con el que te registraste.',
-  sin_cuenta: 'Con el número desde el que me escribes no encuentro una cuenta de IMPORCHAT; puede estar registrada con otro teléfono.',
+  sin_cuenta: 'No encontré una cuenta de IMPORCHAT con el número desde el que me escribes. Recuerda que pudiste registrarte con cualquier otro número o con tu correo: escríbeme el número o el correo con el que te registraste y la reviso.',
   ambiguo: 'Tu número aparece en más de una cuenta de IMPORCHAT, así que no puedo revisarla por aquí.',
+  // Cuando la cuenta se buscó con el número o el correo que escribió el alumno.
+  encontrada_por_dato: 'Encontré tu cuenta con ese {tipo}.',
+  sin_cuenta_dato: 'Tampoco encontré una cuenta de IMPORCHAT con ese {tipo}.',
+  ambiguo_dato: 'Ese {tipo} aparece en más de una cuenta de IMPORCHAT, así que no puedo revisarla por aquí.',
+  dato_invalido: 'Eso no parece un número de WhatsApp ni un correo. Escríbeme el número con su código de país (por ejemplo +593 98 765 4321) o el correo con el que te registraste en IMPORCHAT.',
+  dato_no_escrito: 'Escríbeme aquí el número o el correo con el que te registraste en IMPORCHAT y la reviso.',
+  limite_datos: 'Ya probé varios datos y no encuentro tu cuenta.',
   error: 'No pude revisar tu cuenta de IMPORCHAT ahora.',
 });
 

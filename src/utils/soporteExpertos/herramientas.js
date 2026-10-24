@@ -10,7 +10,9 @@
  * `prepararTurno`. Si la cuenta tiene la carga apagada (`cargas: false`),
  * `ver_mi_carga` no se ofrece. Con `diagnostico: true` se ofrece además
  * `revisar_mi_imporchat`, que revisa la cuenta de IMPORCHAT de ese mismo
- * número (diagnosticoCuenta.js).
+ * número (diagnosticoCuenta.js). Es la única con un dato: si ese número no
+ * tiene cuenta, el alumno puede escribir el número o el correo con que se
+ * registró, y solo vale si está en su mensaje de este turno.
  */
 const { cargasDelTelefono, bloqueCarga, codigosEnMensaje, textoParaCliente } = require('./cargaCliente');
 const T = require('./textos');
@@ -54,12 +56,22 @@ function crearHerramientas({
     definicion: {
       name: 'revisar_mi_imporchat',
       description:
-        'Revisa la cuenta de IMPORCHAT de ESTE cliente (la ligada al número desde el que escribe) y dice qué está fallando y qué tutorial lo resuelve: WhatsApp desconectado, bot apagado, llave de OpenAI sin saldo o inválida, plan suspendido, columnas sin IA. ' +
-        'Úsala cuando diga que su IMPORCHAT, su bot o su asistente no responde, no funciona, se desconectó o da error. No recibe datos: nunca pidas su número ni el de otra cuenta. ' +
-        'Responde con lo que devuelve, con sus enlaces, sin agregar fallas que no estén ahí.',
-      input_schema: { type: 'object', properties: {}, additionalProperties: false },
+        'Revisa la cuenta de IMPORCHAT de ESTE cliente y dice qué está fallando y qué tutorial lo resuelve: WhatsApp desconectado, bot apagado, llave de OpenAI sin saldo o inválida, plan suspendido, columnas sin IA. ' +
+        'Úsala cuando diga que su IMPORCHAT, su bot o su asistente no responde, no funciona, se desconectó o da error. Primero úsala SIN dato: busca por el número desde el que escribe. ' +
+        'Si responde que no encontró la cuenta y pide el número o el correo con que se registró, transmite eso; cuando el cliente lo escriba, vuelve a usarla con ese dato tal cual lo escribió. ' +
+        'Nunca pongas un dato que el cliente no escribió en su último mensaje. Responde con lo que devuelve, con sus enlaces, sin agregar fallas que no estén ahí.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          dato: {
+            type: 'string',
+            description: 'Solo si la revisión anterior no encontró su cuenta: el número de WhatsApp o el correo con el que el cliente dice que se registró, copiado de su último mensaje. Si no, no lo pongas.',
+          },
+        },
+        additionalProperties: false,
+      },
     },
-    ejecutar: async () => {
+    ejecutar: async (input = {}) => {
       if (!canalVerificable) return T.DIAGNOSTICO_FRASES.no_verificable;
       // Base de IMPORCHAT: clave aparte de deps.consultar, que es la de Imporsuit (ver_mi_carga).
       const r = await diagnosticarCuenta(telefono, {
@@ -69,6 +81,8 @@ function crearHerramientas({
         estadosReconectar: deps.estadosReconectar,
         ajustesIA: deps.ajustesIA,
         propia: idConfiguracionPropia,
+        dato: typeof input?.dato === 'string' ? input.dato : '',
+        mensaje,
       });
       ultimoDiagnostico = r;
       return r.texto;
@@ -134,11 +148,25 @@ function sumarHechosHerramientas(
     const t = textoParaCliente(cargaConsultada, T.MENSAJE_ASESOR);
     if (t) hechos.textoSeguro = t;
   }
-  const deImporchat = hablaDeImporchat(String(mensaje || '')) || hablaDeImporchat(String(respuesta || ''));
+  // Si se buscó con el número o el correo que escribió, ese mensaje es un dato
+  // suelto («ana@gmail.com») y no habla de IMPORCHAT, pero la pregunta sí lo era.
+  const deImporchat =
+    diagnostico?.por === 'dato' ||
+    hablaDeImporchat(String(mensaje || '')) ||
+    hablaDeImporchat(String(respuesta || ''));
   if (
     diagnostico?.estado === 'revisada' &&
     diagnostico.resultado !== 'sin_causa' &&
     deImporchat &&
+    hechos.textoSeguro === T.MENSAJE_ASESOR &&
+    String(diagnostico.texto || '').length <= 1400
+  ) {
+    hechos.textoSeguro = diagnostico.texto;
+  }
+  // Si no encontró la cuenta, el texto fijo pide el número o el correo: si la
+  // guardia rechaza cómo lo dijo el modelo, se manda ese y no el «un asesor».
+  if (
+    ['sin_cuenta', 'pide_dato', 'limite', 'ambiguo'].includes(diagnostico?.estado) &&
     hechos.textoSeguro === T.MENSAJE_ASESOR &&
     String(diagnostico.texto || '').length <= 1400
   ) {

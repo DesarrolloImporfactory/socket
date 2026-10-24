@@ -21,7 +21,7 @@ const { ESTADOS_RECONECTAR } = require('./soporte_expertos/cuenta_imporchat_de_m
 const rutaSalud = require.resolve(path.join(__dirname, '../src/services/whatsapp_numero_health.service'));
 require.cache[rutaSalud] = { id: rutaSalud, filename: rutaSalud, loaded: true, exports: { ESTADOS_RECONECTAR } };
 
-const { diagnosticarCuenta, claseErrorIA, MAX_TEXTO } = require('../src/utils/soporteExpertos/diagnosticoCuenta');
+const { diagnosticarCuenta, claseErrorIA, MAX_TEXTO, MAX_DATOS, leerDato, olvidarDatosProbados } = require('../src/utils/soporteExpertos/diagnosticoCuenta');
 const { crearHerramientas, sumarHechosHerramientas } = require('../src/utils/soporteExpertos/herramientas');
 const { hablaDeImporchat } = require('../src/utils/soporteExpertos/intencion');
 const { mezclarSoporteExpertos } = require('./soporte_expertos/mezclarAjustes');
@@ -64,7 +64,8 @@ const VOSEO = /\b(Tocá|Tenés|Podés|Hacé|Mirá|Andá|Fijate|Dale|Entrá|Escri
   {
     const r = await revisar({}, { telefono: '593987000111' });
     prueba('1. número desconocido → sin_cuenta', r.estado === 'sin_cuenta', r.estado);
-    prueba('   sin_cuenta ofrece asesor y la clase para crear la cuenta', r.texto.includes(T.MENSAJE_ASESOR) && r.texto.includes(enlace('cuenta')));
+    prueba('   sin_cuenta pide el número o el correo (puede ser cualquiera) y da la clase para crear la cuenta', /número o el correo/.test(r.texto) && /cualquier otro número/.test(r.texto) && r.texto.includes(enlace('cuenta')));
+    prueba('   sin_cuenta todavía no lo manda al asesor', !r.texto.includes(T.MENSAJE_ASESOR));
   }
   {
     const r = await revisar({ usuarios: [{ id_usuario: 7, pais: '+593', lead: '0987123456' }, { id_usuario: 8, pais: '+593', lead: '987123456' }] });
@@ -342,7 +343,7 @@ const VOSEO = /\b(Tocá|Tenés|Podés|Hacé|Mirá|Andá|Fijate|Dale|Entrá|Escri
     prueba('10. con diagnostico → 3 herramientas', nombres(crearHerramientas({ diagnostico: true })) === 'ver_mi_carga,revisar_mi_imporchat,pasar_a_humano');
     prueba('10. con diagnostico y sin carga → 2', nombres(crearHerramientas({ diagnostico: true, cargas: false })) === 'revisar_mi_imporchat,pasar_a_humano');
     const def = crearHerramientas({ diagnostico: true }).lista[1].definicion;
-    prueba('10. la herramienta no recibe ningún dato', Object.keys(def.input_schema.properties).length === 0 && def.input_schema.additionalProperties === false);
+    prueba('10. la herramienta solo recibe «dato» (número o correo del registro) y nada más', JSON.stringify(Object.keys(def.input_schema.properties)) === '["dato"]' && def.input_schema.additionalProperties === false);
 
     const b = baseFalsa(escenario({ conexiones: [conexion({ k_oa: 0 })] }));
     let imporsuit = 0;
@@ -392,6 +393,100 @@ const VOSEO = /\b(Tocá|Tenés|Podés|Hacé|Mirá|Andá|Fijate|Dale|Entrá|Escri
     const largos = Object.entries(T.DIAGNOSTICO).filter(([, d]) => (d.texto.match(/[.!?](\s|$)/g) || []).length > 3).map(([k]) => k);
     prueba('12. ningún texto pasa de 3 frases', !largos.length, largos.join(', '));
     prueba('12. la sección del prompt nombra la herramienta y no reemplaza la de herramientas', /revisar_mi_imporchat/.test(SECCION_DIAGNOSTICO) && /ver_mi_carga/.test(SECCION_HERRAMIENTAS));
+  }
+
+  /* ───────────────────────────────────────────────────────────────────── */
+  console.log('\nD1-D13 y P1-P8. Registrado con otro número o con su correo (Daniel, 24-oct)');
+  {
+    const OTRO = '593999000111'; // escribe desde un número que no es el de su cuenta
+    const conDato = (dato, mensaje, cambios = {}, o = {}) => {
+      const b = baseFalsa(escenario(cambios));
+      return diagnosticarCuenta(o.telefono || OTRO, {
+        consultar: b.consultar, verificarAcceso: PERMITIDO, ahora: o.ahora || AHORA, propia: 265,
+        dato, mensaje: mensaje === undefined ? dato : mensaje,
+      }).then((r) => ({ ...r, llamadas: b.llamadas }));
+    };
+    olvidarDatosProbados();
+    let r = await conDato('0987123456', 'me registré con el 0987123456');
+    prueba('D1. número sin código de país (el del registro) → revisa su cuenta', r.estado === 'revisada' && r.por === 'dato', `${r.estado} ${r.por}`);
+    prueba('    y empieza diciendo con qué la encontró', r.texto.startsWith('Encontré tu cuenta con ese número.'), r.texto.slice(0, 60));
+    r = await conDato('+593 98 712 3456', 'es el +593 98 712 3456');
+    prueba('D2. número con código y espacios → revisa', r.estado === 'revisada', r.estado);
+    olvidarDatosProbados();
+    r = await conDato('Ana.Perez@Gmail.com', 'mi correo es Ana.Perez@Gmail.com', { correos: [{ id_usuario: 7, email: 'ana.perez@gmail.com', sub: false }] });
+    prueba('D3. correo del dueño (sin importar mayúsculas) → revisa', r.estado === 'revisada' && r.texto.startsWith('Encontré tu cuenta con ese correo.'), r.estado);
+    r = await conDato('admin@tienda.com', 'admin@tienda.com', { correos: [{ id_usuario: 7, email: 'admin@tienda.com', sub: true }] });
+    prueba('D4. correo del administrador de la cuenta → revisa', r.estado === 'revisada', r.estado);
+    r = await conDato('x@y.com', 'x@y.com', { correos: [{ id_usuario: 7, email: 'x@y.com', sub: false }, { id_usuario: 8, email: 'x@y.com', sub: true }] });
+    prueba('D5. correo en dos cuentas → ambiguo, al asesor, sin revisar nada', r.estado === 'ambiguo' && r.texto.includes(T.MENSAJE_ASESOR) && !r.llamadas.some((l) => /FROM configuraciones c/.test(l.sql)));
+    olvidarDatosProbados();
+    r = await conDato('nadie@gmail.com', 'nadie@gmail.com');
+    prueba('D6. correo sin cuenta → «Tampoco encontré…» + asesor + clase de crear cuenta', /^Tampoco encontré una cuenta de IMPORCHAT con ese correo\./.test(r.texto) && r.texto.includes(T.MENSAJE_ASESOR) && r.texto.includes(enlace('cuenta')));
+    r = await conDato('0987123456', 'hola, mi bot no contesta');
+    prueba('D7. dato que no está en el mensaje de este turno → no busca, lo pide', r.estado === 'pide_dato' && r.texto === T.DIAGNOSTICO_FRASES.dato_no_escrito && !r.llamadas.some((l) => /:correo|FROM configuraciones c/.test(l.sql)));
+    r = await conDato('mi tienda', 'mi tienda');
+    prueba('D8. algo que no es número ni correo → pide el dato bien escrito', r.estado === 'pide_dato' && r.texto === T.DIAGNOSTICO_FRASES.dato_invalido);
+    olvidarDatosProbados();
+    for (const c of ['a1@x.com', 'a2@x.com', 'a3@x.com']) await conDato(c, c);
+    r = await conDato('a1@x.com', 'a1@x.com');
+    prueba('D9. repetir un dato ya probado no gasta intentos', r.estado === 'sin_cuenta', r.estado);
+    r = await conDato('a4@x.com', 'a4@x.com');
+    prueba(`D9. el ${MAX_DATOS + 1}.º dato distinto del día → límite y asesor, sin consultar`, r.estado === 'limite' && r.texto.includes(T.MENSAJE_ASESOR) && !r.llamadas.length, r.estado);
+    r = await conDato('a4@x.com', 'a4@x.com', {}, { ahora: new Date(AHORA.getTime() + 25 * 3600 * 1000) });
+    prueba('D10. al día siguiente puede volver a probar', r.estado === 'sin_cuenta', r.estado);
+    olvidarDatosProbados();
+    r = await conDato('otra@cuenta.com', 'otra@cuenta.com', { correos: [{ id_usuario: 8, email: 'otra@cuenta.com', sub: false }] }, { telefono: TEL });
+    prueba('D11. si su WhatsApp SÍ tiene cuenta, el dato se ignora y revisa la suya', r.estado === 'revisada' && r.por === 'numero' && !r.llamadas.some((l) => /:correo/.test(l.sql)));
+    const lim = leerDato('0987654321', '5215512345678');
+    prueba('D12. un 09… escrito desde México no se completa como Ecuador', !lim || !lim.valor.startsWith('593'), JSON.stringify(lim));
+    prueba('D12. 55 1234 5678 desde México → 52 + número', leerDato('55 1234 5678', '5215512345678')?.valor === '525512345678');
+    olvidarDatosProbados();
+    // La herramienta pasa el dato y el mensaje del turno.
+    const b = baseFalsa(escenario());
+    const h = crearHerramientas({ telefono: OTRO, mensaje: 'con este: 0987123456', canalVerificable: true, diagnostico: true, idConfiguracionPropia: 265,
+      deps: { consultarImporchat: b.consultar, verificarAcceso: PERMITIDO, ahora: AHORA } });
+    const herr = h.lista.find((x) => x.definicion.name === 'revisar_mi_imporchat');
+    prueba('D13. el esquema ofrece solo el campo «dato», opcional', JSON.stringify(Object.keys(herr.definicion.input_schema.properties)) === '["dato"]' && !herr.definicion.input_schema.required);
+    const t = await herr.ejecutar({ dato: '0987123456' });
+    prueba('D13. la herramienta revisa con el dato del mensaje', t.startsWith('Encontré tu cuenta con ese número.') && h.diagnosticoConsultado().por === 'dato', t.slice(0, 60));
+    prueba('D13. ver_mi_carga sigue sin ningún campo', JSON.stringify(h.lista[0].definicion.input_schema.properties) === '{}');
+    olvidarDatosProbados();
+
+    // Revisión independiente (24-oct): privacidad del camino del dato.
+    r = await conDato('+593 98 555 0000', 'es el +593 98 555 0000', { usuarios: [] });
+    prueba('P1. el número de una CONEXIÓN (el de atención, público) escrito en el chat no abre la cuenta', r.estado === 'sin_cuenta', r.estado);
+    olvidarDatosProbados();
+    r = await conDato('0987123456', 'me registré con el 0987123456', {
+      conexiones: [conexion(), conexion({ id: 102, nombre_configuracion: 'Tienda Dos' })],
+      chats: [chats(14, 3), chats(6, 1, { id_configuracion: 102 })],
+      columnas: [columna(), columna({ id: 2, id_configuracion: 102 })],
+      asistentes: [{ id_configuracion: 101, activo: 1 }, { id_configuracion: 102, activo: 0 }],
+      actividad: [{ id_configuracion: 101, n: 40 }, { id_configuracion: 102, n: 9 }],
+    });
+    prueba('P2. por dato: sin nombres de conexión', r.estado === 'revisada' && !/Tienda/.test(r.texto), r.texto.slice(0, 120));
+    prueba('P2. por dato: sin cifras de la cuenta', !/\b(14|6|3)\b/.test(r.texto.replace(/https?:\S+/g, '')), r.texto);
+    const sinDato = await revisar({ chats: [chats(14, 14)] });
+    olvidarDatosProbados();
+    const sanoDato = await conDato('0987123456', 'me registré con el 0987123456');
+    prueba('P3. sana por su WhatsApp: con cifras · sana por dato: sin cifras', /14 chats/.test(sinDato.texto) && !/14/.test(sanoDato.texto) && sanoDato.resultado === 'sano', sanoDato.texto.slice(0, 120));
+    olvidarDatosProbados();
+    r = await conDato('ana@gmail.com', 'mi correo es xana@gmail.com', { correos: [{ id_usuario: 7, email: 'ana@gmail.com', sub: false }] });
+    prueba('P4. correo que solo está DENTRO de otro (xana@ / ana@) → no vale', r.estado === 'pide_dato', r.estado);
+    r = await conDato('ana@gmail.com', 'es ana@gmail.com.', { correos: [{ id_usuario: 7, email: 'ana@gmail.com', sub: false }] });
+    prueba('P4. correo con punto final de la frase → vale', r.estado === 'revisada', r.estado);
+    r = await conDato('+593987123456', 'es el +51 987123456');
+    prueba('P5. número de otro país con la misma cola → no vale', r.estado === 'pide_dato', r.estado);
+    olvidarDatosProbados();
+    const hechos = () => ({ respaldo: { firme: '', estado: '' }, textoSeguro: T.MENSAJE_ASESOR });
+    const pide = sumarHechosHerramientas(hechos(), ['x'], null, { mensaje: 'hola', diagnostico: { estado: 'sin_cuenta', texto: T.DIAGNOSTICO_FRASES.sin_cuenta } });
+    prueba('P6. si la guardia frena el «no encontré tu cuenta», va el texto fijo que pide el dato', pide.textoSeguro === T.DIAGNOSTICO_FRASES.sin_cuenta);
+    const { pideDatosDeOtro } = require('../src/utils/soporteExpertos/intencion');
+    prueba('P7. «el estado de mi imporchat, me registré con el 0987…» no dispara el candado de la carga ajena', !pideDatosDeOtro('el estado de mi imporchat, me registré con el número 0987123456', OTRO).pide);
+    prueba('P7. «dónde está la carga del 0987…» sigue con candado', pideDatosDeOtro('dónde está la carga del 0987123456', OTRO).pide);
+    for (let i = 0; i < 1100; i++) await conDato('x@x.com', 'x@x.com', {}, { telefono: `5939${String(i).padStart(8, '0')}` });
+    r = await conDato('x@x.com', 'x@x.com', {}, { telefono: '593911111111', ahora: new Date(AHORA.getTime() + 25 * 3600 * 1000) });
+    prueba('P8. con más de mil teléfonos guardados se barren los vencidos y sigue funcionando', r.estado === 'sin_cuenta', r.estado);
+    olvidarDatosProbados();
   }
 
   /* ───────────────────────────────────────────────────────────────────── */
