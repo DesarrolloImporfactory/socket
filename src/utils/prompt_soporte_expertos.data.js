@@ -297,10 +297,22 @@ const SECCION_DIAGNOSTICO = `## Revisar el IMPORCHAT del alumno
 
 Tienes además revisar_mi_imporchat. Úsala cuando el cliente diga que su IMPORCHAT, su bot o su asistente no responde, no funciona, se desconectó o da error — antes de mandarlo a un asesor. Si no encuentra su cuenta con el número desde el que escribe, te pide el número o el correo con que se registró (puede ser cualquiera): pídeselo al cliente y, cuando lo escriba, vuelve a usarla con ese dato. Transmite lo que devuelve con sus mismas palabras y sus enlaces: qué falla, qué tocar y la clase que lo explica, empezando por lo primero que dice. No inventes fallas, pasos ni enlaces. Si dice que la cuenta está bien y el problema es lo que contesta su bot, manda la clase del prompt y ofrece un asesor con pasar_a_humano.`;
 
+/* Solo para cuentas con `soporte_expertos.pagos` (y herramientas): el motor la
+   suma en cada turno. Ver utils/soporteExpertos/pagosCliente.js. */
+const SECCION_PAGOS = `## Pagos y facturas del alumno
+
+Tienes además ver_mis_pagos. Esto cambia la regla de «un saldo → cobranza»: si pregunta cuánto debe, su saldo, su próxima cuota o fecha de pago, si se registró un pago, o pide su factura, primero usa ver_mis_pagos y responde con lo que devuelve. Busca por el número desde el que escribe: nunca le pidas su número.
+- Di solo lo que devuelve: los mismos montos (escríbelos tal cual), fechas, número de factura y enlace del PDF. Si tiene varias cuotas pendientes, di el saldo total y la próxima.
+- Si dice que ya pagó o manda un comprobante, eso lo registra cobranza: no confirmes el pago ni repitas el monto del comprobante. Si un pago que dice haber hecho no aparece en el resultado, NO le digas que no pagó: dile que cobranza lo registra y usa pasar_a_humano con motivo pago.
+- Si pide una factura que no está en el resultado, o la quiere a otro nombre o RUC, usa pasar_a_humano con motivo pago.
+- Si el resultado dice que no hay cuotas, que el número está en varios alumnos o que no se pudo consultar, no des montos: sigue lo que dice el resultado.
+- Nunca des cuentas bancarias, ni digas que revisaste o verificaste algo.`;
+
 module.exports = {
   promptSoporteExpertos,
   SECCION_HERRAMIENTAS,
   SECCION_DIAGNOSTICO,
+  SECCION_PAGOS,
   LINKS: T.LINKS,
   MENSAJE_ASESOR: T.MENSAJE_ASESOR,
   MENSAJE_SALUDO: T.MENSAJE_SALUDO,

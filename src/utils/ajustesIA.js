@@ -113,6 +113,7 @@ function normalizarSoporteExpertos(v) {
       guardia: true,
       herramientas: false,
       diagnostico: false,
+      pagos: false,
       callar_bots: true,
       callar_acuses: true,
       escalar: false,
@@ -129,6 +130,9 @@ function normalizarSoporteExpertos(v) {
     // Revisar la cuenta IMPORCHAT del que escribe (revisar_mi_imporchat): solo
     // con herramientas y pedido explícito. Ver soporteExpertos/diagnosticoCuenta.js.
     diagnostico: v.herramientas === true && v.diagnostico === true,
+    // Cuotas, saldo, pagos registrados y facturas del que escribe (ver_mis_pagos):
+    // solo con herramientas y pedido explícito. Ver soporteExpertos/pagosCliente.js.
+    pagos: v.herramientas === true && v.pagos === true,
     // No contestarle al bot de la tienda del alumno ni a un «ok / gracias»:
     // encendidos salvo que la cuenta los apague (senales.js).
     callar_bots: v.callar_bots !== false,

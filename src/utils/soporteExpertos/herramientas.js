@@ -12,12 +12,15 @@
  * `revisar_mi_imporchat`, que revisa la cuenta de IMPORCHAT de ese mismo
  * número (diagnosticoCuenta.js). Es la única con un dato: si ese número no
  * tiene cuenta, el alumno puede escribir el número o el correo con que se
- * registró, y solo vale si está en su mensaje de este turno.
+ * registró, y solo vale si está en su mensaje de este turno. Con `pagos: true`
+ * se ofrece `ver_mis_pagos`: cuotas, saldo, pagos registrados y facturas del
+ * alumno de ese mismo número (pagosCliente.js), solo lectura.
  */
 const { cargasDelTelefono, bloqueCarga, codigosEnMensaje, textoParaCliente } = require('./cargaCliente');
 const T = require('./textos');
 const { hablaDeCarga, hablaDeImporchat } = require('./intencion');
 const { diagnosticarCuenta } = require('./diagnosticoCuenta');
+const { pagosDelTelefono, bloquePagos, textoPagosParaCliente, variantesDeMontos, pidePagos } = require('./pagosCliente');
 
 const NO_VERIFICABLE =
   'No se puede consultar la carga por este canal. Pide la marca o el número de cotización y pasa el caso a logística.';
@@ -28,11 +31,13 @@ function crearHerramientas({
   canalVerificable = false,
   cargas = true,
   diagnostico = false,
+  pagos = false,
   idConfiguracionPropia = null,
   deps = {},
 } = {}) {
   let ultimaCarga = null;
   let ultimoDiagnostico = null;
+  let ultimosPagos = null;
   let ultimoPase = null; // motivo de pasar_a_humano (lo usa el escalado por área)
 
   const verMiCarga = {
@@ -90,6 +95,25 @@ function crearHerramientas({
     },
   };
 
+  const verMisPagos = {
+    definicion: {
+      name: 'ver_mis_pagos',
+      description:
+        'Lee de la cartera las cuotas, el saldo pendiente, los pagos registrados y las facturas (número y PDF) de ESTE cliente, buscando solo por el número de WhatsApp desde el que escribe. ' +
+        'Úsala cuando pregunte cuánto debe, su saldo, su próxima cuota o fecha de pago, si se registró un pago, o pida su factura. ' +
+        'No recibe datos: nunca le pidas su número ni uses el de otra persona. ' +
+        'Responde solo con lo que devuelve, con los montos escritos tal cual. Un comprobante que acaba de mandar no lo confirmas: lo registra cobranza.',
+      input_schema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    ejecutar: async () => {
+      if (!canalVerificable)
+        return 'No se pueden consultar pagos por este canal. No digas montos: pasa el caso a cobranza con pasar_a_humano (motivo pago).';
+      const r = await pagosDelTelefono(telefono, { consultar: deps.consultar });
+      ultimosPagos = r;
+      return bloquePagos(r);
+    },
+  };
+
   const pasarAHumano = {
     definicion: {
       name: 'pasar_a_humano',
@@ -110,9 +134,15 @@ function crearHerramientas({
   };
 
   return {
-    lista: [...(cargas ? [verMiCarga] : []), ...(diagnostico ? [revisarMiImporchat] : []), pasarAHumano],
+    lista: [
+      ...(cargas ? [verMiCarga] : []),
+      ...(diagnostico ? [revisarMiImporchat] : []),
+      ...(pagos ? [verMisPagos] : []),
+      pasarAHumano,
+    ],
     cargaConsultada: () => ultimaCarga,
     diagnosticoConsultado: () => ultimoDiagnostico,
+    pagosConsultados: () => ultimosPagos,
     paseConsultado: () => ultimoPase,
   };
 }
@@ -132,18 +162,24 @@ function crearHerramientas({
  * encontró algo concreto, el texto seguro es ese diagnóstico (sale del
  * catálogo fijo y ya trae sus enlaces) en vez de «un asesor te escribe». Con
  * `sin_causa` o un error se queda el asesor.
+ *
+ * Con los pagos: cada monto leído entra al respaldo también en las formas en
+ * que lo puede escribir el modelo («$1.250», «1250 USD»). Si la guardia
+ * rechaza y el cliente preguntaba su saldo o su factura (no «ya pagué»), el
+ * texto seguro es el armado en código con la cartera.
  * Lo usan el motor (paso 9.5), el simulador y las pruebas.
  */
 function sumarHechosHerramientas(
   hechos,
   extraHerramientas = [],
   cargaConsultada = null,
-  { mensaje = '', respuesta = '', diagnostico = null } = {},
+  { mensaje = '', respuesta = '', diagnostico = null, pagos = null } = {},
 ) {
   if (!extraHerramientas.length || !hechos?.respaldo) return hechos;
   const r = hechos.respaldo;
   const extra = extraHerramientas.join('\n');
   r.firme = `${String(r.firme || '')}\n${extra}`;
+  if (pagos?.estado === 'encontrado') r.firme += `\n${variantesDeMontos(pagos)}`;
   r.estado = cargaConsultada && !hechos.carga
     ? `${Object.values(T.TEXTOS_FIJOS).join('\n')}\n${extra}`
     : `${String(r.estado || '')}\n${extra}`;
@@ -175,6 +211,11 @@ function sumarHechosHerramientas(
     String(diagnostico.texto || '').length <= 1400
   ) {
     hechos.textoSeguro = diagnostico.texto;
+  }
+  const pide = pidePagos(String(mensaje || ''));
+  if (pide && hechos.textoSeguro === T.MENSAJE_ASESOR) {
+    const t = textoPagosParaCliente(pagos, { pideFactura: pide === 'factura' });
+    if (t) hechos.textoSeguro = t;
   }
   return hechos;
 }

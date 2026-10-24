@@ -2720,25 +2720,30 @@ async function procesarMensajeKanban(params) {
       if (ajustesIA.soporte_expertos?.herramientas && turnoExpertos) {
         const { crearHerramientas } = require('../utils/soporteExpertos/herramientas');
         const { ejecutarConClaudeHerramientas } = require('../utils/claude/herramientas');
-        const { SECCION_DIAGNOSTICO } = require('../utils/prompt_soporte_expertos.data');
+        const { SECCION_DIAGNOSTICO, SECCION_PAGOS } = require('../utils/prompt_soporte_expertos.data');
         /* Revisar la cuenta IMPORCHAT del que escribe: bandera aparte
            (soporte_expertos.diagnostico). La sección va al final de las
            instrucciones fijas, no del bloque del producto, para que el
            caché del prompt no cambie de un anuncio a otro. */
         const conDiagnostico = ajustesIA.soporte_expertos.diagnostico === true;
+        // Cuotas, saldo y facturas del que escribe: bandera aparte (soporte_expertos.pagos).
+        const conPagos = ajustesIA.soporte_expertos.pagos === true;
         herramientasTurno = crearHerramientas({
           telefono,
           mensaje,
           canalVerificable: canalVerificableExpertos,
           cargas: ajustesIA.soporte_expertos.cargas !== false,
           diagnostico: conDiagnostico,
+          pagos: conPagos,
           idConfiguracionPropia: id_configuracion,
         });
         resultado = await ejecutarConClaudeHerramientas({
           ...parametrosClaude,
-          instructions: conDiagnostico
-            ? `${parametrosClaude.instructions}\n\n${SECCION_DIAGNOSTICO}`
-            : parametrosClaude.instructions,
+          instructions: [
+            parametrosClaude.instructions,
+            ...(conDiagnostico ? [SECCION_DIAGNOSTICO] : []),
+            ...(conPagos ? [SECCION_PAGOS] : []),
+          ].join('\n\n'),
           herramientas: herramientasTurno.lista,
         });
       } else {
@@ -3037,7 +3042,12 @@ async function procesarMensajeKanban(params) {
           turnoExpertos.hechos,
           resultado.hechosHerramientas,
           herramientasTurno?.cargaConsultada?.(),
-          { mensaje, respuesta: respuestaRaw, diagnostico: herramientasTurno?.diagnosticoConsultado?.() },
+          {
+            mensaje,
+            respuesta: respuestaRaw,
+            diagnostico: herramientasTurno?.diagnosticoConsultado?.(),
+            pagos: herramientasTurno?.pagosConsultados?.(),
+          },
         );
       }
       // Si el 6.9 falló no hay hechos del turno: se revisa con los mínimos.
