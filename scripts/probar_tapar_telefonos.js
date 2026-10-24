@@ -129,5 +129,44 @@ caso('telefonosConocidos tapa un número que no venía en la respuesta', () => {
   assert.ok(sinCifras(r.texto_mensaje), r.texto_mensaje);
 });
 
+caso('claves que no estaban en la lista: celular, whatsapp, telefono_conexion', () => {
+  const r = taparTelefonos({ celular: '0991234567', whatsapp: '593991234567', telefono_conexion: '593987654321', whatsapp_lead: 5215512345678, sede_telefono: '022345678' });
+  assert.ok(sinCifras(JSON.stringify(r)), JSON.stringify(r));
+});
+
+caso('un celular escrito solo, sin palabra clave', () => {
+  const r = taparTelefonos({ texto_mensaje: 'escríbeme 0991234567 o 593 98 765 4321 o 52 55 1234 5678' });
+  assert.ok(sinCifras(r.texto_mensaje), r.texto_mensaje);
+});
+
+caso('número suelto de 12 cifras con 593 en una clave cualquiera', () => {
+  const r = taparTelefonos({ contacto: 593991234567, id: 912345 });
+  assert.equal(r.contacto, '•••• 4567');
+  assert.equal(r.id, 912345);
+});
+
+caso('llaves con otro nombre: page_access_token, refresh_token, api_key', () => {
+  const r = taparTelefonos({ page_access_token: 'a', refresh_token: 'b', openai_token: 'c', api_key: 'd', client_secret: 'e', nombre: 'L' });
+  assert.deepEqual(r, { nombre: 'L' });
+});
+
+caso('ids que se llaman parecido no se tocan', () => {
+  const r = taparTelefonos({ phone_number_id: '123456789012345', id_telefono: 44, celular_recibe: 9876543 });
+  assert.deepEqual(r, { phone_number_id: '123456789012345', id_telefono: 44, celular_recibe: 9876543 });
+});
+
+caso('500 chats con 10 mensajes en menos de medio segundo', () => {
+  const chats = [];
+  for (let i = 0; i < 500; i += 1) {
+    const cel = '5939' + String(10000000 + i * 7919).slice(-8);
+    chats.push({ id: i, celular_cliente: cel, mensajes: Array.from({ length: 10 }, (_, j) => ({ id: j, texto_mensaje: `hola soy ${i}, mi cel ${cel.slice(3)} y la guía ${j}` })) });
+  }
+  const t0 = Date.now();
+  const r = taparTelefonos({ data: chats });
+  const ms = Date.now() - t0;
+  assert.ok(ms < 500, ms + ' ms');
+  assert.ok(sinCifras(JSON.stringify(r)), 'quedó un número');
+});
+
 console.log(fallos ? `\n${fallos} FALLAS` : '\nTodo en verde');
 process.exit(fallos ? 1 : 0);

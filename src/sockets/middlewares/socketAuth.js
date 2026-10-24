@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const { sesionVigente } = require("../../utils/sesionVigente");
+const { normalizarRol } = require("../../utils/rolEquipo");
 
 // Códigos con los que la sesión está muerta aunque el token sea auténtico:
 // el socket se rechaza en las dos puertas (presence y la principal).
@@ -16,7 +17,7 @@ function errorConCodigo(code) {
 // por cuenta (tramo 2) un usuario «equipo» o una sesión de Team no entran.
 function cerradoParaEquipo(decoded, user) {
   if (decoded?.origen === "team") return true;
-  return String((user ? user.rol : decoded?.rol) || "") === "equipo";
+  return normalizarRol(user ? user.rol : decoded?.rol) === "equipo";
 }
 
 function usuarioDelSocket(decoded, user) {

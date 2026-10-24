@@ -19,7 +19,7 @@ const { actualizarSubUsuario } = require('./../utils/actualizarSubUsuario');
 const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
 const { tieneColumnaAccion } = require('../utils/historialEncargados');
-const { ROL_EQUIPO, puedeTenerRolEquipo } = require('../utils/rolEquipo');
+const { ROL_EQUIPO, normalizarRol, puedeTenerRolEquipo } = require('../utils/rolEquipo');
 
 const RESPUESTA_ROL_EQUIPO = {
   status: 'fail',
@@ -73,7 +73,7 @@ exports.agregarUsuario = catchAsync(async (req, res, next) => {
     });
   }
 
-  if (String(rol) === ROL_EQUIPO && !puedeTenerRolEquipo(id_usuario)) {
+  if (normalizarRol(rol) === ROL_EQUIPO && !puedeTenerRolEquipo(id_usuario)) {
     return res.status(403).json(RESPUESTA_ROL_EQUIPO);
   }
 
@@ -134,7 +134,7 @@ exports.actualizarUsuario = catchAsync(async (req, res, next) => {
     });
   }
 
-  if (String(rol) === ROL_EQUIPO && !puedeTenerRolEquipo(target.id_usuario)) {
+  if (normalizarRol(rol) === ROL_EQUIPO && !puedeTenerRolEquipo(target.id_usuario)) {
     return res.status(403).json(RESPUESTA_ROL_EQUIPO);
   }
 

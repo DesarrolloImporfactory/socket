@@ -2,6 +2,7 @@ const User = require('../models/user.model');
 const catchAsync = require('../utils/catchAsync');
 const bcrypt = require('bcryptjs');
 const { generarToken } = require('./../utils/jwt');
+const { esEquipo } = require('./../utils/rolEquipo');
 const { crearStripeCustomer } = require('./../utils/stripe/crear_customer');
 const { crearSubUsuario } = require('./../utils/crearSubUsuario');
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
@@ -288,6 +289,16 @@ exports.login = catchAsync(async (req, res, next) => {
     return res
       .status(401)
       .json({ status: 'fail', message: 'Credenciales inválidas' });
+  }
+
+  // El rol «equipo» entra solo desde Team (utils/rolEquipo.js): aquí no se le
+  // da un token que después ninguna pantalla acepta.
+  if (esEquipo(usuarioEncontrado)) {
+    return res.status(403).json({
+      status: 'fail',
+      code: 'EQUIPO_SOLO_TEAM',
+      message: 'Tu usuario entra solo desde Team.',
+    });
   }
 
   const token = await generarToken(usuarioEncontrado.id_sub_usuario);
@@ -1239,6 +1250,16 @@ exports.renew = catchAsync(async (req, res, next) => {
       status: 'fail',
       code: 'USER_NOT_FOUND',
       message: 'El usuario de esta sesión ya no existe.',
+    });
+  }
+
+  // El rol «equipo» entra solo desde Team (utils/rolEquipo.js): aquí no se le
+  // da un token que después ninguna pantalla acepta.
+  if (esEquipo(subUsuario)) {
+    return res.status(403).json({
+      status: 'fail',
+      code: 'EQUIPO_SOLO_TEAM',
+      message: 'Tu usuario entra solo desde Team.',
     });
   }
 

@@ -1,4 +1,4 @@
-const { taparTelefonos } = require('./taparTelefonos');
+const { taparTelefonos, taparTexto } = require('./taparTelefonos');
 
 /*  Rol «equipo»: el asesor que atiende los chats desde Team
  *  (team.imporchina.com) y nunca ve el teléfono del cliente.
@@ -20,6 +20,8 @@ const { taparTelefonos } = require('./taparTelefonos');
 
 const ROL_EQUIPO = 'equipo';
 const PREFIJO_EQUIPO = '/api/v1/equipo/';
+const EMISOR_TEAM = 'chatcenter';
+const DESTINO_TEAM = 'team';
 
 function cuentasEquipo(valor = process.env.ROL_EQUIPO_CUENTAS) {
   return new Set(
@@ -34,8 +36,27 @@ function puedeTenerRolEquipo(id_usuario) {
   return cuentasEquipo().has(Number(id_usuario));
 }
 
+// Sin mayúsculas ni espacios: «Equipo» o « equipo» también son el rol, para
+// que nunca quede un usuario que se guardó así viendo todo.
+function normalizarRol(rol) {
+  return String(rol ?? '').trim().toLowerCase();
+}
+
 function esEquipo(user) {
-  return String(user?.rol || '') === ROL_EQUIPO;
+  return normalizarRol(user?.rol) === ROL_EQUIPO;
+}
+
+// Una sesión de Team vale solo si trae su sello y si el usuario y la cuenta
+// siguen autorizados. Sacar la cuenta de ROL_EQUIPO_CUENTAS corta al instante
+// las sesiones vivas; no hay que esperar las 8 h.
+function sesionTeamValida(decoded, user) {
+  return (
+    decoded?.origen === 'team' &&
+    decoded?.iss === EMISOR_TEAM &&
+    decoded?.aud === DESTINO_TEAM &&
+    esEquipo(user) &&
+    puedeTenerRolEquipo(user?.id_usuario)
+  );
 }
 
 function rutaPermitidaEquipo(url) {
@@ -43,23 +64,69 @@ function rutaPermitidaEquipo(url) {
   return p.startsWith(PREFIJO_EQUIPO) && !p.includes('..');
 }
 
-// Todo lo que sale por res.json / res.send(objeto) va tapado. res.json llama
-// por dentro a res.send con el texto ya armado: ese pasa tal cual.
+// Todo lo que sale va tapado: res.json, res.jsonp, res.send(objeto) y
+// res.send(texto) (si es JSON se tapa como objeto; si no, como texto). Lo que
+// no pasa por send —res.write, res.end con datos, sendFile, download— se
+// corta con 500: una ruta de Team que lo use tiene que pasar por res.json.
 function envolverParaEquipo(res) {
   if (res._tapadoEquipo) return;
   res._tapadoEquipo = true;
   const json = res.json.bind(res);
   const send = res.send.bind(res);
-  res.json = (body) => json(taparTelefonos(body));
-  res.send = (body) =>
-    body && typeof body === 'object' && !Buffer.isBuffer(body) ? json(taparTelefonos(body)) : send(body);
+  const end = res.end.bind(res);
+  let dentro = 0; // > 0 mientras express arma la respuesta desde json/send
+  const conSend = (fn) => {
+    dentro += 1;
+    try {
+      return fn();
+    } finally {
+      dentro -= 1;
+    }
+  };
+  res.json = (body) => conSend(() => json(taparTelefonos(body)));
+  res.jsonp = res.json;
+  res.send = (body) => {
+    if (dentro) return send(body);
+    if (body && typeof body === 'object' && !Buffer.isBuffer(body)) return res.json(body);
+    if (Buffer.isBuffer(body)) body = body.toString('utf8');
+    if (typeof body === 'string') {
+      const t = body.trim();
+      if (t.startsWith('{') || t.startsWith('[')) {
+        try {
+          return res.json(JSON.parse(t));
+        } catch (_) {
+          // no era JSON
+        }
+      }
+      return conSend(() => send(taparTexto(body, null)));
+    }
+    return conSend(() => send(body));
+  };
+  const cortar = () => {
+    if (!res.headersSent) res.status(500);
+    return end();
+  };
+  res.end = (chunk, ...resto) =>
+    dentro || chunk === undefined || chunk === null || chunk === '' || typeof chunk === 'function'
+      ? end(chunk, ...resto)
+      : cortar();
+  res.write = () => {
+    cortar();
+    return false;
+  };
+  res.sendFile = cortar;
+  res.download = cortar;
 }
 
 module.exports = {
   ROL_EQUIPO,
   PREFIJO_EQUIPO,
+  EMISOR_TEAM,
+  DESTINO_TEAM,
+  sesionTeamValida,
   cuentasEquipo,
   puedeTenerRolEquipo,
+  normalizarRol,
   esEquipo,
   rutaPermitidaEquipo,
   envolverParaEquipo,

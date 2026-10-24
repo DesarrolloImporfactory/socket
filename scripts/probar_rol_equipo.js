@@ -63,12 +63,15 @@ const equipoRouter = require(path.join(SRC, 'routes/equipo.routes'));
 const errorHandler = require(path.join(SRC, 'controllers/error.controller'));
 
 const CEL = '593991234567';
+const SECRETO = 'secreto-de-team-de-prueba-0123456789';
+const SELLO = { expiresIn: '1h', issuer: 'chatcenter', audience: 'team' };
 const firmar = (p, opts = { expiresIn: '1h' }) => jwt.sign(p, process.env.SECRET_JWT_SEED, opts);
 const T = {
   ventas: firmar({ id_sub_usuario: 1, rol: 'ventas' }),
   equipoLogin: firmar({ id_sub_usuario: 3, rol: 'equipo' }),
-  equipoTeam: firmar({ id_sub_usuario: 3, rol: 'equipo', origen: 'team' }),
-  teamDeVentas: firmar({ id_sub_usuario: 1, rol: 'equipo', origen: 'team' }),
+  equipoTeam: firmar({ id_sub_usuario: 3, rol: 'equipo', origen: 'team' }, SELLO),
+  teamDeVentas: firmar({ id_sub_usuario: 1, rol: 'equipo', origen: 'team' }, SELLO),
+  teamSinSello: firmar({ id_sub_usuario: 3, rol: 'equipo', origen: 'team' }),
 };
 
 function app() {
@@ -80,6 +83,13 @@ function app() {
   a.get('/api/v1/equipo/_datos', protect, (req, res) => res.json({ celular_cliente: CEL, texto_mensaje: 'cel 0987654321' }));
   a.get('/api/v1/equipo/_send', protect, (req, res) => res.send({ telefono: CEL }));
   a.get('/api/v1/equipo/_texto', protect, (req, res) => res.send('hola'));
+  a.get('/api/v1/equipo/_json_texto', protect, (req, res) => res.type('json').send(JSON.stringify({ telefono: CEL })));
+  a.get('/api/v1/equipo/_texto_cel', protect, (req, res) => res.send('llama al 0991234567'));
+  a.get('/api/v1/equipo/_write', protect, (req, res) => {
+    res.write(CEL);
+    res.end();
+  });
+  a.get('/api/v1/equipo/_vacio', protect, (req, res) => res.status(204).end());
   a.get('/api/v1/chats', protect, (req, res) => res.json({ celular_cliente: CEL }));
   a.get('/api/v1/metricas', protect, excluirRoles('ventas'), (req, res) => res.json({ ok: 1 }));
   a.get('/api/v1/ajustes', protect, excluirRoles('administrador'), (req, res) => res.json({ ok: 1 }));
@@ -177,6 +187,39 @@ async function caso(nombre, fn) {
     assert.equal((await pedir(s, 'GET', '/api/v1/equipo/_send', { token: T.equipoTeam })).body.telefono, '•••• 4567');
     assert.equal((await pedir(s, 'GET', '/api/v1/equipo/_texto', { token: T.equipoTeam })).texto, 'hola');
   });
+  await caso('res.send(texto JSON) y un texto con celular también van tapados', async () => {
+    const r = await pedir(s, 'GET', '/api/v1/equipo/_json_texto', { token: T.equipoTeam });
+    assert.ok(!r.texto.includes(CEL), r.texto);
+    const t = await pedir(s, 'GET', '/api/v1/equipo/_texto_cel', { token: T.equipoTeam });
+    assert.ok(!t.texto.includes('0991234567'), t.texto);
+  });
+  await caso('res.write con datos se corta (500, sin el número)', async () => {
+    const r = await pedir(s, 'GET', '/api/v1/equipo/_write', { token: T.equipoTeam });
+    assert.equal(r.status, 500);
+    assert.ok(!r.texto.includes(CEL), r.texto);
+  });
+  await caso('res.end() vacío pasa (204)', async () => {
+    assert.equal((await pedir(s, 'GET', '/api/v1/equipo/_vacio', { token: T.equipoTeam })).status, 204);
+  });
+  await caso('sesión de Team sin el sello (iss/aud) → 401', async () => {
+    const r = await pedir(s, 'GET', '/api/v1/equipo/yo', { token: T.teamSinSello });
+    assert.equal(r.status, 401);
+    assert.equal(r.body.code, 'EQUIPO_SOLO_TEAM');
+  });
+  await caso('sacar la cuenta de ROL_EQUIPO_CUENTAS corta la sesión viva', async () => {
+    process.env.ROL_EQUIPO_CUENTAS = '';
+    const r = await pedir(s, 'GET', '/api/v1/equipo/yo', { token: T.equipoTeam });
+    process.env.ROL_EQUIPO_CUENTAS = '254';
+    assert.equal(r.status, 401);
+    assert.equal((await pedir(s, 'GET', '/api/v1/equipo/yo', { token: T.equipoTeam })).status, 200);
+  });
+  await caso('«Equipo» con mayúscula o espacios cuenta como equipo', async () => {
+    SUBS[6] = { id_sub_usuario: 6, id_usuario: 254, rol: ' Equipo', suspendido: 0 };
+    const r = await pedir(s, 'GET', '/api/v1/chats', { token: firmar({ id_sub_usuario: 6, rol: 'ventas' }) });
+    delete SUBS[6];
+    assert.equal(r.status, 401);
+    assert.equal(cerradoParaEquipo({}, { rol: 'EQUIPO' }), true);
+  });
   await caso('rutaPermitidaEquipo: prefijo, mayúsculas, «..», URL absoluta', () => {
     assert.ok(rutaPermitidaEquipo('/api/v1/equipo/yo?x=1'));
     assert.ok(rutaPermitidaEquipo('/API/V1/EQUIPO/yo'));
@@ -230,6 +273,12 @@ async function caso(nombre, fn) {
     assert.equal(puedeTenerRolEquipo('254'), true);
     assert.equal(puedeTenerRolEquipo(77), false);
   });
+  await caso('ROL_EQUIPO_CUENTAS vacío: ninguna cuenta', () => {
+    process.env.ROL_EQUIPO_CUENTAS = '';
+    const r = puedeTenerRolEquipo(254);
+    process.env.ROL_EQUIPO_CUENTAS = '254';
+    assert.equal(r, false);
+  });
   await caso('crear un equipo en cuenta no habilitada → 403; en la 254 sí', async () => {
     await assert.rejects(
       crearSubUsuario({ id_usuario: 77, usuario: 'u', password: 'x', email: 'e', nombre_encargado: 'n', rol: 'equipo' }),
@@ -250,24 +299,31 @@ async function caso(nombre, fn) {
   await caso('sin TEAM_EQUIPO_TOKEN configurado → 503', async () => {
     assert.equal((await pedir(s, 'POST', '/api/v1/equipo/sesion', { token: 'x', cuerpo: { id_sub_usuario: 3 } })).status, 503);
   });
-  process.env.TEAM_EQUIPO_TOKEN = 'secreto-de-team';
+  process.env.TEAM_EQUIPO_TOKEN = 'corto';
+  await caso('TEAM_EQUIPO_TOKEN de menos de 32 caracteres → 503 (cerrada)', async () => {
+    assert.equal((await pedir(s, 'POST', '/api/v1/equipo/sesion', { token: 'corto', cuerpo: { id_sub_usuario: 3 } })).status, 503);
+  });
+  process.env.TEAM_EQUIPO_TOKEN = SECRETO;
   await caso('token de Team equivocado → 401', async () => {
     assert.equal((await pedir(s, 'POST', '/api/v1/equipo/sesion', { token: 'otro', cuerpo: { id_sub_usuario: 3 } })).status, 401);
   });
   await caso('ventas, cuenta no habilitada, suspendido o inexistente → 403', async () => {
     for (const id of [1, 4, 5, 999]) {
-      const r = await pedir(s, 'POST', '/api/v1/equipo/sesion', { token: 'secreto-de-team', cuerpo: { id_sub_usuario: id } });
+      const r = await pedir(s, 'POST', '/api/v1/equipo/sesion', { token: SECRETO, cuerpo: { id_sub_usuario: id } });
       assert.equal(r.status, 403, 'id ' + id);
     }
   });
   await caso('equipo de la 254 → token de Team que funciona en /equipo/yo', async () => {
     const r = await pedir(s, 'POST', '/api/v1/equipo/sesion', {
-      cabeceras: { 'x-team-token': 'secreto-de-team' },
+      cabeceras: { 'x-team-token': SECRETO },
       cuerpo: { id_sub_usuario: 3, team_usuario: 'prueba' },
     });
     assert.equal(r.status, 200);
     const d = jwt.decode(r.body.token);
     assert.equal(d.origen, 'team');
+    assert.equal(d.iss, 'chatcenter');
+    assert.equal(d.aud, 'team');
+    assert.equal(d.team_usuario, 'prueba');
     assert.ok(d.exp - d.iat <= 8 * 3600);
     assert.equal((await pedir(s, 'GET', '/api/v1/equipo/yo', { token: r.body.token })).status, 200);
     assert.equal((await pedir(s, 'GET', '/api/v1/chats', { token: r.body.token })).status, 403);

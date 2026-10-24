@@ -5,6 +5,7 @@ const { db } = require('../database/config');
 const { sesionVigente } = require('../utils/sesionVigente');
 const {
   esEquipo,
+  sesionTeamValida,
   rutaPermitidaEquipo,
   envolverParaEquipo,
 } = require('../utils/rolEquipo');
@@ -75,10 +76,11 @@ exports.protect = catchAsync(async (req, res, next) => {
 
   // Rol «equipo» (ver utils/rolEquipo.js): solo con la sesión de Team, solo
   // rutas de /api/v1/equipo/ y con los teléfonos tapados en la respuesta.
-  // Una sesión de Team tampoco sirve si al usuario le quitaron el rol: con otro
-  // rol vería los teléfonos y todas las rutas.
+  // Una sesión de Team tampoco sirve si al usuario le quitaron el rol (con otro
+  // rol vería los teléfonos y todas las rutas), si la cuenta salió de
+  // ROL_EQUIPO_CUENTAS o si el token no trae el sello de Team.
   if (esEquipo(user) || decoded.origen === 'team') {
-    if (decoded.origen !== 'team' || !esEquipo(user)) {
+    if (!sesionTeamValida(decoded, user)) {
       return res.status(401).json({
         status: 'fail',
         code: 'EQUIPO_SOLO_TEAM',

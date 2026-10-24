@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
-const { esEquipo, puedeTenerRolEquipo } = require('../utils/rolEquipo');
+const { esEquipo, puedeTenerRolEquipo, EMISOR_TEAM, DESTINO_TEAM } = require('../utils/rolEquipo');
 
 /*  Rutas de Team para el rol «equipo» (ver utils/rolEquipo.js). */
 
@@ -48,9 +48,14 @@ exports.sesion = catchAsync(async (req, res, next) => {
       rol: sub.rol,
       nombre_encargado: sub.nombre_encargado,
       origen: 'team',
+      // Quién de Team está detrás, por si varias personas usan el mismo
+      // sub-usuario.
+      team_usuario,
     },
     process.env.SECRET_JWT_SEED,
-    { expiresIn: DURACION_SESION },
+    // Sello propio: protect exige este emisor y destino a toda sesión de Team,
+    // y ninguna otra puerta (ssoImporsuit, newLogin) lo acepta como suyo.
+    { expiresIn: DURACION_SESION, issuer: EMISOR_TEAM, audience: DESTINO_TEAM },
   );
 
   res.json({ status: 'success', token, expira_en: DURACION_SESION });

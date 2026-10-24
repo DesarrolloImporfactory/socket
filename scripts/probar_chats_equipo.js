@@ -88,7 +88,7 @@ const equipoRouter = require(path.join(SRC, 'routes/equipo.routes'));
 const errorHandler = require(path.join(SRC, 'controllers/error.controller'));
 
 const firmar = (p) => jwt.sign(p, process.env.SECRET_JWT_SEED, { expiresIn: '1h' });
-const TEAM = firmar({ id_sub_usuario: 3, rol: 'equipo', origen: 'team' });
+const TEAM = jwt.sign({ id_sub_usuario: 3, rol: 'equipo', origen: 'team' }, process.env.SECRET_JWT_SEED, { expiresIn: '1h', issuer: 'chatcenter', audience: 'team' });
 const ADMIN = firmar({ id_sub_usuario: 1, rol: 'administrador' });
 
 function app() {

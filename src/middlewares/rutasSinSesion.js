@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const lotes = require('./rutasSinSesion.lotes.json');
 const { protect } = require('./auth.middleware');
+const { normalizarRol } = require('../utils/rolEquipo');
 
 /*  Rutas REST que hoy no piden sesión (inventario del 24-oct-2026).
  *
@@ -93,7 +94,7 @@ function tokenDeEquipo(authorization) {
   if (!token) return false;
   try {
     const d = jwt.verify(token, process.env.SECRET_JWT_SEED);
-    return d?.origen === 'team' || d?.rol === 'equipo';
+    return d?.origen === 'team' || normalizarRol(d?.rol) === 'equipo';
   } catch (_) {
     return false;
   }

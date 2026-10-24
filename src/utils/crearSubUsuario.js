@@ -1,11 +1,11 @@
 const bcrypt = require('bcrypt');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const AppError = require('./appError');
-const { ROL_EQUIPO, puedeTenerRolEquipo } = require('./rolEquipo');
+const { ROL_EQUIPO, normalizarRol, puedeTenerRolEquipo } = require('./rolEquipo');
 
 // El rol «equipo» solo en las cuentas autorizadas (utils/rolEquipo.js).
 function revisarRolEquipo(id_usuario, rol) {
-  if (String(rol) === ROL_EQUIPO && !puedeTenerRolEquipo(id_usuario)) {
+  if (normalizarRol(rol) === ROL_EQUIPO && !puedeTenerRolEquipo(id_usuario)) {
     throw new AppError('El rol «equipo» no está habilitado en esta cuenta.', 403);
   }
 }

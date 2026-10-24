@@ -5,8 +5,10 @@ const AppError = require('../utils/appError');
  * Puerta para el servidor de Team (team.imporchina.com, PHP). Team pide la
  * sesión de un usuario «equipo» con un secreto compartido en `.env`
  * (TEAM_EQUIPO_TOKEN), igual que el ERP con erpToken. Sin secreto la puerta
- * queda cerrada (503), nunca abierta.
+ * queda cerrada (503), nunca abierta; y con un secreto de menos de 32
+ * caracteres, también.
  */
+const LARGO_MINIMO = 32;
 function comparar(a, b) {
   const hashA = crypto.createHash('sha256').update(String(a), 'utf8').digest();
   const hashB = crypto.createHash('sha256').update(String(b), 'utf8').digest();
@@ -22,7 +24,7 @@ function leerToken(req) {
 
 exports.teamToken = (req, res, next) => {
   const esperado = String(process.env.TEAM_EQUIPO_TOKEN || '').trim();
-  if (!esperado) {
+  if (esperado.length < LARGO_MINIMO) {
     return next(new AppError('La integración con Team no está configurada.', 503));
   }
   const recibido = leerToken(req);

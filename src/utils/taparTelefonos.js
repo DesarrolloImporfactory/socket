@@ -4,36 +4,38 @@
  *  El teléfono no se oculta en la pantalla: no sale del servidor. Por eso esto
  *  recorre la respuesta entera (objetos, arrays, filas de Sequelize, JSON
  *  guardado como texto) y:
- *  - deja las claves de teléfono en «•••• 1234»;
+ *  - deja en «•••• 1234» toda clave que se llame como teléfono (celular,
+ *    telefono*, phone*, whatsapp*, wa_id, uid_*) y todo número suelto de 12
+ *    cifras con 593 o 52 delante;
  *  - quita el wamid, venga como clave o metido en cualquier texto, porque
  *    lleva el número en base64;
- *  - quita la llave de Meta (token, wa_token, access_token);
- *  - en los textos de los mensajes tapa los números del propio cliente y los
- *    que vienen detrás de «tel», «cel», «whatsapp», «+593», «+52»… (D7). Una
- *    cédula o un número de guía sin esas palabras se queda como está.
+ *  - quita toda clave de llave o secreto (*token*, *secret*, api_key…);
+ *  - en cualquier texto tapa los números del propio cliente, los que vienen
+ *    detrás de «tel», «cel», «whatsapp», «+593», «+52» (D7) y los celulares
+ *    de Ecuador (09…) o México (52…) aunque vayan solos. Una cédula de Guayas
+ *    también empieza en 09 y se tapa; la de otra provincia o un número de
+ *    guía se queda.
  *
  *  Los ids no se tocan: `celular_recibe` es el id del contacto, no un número.
  *  Devuelve una copia; nunca cambia el objeto que recibe.
  */
 
-const CLAVES_TEL = new Set([
-  'celular_cliente',
-  'uid_cliente',
-  'telefono_limpio',
-  'uid_whatsapp',
-  'telefono',
-  'phone',
-  'telefono_cliente',
-  'telefono_orden',
-  'telefono_sugerido',
-  'phone_raw',
-  'phone_normalizado',
-  'celular_emisor',
-  'celular_receptor',
-  'to',
-  'wa_id',
-  'from',
+// Claves de teléfono: por patrón, para no depender de saber cada columna
+// (celular, whatsapp_lead, telefono_conexion, sede_telefono…). Las de la
+// lista de abajo se parecen pero son ids o banderas, no números.
+const RX_CLAVE_TEL = /celular|tel[eé]fono|phone|whats?app|^wa_?id$|^uid_|^(from|to)$/i;
+const NO_ES_TEL = new Set([
+  'celular_recibe',
+  'phone_number_id',
+  'id_telefono',
+  'id_phone',
+  'business_phone_number_id',
+  'telefono_verificado',
+  'whatsapp_activo',
+  'whatsapp_conectado',
+  'tipo_telefono',
 ]);
+const esClaveTel = (k) => RX_CLAVE_TEL.test(k) && !NO_ES_TEL.has(k) && (!/^id_|_id$|^es_|^tiene_|_activo$|_estado$/i.test(k) || /^wa_?id$/i.test(k));
 // Claves que también se usan para otras cosas (un rango de fechas «from»/«to»):
 // se tapan solo si el valor tiene forma de teléfono.
 const CLAVES_AMBIGUAS = new Set(['to', 'from']);
@@ -50,9 +52,10 @@ const CLAVES_WAMID = new Set([
   'mid',
   'original_message_id',
 ]);
-const CLAVES_SECRETO = new Set(['token', 'wa_token', 'access_token']);
+// Llaves y secretos, también por patrón (page_access_token, refresh_token,
+// openai_token, api_key…).
+const RX_SECRETO = /token|secret|api_?key|password|^admin_pass$|^clave/i;
 const CLAVES_JSON = new Set(['json_mensaje', 'meta_unificado', 'attachments_unificado', 'ruta_archivo']);
-const CLAVES_TEXTO = new Set(['texto_mensaje', 'texto_original', 'texto_corregido_mensaje', 'cliente']);
 
 const MASCARA = '••••';
 const RX_WAMID = /wamid\.[A-Za-z0-9_=+/-]+/g;
@@ -82,22 +85,35 @@ function nucleo(t) {
   return d.length >= 7 ? d.slice(-8) : null;
 }
 
-function rxDeNucleo(n) {
-  return new RegExp(n.split('').join(String.raw`[\s.\-]?`), 'g');
+// Los números de la respuesta se buscan en un Set, tramo de cifras por tramo
+// de cifras: con una expresión por número, 500 chats tardaban segundos y
+// frenaban la API entera.
+function rxDeNucleos(nucleos) {
+  if (!nucleos.length) return null;
+  return { set: new Set(nucleos), largos: [...new Set(nucleos.map((n) => n.length))] };
 }
+const RX_TRAMO = /\+?\d(?:[\s.\-]?\d){6,}/g;
+function tieneNucleo(d, rx) {
+  for (const L of rx.largos) {
+    for (let k = 0; k + L <= d.length; k += 1) if (rx.set.has(d.substr(k, L))) return true;
+  }
+  return false;
+}
+// Celular de Ecuador (09 + 8 cifras) o México (10 cifras con 52/521 delante)
+// aunque no venga «cel» ni «+593» delante. Una cédula de Guayas también empieza
+// en 09: se tapa igual; es mejor tapar de más.
+const RX_CEL_SUELTO = /(?<!\d)(?:593[\s.\-]?9\d(?:[\s.\-]?\d){7}|0?9\d(?:[\s.\-]?\d){7}|521?[\s.\-]?\d{2}(?:[\s.\-]?\d){8})(?!\d)/g;
 
-function taparTexto(texto, nucleos) {
+function taparTexto(texto, nucleos, rx = rxDeNucleos(nucleos || [])) {
   if (typeof texto !== 'string' || !texto) return texto;
-  let s = texto.replace(RX_WAMID, '');
+  let s = texto.includes('wamid.') ? texto.replace(RX_WAMID, '') : texto;
+  if (!/\d(?:[\s.\-]?\d){6}/.test(s)) return s; // sin 7 cifras seguidas no hay teléfono
   // Primero el número del propio cliente, escrito como sea; se toma también lo
   // que va pegado delante (prefijo de país, 0) para no dejar cifras sueltas.
-  for (const n of nucleos) {
-    s = s.replace(new RegExp(String.raw`(?:\+?\d{1,4}[\s.\-]?)?(?:0[\s.\-]?)?` + rxDeNucleo(n).source, 'g'), () =>
-      enmascararTelefono(n),
-    );
-  }
+  if (rx) s = s.replace(RX_TRAMO, (m) => (tieneNucleo(soloCifras(m), rx) ? enmascararTelefono(m) : m));
   s = s.replace(RX_CLAVE_NUM, (_, pre, num) => pre + enmascararTelefono(num));
   s = s.replace(RX_PREFIJO, (m) => enmascararTelefono(m));
+  s = s.replace(RX_CEL_SUELTO, (m) => enmascararTelefono(m));
   return s;
 }
 
@@ -112,6 +128,10 @@ function plano(v) {
   return v;
 }
 
+// Un número suelto (no texto) que es un celular con prefijo de país:
+// 5939XXXXXXXX o 52/521 + 10 cifras. Los ids nunca llegan a 12 cifras.
+const RX_NUM_CEL = /^(?:5939\d{8}|521?\d{10})$/;
+
 // Junta los números de teléfono que aparecen en la respuesta, para tapar
 // también esos mismos números cuando el cliente los escribe en un mensaje.
 function juntarNucleos(valor, out = new Set(), vistos = new WeakSet()) {
@@ -124,7 +144,7 @@ function juntarNucleos(valor, out = new Set(), vistos = new WeakSet()) {
     return out;
   }
   for (const [k, x] of Object.entries(v)) {
-    if (CLAVES_TEL.has(k) && (typeof x === 'string' || typeof x === 'number')) {
+    if (esClaveTel(k) && (typeof x === 'string' || typeof x === 'number')) {
       if (CLAVES_AMBIGUAS.has(k) && !formaTel(x)) continue;
       const n = nucleo(x);
       if (n) out.add(n);
@@ -135,31 +155,30 @@ function juntarNucleos(valor, out = new Set(), vistos = new WeakSet()) {
   return out;
 }
 
-function tapar(valor, nucleos, vistos) {
+function tapar(valor, rx, vistos) {
   const v = plano(valor);
-  if (typeof v === 'string') return taparTexto(v, nucleos);
+  if (typeof v === 'string') return taparTexto(v, null, rx);
+  if (typeof v === 'number') return RX_NUM_CEL.test(String(v)) ? enmascararTelefono(v) : v;
   if (!v || typeof v !== 'object') return v;
   if (v instanceof Date || Buffer.isBuffer(v)) return v;
   if (vistos.has(v)) return undefined; // ciclo: se corta
   vistos.add(v);
 
   if (Array.isArray(v)) {
-    const r = v.map((x) => tapar(x, nucleos, vistos));
+    const r = v.map((x) => tapar(x, rx, vistos));
     vistos.delete(v);
     return r;
   }
 
   const r = {};
   for (const [k, x] of Object.entries(v)) {
-    if (CLAVES_WAMID.has(k) || CLAVES_SECRETO.has(k)) continue;
-    if (CLAVES_TEL.has(k) && (typeof x === 'string' || typeof x === 'number')) {
+    if (CLAVES_WAMID.has(k) || RX_SECRETO.test(k)) continue;
+    if (esClaveTel(k) && (typeof x === 'string' || typeof x === 'number')) {
       r[k] = CLAVES_AMBIGUAS.has(k) && !formaTel(x) ? x : enmascararTelefono(x);
     } else if (CLAVES_JSON.has(k) && typeof x === 'string') {
-      r[k] = taparJsonTexto(x, nucleos, vistos);
-    } else if (CLAVES_TEXTO.has(k) && typeof x === 'string') {
-      r[k] = taparTexto(x, nucleos);
+      r[k] = taparJsonTexto(x, rx, vistos);
     } else {
-      const t = tapar(x, nucleos, vistos);
+      const t = tapar(x, rx, vistos);
       if (t !== undefined || x === undefined) r[k] = t;
     }
   }
@@ -167,16 +186,16 @@ function tapar(valor, nucleos, vistos) {
   return r;
 }
 
-function taparJsonTexto(texto, nucleos, vistos) {
+function taparJsonTexto(texto, rx, vistos) {
   const t = texto.trim();
   if (t.startsWith('{') || t.startsWith('[')) {
     try {
-      return JSON.stringify(tapar(JSON.parse(t), nucleos, vistos));
+      return JSON.stringify(tapar(JSON.parse(t), rx, vistos));
     } catch (_) {
       // no era JSON: se trata como texto
     }
   }
-  return taparTexto(texto, nucleos);
+  return taparTexto(texto, null, rx);
 }
 
 function taparTelefonos(valor, { telefonosConocidos = [] } = {}) {
@@ -185,7 +204,7 @@ function taparTelefonos(valor, { telefonosConocidos = [] } = {}) {
     const n = nucleo(t);
     if (n) nucleos.add(n);
   }
-  return tapar(valor, [...nucleos], new WeakSet());
+  return tapar(valor, rxDeNucleos([...nucleos]), new WeakSet());
 }
 
 module.exports = { taparTelefonos, enmascararTelefono, taparTexto, ROL_EQUIPO: 'equipo' };
