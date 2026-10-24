@@ -1,17 +1,23 @@
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
-const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
 const Configuraciones = require('../models/configuraciones.model');
-const { db, db_2 } = require('../database/config');
+const { db } = require('../database/config');
+const { sesionVigente } = require('../utils/sesionVigente');
 
 const jwt = require('jsonwebtoken');
+
+const MENSAJES_SESION = {
+  USER_NOT_FOUND: 'El usuario de esta sesión ya no existe.',
+  USER_SUSPENDED: 'Tu acceso está suspendido. Habla con tu administrador.',
+  TOKEN_REVOKED: 'Sesión cerrada en otro dispositivo',
+};
 
 /*  Este middleware protege las rutas privadas
  *  — lee el header Authorization: Bearer <token>
  *
  *  IMPORTANTE: todos los 401 de sesión de este middleware devuelven un `code`
  *  explícito (TOKEN_MISSING | TOKEN_EXPIRED | TOKEN_INVALID | USER_NOT_FOUND |
- *  TOKEN_REVOKED). El front (interceptor de chatcenter.js) se apoya en ese
+ *  USER_SUSPENDED | TOKEN_REVOKED). El front (interceptor de chatcenter.js) se apoya en ese
  *  `code` para saber que la sesión murió y avisar + limpiar + redirigir.
  *  NO depender del error handler global para esto: hay 401 en la app que NO son
  *  de sesión (contraseña actual incorrecta, token de Shopify inválido,
@@ -50,50 +56,15 @@ exports.protect = catchAsync(async (req, res, next) => {
     });
   }
 
-  // 4) Check if user still exists
-  const user = await Sub_usuarios_chat_center.findOne({
-    where: {
-      id_sub_usuario: decoded.id_sub_usuario,
-    },
-  });
-  if (!user) {
+  // 4-5) El usuario existe, no está suspendido y no cerró sesión en otro
+  // lado (ver utils/sesionVigente.js; la misma comprobación usa el socket).
+  const { ok, code, user } = await sesionVigente(decoded);
+  if (!ok) {
     return res.status(401).json({
       status: 'fail',
-      code: 'USER_NOT_FOUND',
-      message: 'El usuario de esta sesión ya no existe.',
+      code,
+      message: MENSAJES_SESION[code],
     });
-  }
-
-  // 5) Single sign-out: si users.logout_at > iat, el token fue revocado.
-  // Mapeamos por email (no por id_usuario): id_usuario es de la BD chatcenter
-  // y NO corresponde al id_users de imporsuit. El email sí es común a ambas BDs.
-  const email = user.email;
-  const usuario = user.usuario;
-  const iat = decoded.iat;
-  if ((email || usuario) && iat) {
-    try {
-      const [row] = await db_2.query(
-        `SELECT UNIX_TIMESTAMP(logout_at) AS ts
-           FROM users
-          WHERE email_users = ? OR usuario_users = ?
-          LIMIT 1`,
-        {
-          replacements: [email || '', usuario || email || ''],
-          type: db_2.QueryTypes.SELECT,
-        },
-      );
-      const logoutAt = row && row.ts ? Number(row.ts) : 0;
-      if (logoutAt > iat) {
-        return res.status(401).json({
-          status: 'fail',
-          code: 'TOKEN_REVOKED',
-          message: 'Sesión cerrada en otro dispositivo',
-        });
-      }
-    } catch (err) {
-      // fail-open: si la consulta falla no bloqueamos al usuario
-      console.warn('protect: error consultando users.logout_at —', err.message);
-    }
   }
 
   req.sessionUser = user;
