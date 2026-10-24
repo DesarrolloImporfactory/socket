@@ -114,6 +114,15 @@ async function caso(nombre, fn) {
     assert.equal(mod.buscar('HEAD', R_A1).lote, 'A1');
     assert.equal(mod.buscar('GET', R_A1.replace('programados', '%70rogramados')).lote, 'A1');
   });
+  await caso('%2F dentro de un parámetro no esquiva (Express sí lo enruta)', () => {
+    const r = mod.buscar('GET', '/api/v1/cotizaciones/5%2Fx');
+    assert.ok(r && r.ruta === '/api/v1/cotizaciones/:id_chat', 'tomó ' + (r && r.ruta));
+  });
+  await caso('sin reglas muertas «?/» ni el webhook de Google', () => {
+    assert.ok(mod.REGLAS.every((r) => r.ruta.startsWith('/')));
+    assert.equal(mod.buscar('POST', '/api/v1/google/push'), null);
+    assert.equal(mod.buscar('GET', '/api/v1/whatsapp'), null);
+  });
   await caso('otro método no se confunde', () => {
     assert.equal(mod.buscar('DELETE', R_A1), null);
   });
@@ -141,6 +150,25 @@ async function caso(nombre, fn) {
   });
   await caso('con token válido pasa', async () => {
     assert.equal((await pedir(s, 'GET', R_A1, valido)).status, 200);
+  });
+  await caso('el tope de combinaciones aguanta 2.000 user-agents distintos', async () => {
+    for (let i = 0; i < 2000; i += 1) {
+      mod.vigilar(
+        { method: 'GET', path: R_A1, headers: { 'user-agent': 'bot' + i + '/1' } },
+        {},
+        () => {},
+      );
+    }
+    const lineas = [];
+    const log = console.log;
+    console.log = (...a) => lineas.push(a.join(' '));
+    try {
+      mod.resumir();
+    } finally {
+      console.log = log;
+    }
+    assert.ok(lineas.some((l) => l.includes('desbordados')), 'sin línea de desbordados');
+    assert.ok(lineas.every((l) => l.length < 20000), 'línea demasiado larga');
   });
   s.close();
 

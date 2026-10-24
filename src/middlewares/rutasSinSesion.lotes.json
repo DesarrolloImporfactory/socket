@@ -1,5 +1,5 @@
 {
- "_nota": "Rutas REST sin protect (inventario 24-oct-2026). A1: solo las llama el front con sesión. A2: nadie las llama. A3: revisar una por una (otros sistemas, Deno/Supabase, sin rastro claro). Generado por clasificar_rutas.py; no editar a mano sin revisar.",
+ "_nota": "Rutas REST sin protect (inventario 24-oct-2026). A1: solo las llama el front con sesión. A2: nadie las llama. A3: revisar una por una (otros sistemas, Deno/Supabase, sin rastro claro). Generado por clasificar_rutas.py; no editar a mano sin revisar. Sin las rutas «?/...» (routers sin montar). _fuera = públicas a propósito, no se vigilan.",
  "A2": [
   "GET /api/v1/instagram/conversations",
   "GET /api/v1/instagram/conversations/:id/messages",
@@ -17,7 +17,6 @@
   "POST /api/v1/automatizador/obtenerEtiquetasAutomatizador",
   "POST /api/v1/automatizador/obtenerTemplatesAutomatizador",
   "POST /api/v1/cotizaciones/enviarCarga",
-  "POST /api/v1/google/push",
   "POST /api/v1/kanban_columnas/sync_catalogo",
   "POST /api/v1/kanban_plantillas/crear_respuestas_rapidas",
   "POST /api/v1/kanban_plantillas/crear_templates_meta",
@@ -32,10 +31,7 @@
   "POST /api/v1/tiktok/sync-data",
   "POST /api/v1/whatsapp/guardar_audio",
   "POST /api/v1/whatsapp_managment/enviarAudio",
-  "POST /api/v1/whatsapp_managment/limpiar_credenciales_whatsapp",
-  "POST ?/actualizarDetallePedido",
-  "POST ?/info-cliente",
-  "POST ?/validarDevolucion"
+  "POST /api/v1/whatsapp_managment/limpiar_credenciales_whatsapp"
  ],
  "A1": [
   "DELETE /api/v1/whatsapp_managment/eliminarPlantilla",
@@ -123,8 +119,6 @@
   "POST /api/v1/whatsapp_managment/programados_reintentar_lote",
   "POST /api/v1/whatsapp_managment/programar_template_masivo",
   "POST /api/v1/whatsapp_managment/uploadVideoPlantillaRapida",
-  "POST ?/crearSesionPago",
-  "POST ?/marcar_chat_center",
   "PUT /api/v1/whatsapp_managment/EditarPlantilla",
   "PUT /api/v1/whatsapp_managment/actualizarMetodoPago",
   "PUT /api/v1/whatsapp_managment/cambiarEstado",
@@ -152,7 +146,6 @@
   "GET /api/v1/tiktok/webhook/logs",
   "GET /api/v1/tiktok/webhook/stats",
   "GET /api/v1/tiktok/webhook/subscriptions",
-  "GET /api/v1/whatsapp",
   "PATCH /api/v1/shopify_configuraciones/:id",
   "POST /api/v1/cotizaciones/crm/registrarMensaje",
   "POST /api/v1/cotizaciones/entregarCarga",
@@ -187,7 +180,10 @@
   "POST /api/v1/whatsapp/upload",
   "POST /api/v1/whatsapp_managment/enviar_template_masivo",
   "POST /api/v1/whatsapp_managment/obtenerTemplatesWhatsapp",
-  "POST /api/v2/webhooks/shopify/debug",
-  "POST ?/generar_guia"
- ]
+  "POST /api/v2/webhooks/shopify/debug"
+ ],
+ "_fuera": {
+  "POST /api/v1/google/push": "webhook de Google Calendar (URL en GOOGLE_PUSH_WEBHOOK_URL)",
+  "GET /api/v1/whatsapp": "health check público («Webhook working!»)"
+ }
 }

@@ -17,9 +17,17 @@ const { protect } = require('./auth.middleware');
  *
  *  Los lotes están en rutasSinSesion.lotes.json. Los webhooks y las páginas
  *  públicas no están ahí a propósito.
+ *
+ *  Límite de la sombra: solo mira que el JWT exista y esté firmado y vigente,
+ *  sin ir a la base. Un usuario suspendido o con la sesión cerrada no aparece
+ *  en la medición y al exigir recibirá 401, igual que en el resto de rutas.
  */
 
 const CADA_MS = 10 * 60 * 1000;
+// Tope de combinaciones distintas por resumen: el user-agent lo elige quien
+// llama, así que sin tope la memoria y el log crecerían a su gusto.
+const MAX_CLAVES = 300;
+const POR_LINEA = 40;
 
 function escapar(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -39,6 +47,7 @@ function compilar(lote, entrada) {
 const REGLAS = Object.entries(lotes)
   .filter(([k]) => !k.startsWith('_'))
   .flatMap(([lote, lista]) => lista.map((e) => compilar(lote, e)))
+  .filter((r) => r.ruta.startsWith('/'))
   // Las rutas fijas ganan a las de parámetro, como en Express cuando la fija
   // va antes (`/cotizaciones/crm/x` antes que `/cotizaciones/:id_chat`).
   .sort((a, b) => a.params - b.params);
@@ -52,15 +61,29 @@ function exigidos(valor = process.env.RUTAS_SESION_EXIGIR) {
   );
 }
 
+// Express compara la ruta SIN decodificar (y decodifica después cada
+// parámetro), así que la comparación principal es con la ruta cruda. Además se
+// prueba decodificando cada tramo por separado —nunca la ruta entera: un %2F
+// dentro de un parámetro (`/cotizaciones/5%2Fx`) no debe convertirse en barra
+// y dejar de encajar en `:id_chat`, que es justo lo que Express sí enruta.
+function variantes(path) {
+  const out = [path];
+  const tramos = path.split('/').map((t) => {
+    try {
+      return decodeURIComponent(t).replace(/\//g, '_');
+    } catch (_) {
+      return t; // un % suelto: tal cual
+    }
+  });
+  const dec = tramos.join('/');
+  if (dec !== path) out.push(dec);
+  return out;
+}
+
 function buscar(metodo, path) {
   const m = metodo === 'HEAD' ? 'GET' : metodo;
-  let p = path;
-  try {
-    p = decodeURIComponent(path);
-  } catch (_) {
-    // un % suelto: se compara tal cual
-  }
-  return REGLAS.find((r) => r.metodo === m && r.rx.test(p)) || null;
+  const ps = variantes(String(path || ''));
+  return REGLAS.find((r) => r.metodo === m && ps.some((p) => r.rx.test(p))) || null;
 }
 
 // Qué le diría protect a esta petición, sin ir a la base.
@@ -78,14 +101,21 @@ function clasificar(authorization) {
 
 function quien(req) {
   const ua = String(req.headers['user-agent'] || '-');
-  // De un navegador no se guarda nada más; de un sistema, de dónde viene.
-  if (/Mozilla/.test(ua)) return { cliente: 'navegador' };
-  // Detrás de Apache req.ip es 127.0.0.1: la IP real va en X-Forwarded-For.
-  const xff = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return { cliente: ua.slice(0, 80), ip: xff || req.ip };
+  // Detrás de Apache req.ip es 127.0.0.1. Apache AGREGA la IP real al final de
+  // X-Forwarded-For; el primer valor lo puede inventar quien llama.
+  const xff = String(req.headers['x-forwarded-for'] || '')
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const ip = xff.length ? xff[xff.length - 1] : req.ip;
+  // Solo el primer «producto/versión» del user-agent: basta para saber qué
+  // programa es y no deja que cada variante abra una fila nueva.
+  const cliente = /Mozilla/.test(ua) ? 'navegador' : ua.split(/[\s;(]/)[0].slice(0, 40) || '-';
+  return { cliente, ip };
 }
 
 const vistos = new Map();
+let desbordados = 0;
 
 function anotar(regla, code, req) {
   const q = quien(req);
@@ -96,15 +126,24 @@ function anotar(regla, code, req) {
     return;
   }
   iniciarResumen();
+  if (vistos.size >= MAX_CLAVES) {
+    desbordados += 1;
+    return;
+  }
   const nueva = { lote: regla.lote, metodo: regla.metodo, ruta: regla.ruta, code, ...q, n: 1 };
   vistos.set(clave, nueva);
   console.log('[RUTA_SIN_SESION] nueva', JSON.stringify(nueva));
 }
 
 function resumir() {
-  if (!vistos.size) return;
-  console.log('[RUTA_SIN_SESION] resumen', JSON.stringify([...vistos.values()]));
+  if (!vistos.size && !desbordados) return;
+  const filas = [...vistos.values()];
+  for (let i = 0; i < filas.length; i += POR_LINEA) {
+    console.log('[RUTA_SIN_SESION] resumen', JSON.stringify(filas.slice(i, i + POR_LINEA)));
+  }
+  if (desbordados) console.log('[RUTA_SIN_SESION] resumen desbordados', desbordados);
   vistos.clear();
+  desbordados = 0;
 }
 
 let reloj = null;
