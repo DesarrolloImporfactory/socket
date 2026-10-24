@@ -215,6 +215,10 @@ async function crearCitaAgendada({
   fin_utc,
   profesional_pedido = null,
   descripcion = '',
+  /* Con lugar_cita 'cliente': la dirección, sector o enlace que la persona
+     dio en el bloque ("📍 Lugar:"). Es la ubicación de la cita; la sede
+     sigue siendo solo la agenda. */
+  lugar_texto = null,
 }) {
   const [usuario] = await db.query(
     `SELECT sb.id_sub_usuario, sb.id_usuario
@@ -327,6 +331,20 @@ async function crearCitaAgendada({
     );
   }
 
+  /* Servicio a domicilio: el lugar es lo que escribió la persona. Si el bot
+     cerró sin lugar, la cita igual se crea (la fecha y el cliente valen más
+     que el dato que falta) pero se avisa: alguien tiene que pedirlo. */
+  const ubicacionCliente =
+    lugar_cita === 'cliente' && String(lugar_texto || '').trim()
+      ? String(lugar_texto).trim().slice(0, 255)
+      : null;
+  if (lugar_cita === 'cliente' && !ubicacionCliente) {
+    await log(
+      `⚠️ la cita es en la dirección del cliente pero el bloque no trajo "📍 Lugar"; ` +
+        `queda con la ubicación de la base`,
+    );
+  }
+
   const payload = {
     assigned_user_id: usuario.id_sub_usuario,
     id_profesional: idProfesional || null,
@@ -334,12 +352,15 @@ async function crearCitaAgendada({
     calendar_id: calendarId,
     create_meet: true,
     created_by_user_id: usuario.id_usuario,
-    description: descripcion || '',
+    description:
+      descripcion ||
+      (ubicacionCliente ? `Lugar del servicio: ${ubicacionCliente}` : ''),
     end: fin_utc,
     invitees: [{ name: nombre, email: correo, phone: telefono }],
     buffer_minutos: bufferSede,
     // Para un servicio presencial la ubicación es la sede, no "online".
     location_text:
+      ubicacionCliente ||
       ubicacionItem ||
       (establecimiento
         ? [establecimiento.nombre, establecimiento.direccion, establecimiento.ciudad]
@@ -371,6 +392,7 @@ async function crearCitaAgendada({
     `✅ Cita creada: ${nombre} - ${servicio} - ${inicio_utc}` +
       `${establecimiento ? ` · agenda de "${establecimiento.nombre}"` : ''}` +
       `${ubicacionItem ? ` · en sitio: ${ubicacionItem}` : ''}` +
+      `${ubicacionCliente ? ` · donde el cliente: ${ubicacionCliente}` : ''}` +
       `${bufferSede ? ` · ${bufferSede} min de traslado` : ''}`,
   );
 

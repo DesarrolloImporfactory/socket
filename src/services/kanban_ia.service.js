@@ -36,6 +36,7 @@ const {
   ejecutarConClaude,
   esSinSaldoClaude,
   esApiKeyClaudeInvalida,
+  esModeloClaudeNoDisponible,
   mensajeErrorClaude,
   modeloClaude,
 } = require('../utils/claude/claude');
@@ -417,6 +418,8 @@ const fs = require('fs').promises;
 // encabezado de utils/openia/sinSaldo.js.
 const {
   esSinSaldoOpenAI: esSinSaldo,
+  esApiKeyInvalida,
+  esModeloNoDisponible,
   esOrganizacionNoVerificada,
   MODELO_RESPALDO_GPT5,
   URL_VERIFICAR_ORGANIZACION,
@@ -434,9 +437,44 @@ const orgNoVerificadaHasta = new Map();
 const avisoOrgEscrito = new Set();
 const {
   AVISO_ORG_NO_VERIFICADA,
+  AVISO_MODELO_NO_DISPONIBLE,
+  AVISO_ERROR_IA,
   registrarAvisoOpenAI,
   limpiarAvisoOpenAI,
+  limpiarAvisosTrasExito,
 } = require('../utils/openia/avisoOpenAI');
+
+/* Falla de la IA que NO apaga la cuenta pero que el dueño tiene que ver en
+   /conexiones (antes solo quedaba el cartel dentro del chat, y el dueño se
+   enteraba cuando un cliente le preguntaba por qué el bot no contestaba).
+   Modelo inexistente → MODELO_NO_DISPONIBLE con el modelo entre acentos
+   graves (así se retira solo cuando ese modelo vuelve a responder);
+   cualquier otra cosa → ERROR_IA, que borra el primer turno que sale bien.
+   Nunca lanza ni espera. */
+function registrarFalloIA({ id_configuracion, proveedor, modelo, columna, err }) {
+  if (!id_configuracion) return;
+  const esClaude = proveedor === 'Claude';
+  const detalle = (esClaude ? mensajeErrorClaude(err) : mensajeErrorOpenAI(err))
+    .replace(/\s+/g, ' ')
+    .slice(0, 220);
+  const modeloNoDisponible = esClaude
+    ? esModeloClaudeNoDisponible(err)
+    : esModeloNoDisponible(err);
+  const nombreCol = columna?.nombre ? ` de la columna «${columna.nombre}»` : '';
+  const promesa = modeloNoDisponible
+    ? registrarAvisoOpenAI(
+        id_configuracion,
+        AVISO_MODELO_NO_DISPONIBLE,
+        `El modelo \`${modelo || '?'}\`${nombreCol} no está disponible en tu cuenta de ${proveedor} ` +
+          `(${detalle}). El bot no responde en esa columna hasta que elijas otro modelo.`,
+      )
+    : registrarAvisoOpenAI(
+        id_configuracion,
+        AVISO_ERROR_IA,
+        `${proveedor}${nombreCol}: ${detalle || 'error desconocido'}`,
+      );
+  promesa.catch(() => {});
+}
 
 // Lo llama el controlador cuando el dueño pulsa "Ya verifiqué" y la
 // comprobación en vivo con gpt-5 pasó: el próximo turno vuelve a gpt-5 ya.
@@ -889,8 +927,12 @@ async function marcarOpenAIInactivo(id_configuracion, motivo) {
   }
 }
 
-async function marcarOpenAIActivo(id_configuracion) {
+async function marcarOpenAIActivo(id_configuracion, modelo = null) {
   try {
+    // La IA respondió: fuera el aviso de "último turno fallido" y, si el
+    // modelo que acaba de contestar era el que estaba marcado como no
+    // disponible, también ese. Ver utils/openia/avisoOpenAI.js.
+    await limpiarAvisosTrasExito(id_configuracion, modelo);
     // Con type UPDATE, mysql2 devuelve [res, filasAfectadas]; el WHERE
     // openai_activo = 0 hace que solo cuente cuando de verdad estaba caída.
     const [, filas] = await db.query(
@@ -979,6 +1021,10 @@ async function avisarEnChatBotSinRespuesta({
 const AVISO_SIN_SALDO =
   '🤖 El bot no respondió: la cuenta de OpenAI se quedó sin saldo. ' +
   'Al recargar, el bot retoma este chat automáticamente.';
+
+const AVISO_KEY_INVALIDA =
+  '🤖 El bot no respondió: la API Key de OpenAI de esta cuenta es inválida o fue revocada. ' +
+  'Recargar saldo no lo arregla: carga una llave nueva en Asistentes AI y el bot retoma este chat.';
 
 function avisoErrorOpenAI(err) {
   // Caso con arreglo propio: no es saldo ni llave, es la verificación de la
@@ -2737,6 +2783,13 @@ async function procesarMensajeKanban(params) {
         return { ok: false, motivo: 'sin_saldo_claude' };
       }
       await log(`❌ Error ejecutando Claude: ${detalle}`);
+      registrarFalloIA({
+        id_configuracion,
+        proveedor: 'Claude',
+        modelo: assistantInfo?.model,
+        columna,
+        err,
+      });
       await avisarEnChatBotSinRespuesta({
         id_configuracion,
         id_cliente,
@@ -2760,6 +2813,30 @@ async function procesarMensajeKanban(params) {
       });
       await enviarRespaldoAlCliente({ ajustesIA, canal, id_configuracion, id_cliente });
       return { ok: false, motivo: 'sin_saldo_openai' };
+    }
+
+    /* Llave inválida o revocada (401 / invalid_api_key). No es saldo: recargar
+       no arregla nada, hay que cargar otra llave. Hasta hoy caía en la rama
+       genérica de abajo: cartel en el chat y nada más, la cuenta seguía con
+       openai_activo=1 y /conexiones decía "Servicios al día" (cfg 1325,
+       ZivaShop, 2026-10-23). Se apaga la cuenta igual que sin saldo —el
+       rescate de turnos no insiste contra una llave muerta— y al guardar la
+       llave nueva el controlador la reactiva y retoma los chats pendientes. */
+    if (esApiKeyInvalida(err)) {
+      const motivoKey = `API Key de OpenAI inválida o revocada: ${
+        mensajeErrorOpenAI(err).replace(/\s+/g, ' ').slice(0, 300) || 'sin detalle'
+      }`;
+      await log(
+        `🚨 ${motivoKey} · config=${id_configuracion} cliente=${id_cliente}`,
+      );
+      await marcarOpenAIInactivo(id_configuracion, motivoKey);
+      await avisarEnChatBotSinRespuesta({
+        id_configuracion,
+        id_cliente,
+        texto: AVISO_KEY_INVALIDA,
+      });
+      await enviarRespaldoAlCliente({ ajustesIA, canal, id_configuracion, id_cliente });
+      return { ok: false, motivo: 'key_invalida_openai' };
     }
 
     // Contexto excedido o cadena rota (solo Responses API): reintentar UNA vez
@@ -2819,6 +2896,13 @@ async function procesarMensajeKanban(params) {
           return { ok: false, motivo: 'sin_saldo_openai' };
         }
         await log(`❌ Error tras reset de hilo: ${err2.message}`);
+        registrarFalloIA({
+          id_configuracion,
+          proveedor: 'OpenAI',
+          modelo: assistantInfo?.model,
+          columna,
+          err: err2,
+        });
         await avisarEnChatBotSinRespuesta({
           id_configuracion,
           id_cliente,
@@ -2844,7 +2928,16 @@ async function procesarMensajeKanban(params) {
       );
       /* El cartel dice el motivo real (p. ej. "Rate limit reached for gpt-4o
          … 30000 tokens per min", caso cfg 889): el equipo lo ve en el chat sin
-         entrar al servidor, y el rescate de turnos reintenta a los 5 min. */
+         entrar al servidor, y el rescate de turnos reintenta a los 5 min. El
+         mismo motivo queda en /conexiones hasta el próximo turno que salga
+         bien (o, si es un modelo inexistente, hasta que lo cambien). */
+      registrarFalloIA({
+        id_configuracion,
+        proveedor: 'OpenAI',
+        modelo: assistantInfo?.model,
+        columna,
+        err,
+      });
       await avisarEnChatBotSinRespuesta({
         id_configuracion,
         id_cliente,
@@ -3584,7 +3677,24 @@ async function procesarMensajeKanban(params) {
         }
       }
 
-      if (res && res.ok === false) {
+      /* Bloque con huecos ("🧑 Nombre: [Solicita el nombre]"): no es una cita
+         fallida, es una cita que todavía no toca. El bot ya le pidió el dato a
+         la persona en ese mismo mensaje, así que la tarjeta vuelve a la
+         columna donde estaba y el turno siguiente, ya con el nombre, escribe
+         el bloque bueno. Mandarlo a asesor acá apagaba el bot justo antes de
+         cerrar. */
+      if (res && res.ok === false && res.incompleto) {
+        await db.query(
+          `UPDATE clientes_chat_center SET estado_contacto = ? WHERE id = ?`,
+          {
+            replacements: [columna.estado_db, id_cliente],
+            type: db.QueryTypes.UPDATE,
+          },
+        );
+        await log(
+          `↩️ La cita no se creó (${res.motivo}): el contacto ${id_cliente} se queda en "${columna.estado_db}" hasta que el bloque venga completo`,
+        );
+      } else if (res && res.ok === false) {
         const [colAsesor] = await db.query(
           `SELECT id FROM kanban_columnas
             WHERE id_configuracion = ? AND estado_db = 'asesor' AND activo = 1
@@ -4287,7 +4397,10 @@ async function procesarMensajeKanban(params) {
   }
 
   // ✅ Si llegó hasta aquí, OpenAI está funcionando
-  await marcarOpenAIActivo(id_configuracion);
+  await marcarOpenAIActivo(
+    id_configuracion,
+    resultado?.usage?.modelo || assistantInfo?.model || null,
+  );
 
   /* El turno corrió y no había texto que mandar (el modelo calló a propósito
      en una columna de espera, resumen repetido, guardia anti-bucle): se anota
@@ -5059,7 +5172,13 @@ async function procesarAgendarCita(
   opciones = {},
 ) {
   const moment = require('moment-timezone');
-  const lugarCita = opciones?.lugar_cita === 'item' ? 'item' : 'sede';
+  /* 'sede' (lo de siempre), 'item' (la cita es en el inmueble/ítem) o
+     'cliente' (el servicio se hace donde diga la persona: serenatas, limpieza
+     a domicilio, fotografía de eventos). En 'cliente' el bloque trae una
+     línea "📍 Lugar:" que pasa tal cual como ubicación de la cita. */
+  const lugarCita = ['item', 'cliente'].includes(opciones?.lugar_cita)
+    ? opciones.lugar_cita
+    : 'sede';
   const modo = opciones?.modo === 'solicitud' ? 'solicitud' : 'auto';
 
   /* El bloque llega tal como lo escribió el modelo, y el modelo pone negritas
@@ -5075,6 +5194,11 @@ async function procesarAgendarCita(
   const nombre = campo('Nombre');
   const correo = campo('Correo');
   const servicio = campo('Servicio que desea');
+  // Solo vale con lugar_cita 'cliente'; en los otros modos se ignora.
+  const lugarTexto =
+    lugarCita === 'cliente'
+      ? campo('Lugar') || campo('Direcci[oó]n') || campo('Ubicaci[oó]n')
+      : '';
 
   /* El teléfono que vale es el que la persona DIO: puede querer que la llamen a
      otro número distinto del que usa para escribir. El del webhook es el
@@ -5100,6 +5224,28 @@ async function procesarAgendarCita(
   const telefono = esReferencia
     ? contacto?.celular_cliente || ''
     : telefonoBloque;
+
+  /* Bloque con huecos. El modelo a veces escribe el bloque entero con el tag y
+     deja "🧑 Nombre: [Solicita el nombre]" o "<nombre>" para preguntarlo en el
+     mismo mensaje (visto en el tablero adaptado de la 1387, 2026-10-23). Si eso
+     se agenda, la cita queda a nombre de un corchete y el turno siguiente —ya
+     con el nombre real— crea OTRA cita a la misma hora con otro teléfono. Se
+     corta acá: sin cita, la tarjeta no se mueve (ver quien llama) y el modelo
+     vuelve a escribir el bloque cuando tenga el dato. */
+  const esHueco = (s) =>
+    /[\[<>]|solicita|pendiente|por confirmar|falta|completar|\?\?/i.test(
+      String(s || ''),
+    );
+  if (!nombre || esHueco(nombre)) {
+    await log(
+      `⛔ agendar_cita: el bloque trae el nombre vacío o como hueco ("${nombre}"); la cita NO se creó`,
+    );
+    return {
+      ok: false,
+      incompleto: true,
+      motivo: 'bloque de agendamiento con el nombre sin completar',
+    };
+  }
 
   if (esReferencia && telefonoBloque) {
     await log(
@@ -5393,6 +5539,7 @@ async function procesarAgendarCita(
     inicio_utc,
     fin_utc,
     profesional_pedido: campo('Atiende'),
+    lugar_texto: lugarTexto || null,
   });
 
   return resultado;

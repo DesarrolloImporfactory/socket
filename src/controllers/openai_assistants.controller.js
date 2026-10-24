@@ -42,6 +42,7 @@ const {
   esApiKeyInvalida,
   esRateLimitTransitorio,
   esOrganizacionNoVerificada,
+  codigoErrorIA,
   MODELO_RESPALDO_GPT5,
   URL_VERIFICAR_ORGANIZACION,
   mensajeErrorOpenAI,
@@ -653,6 +654,18 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
     require('../services/kanban_ia.service').olvidarBloqueoGpt5(id_configuracion);
   } catch (_) {
     /* motor no cargado en este proceso */
+  }
+
+  // 2.a.bis) Si la cuenta estaba apagada por la llave anterior (inválida o sin
+  //      saldo), los chats que escribieron mientras tanto se retoman ahora con
+  //      la nueva, igual que al pulsar "Ya recargué". Fire-and-forget.
+  try {
+    require('../cron/rescatarTurnosPerdidos').reanudarChatsPendientes(
+      id_configuracion,
+      'nueva API Key de OpenAI',
+    );
+  } catch (_) {
+    /* sin cron en este proceso */
   }
 
   // 2.b) Si los assistants estaban suspendidos (soft delete por eliminar la
@@ -1681,16 +1694,21 @@ exports.openai_status = catchAsync(async (req, res, next) => {
   }
 
   const [row] = await db.query(
-    `SELECT openai_activo, openai_error_at, openai_error_msg
+    `SELECT openai_activo, openai_error_at, openai_error_msg, proveedor_ia
      FROM configuraciones WHERE id = ? LIMIT 1`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
   );
 
+  const activo = Number(row?.openai_activo ?? 1);
   res.status(200).json({
     status: '200',
-    openai_activo: row?.openai_activo ?? 1,
+    openai_activo: activo,
     openai_error_at: row?.openai_error_at || null,
     openai_error_msg: row?.openai_error_msg || null,
+    // Por qué está apagada (SIN_SALDO | KEY_INVALIDA | ERROR): el aviso del
+    // front dice qué hacer según el caso, no siempre "recarga saldo".
+    openai_error_codigo: activo === 0 ? codigoErrorIA(row?.openai_error_msg) : null,
+    proveedor_ia: String(row?.proveedor_ia || 'openai').toLowerCase(),
     // Aviso NO bloqueante (el bot responde, pero el dueño debe actuar).
     openai_aviso: await leerAvisoOpenAI(id_configuracion),
   });

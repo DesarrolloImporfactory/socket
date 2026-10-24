@@ -1,8 +1,17 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/kanban_plantillas.controller');
+const adaptar = require('../controllers/kanban_adaptar.controller');
 
 const { protect } = require('../middlewares/auth.middleware');
 const requireSuperAdmin = require('../middlewares/requireSuperAdmin.middleware');
+
+/* "Adaptar el bot a mi negocio": cuestionario → ficha con IA → tablero a
+   medida. Bajo este prefijo porque app.js lo exime del sanitizador y la
+   ficha/los prompts llevan "<" y corchetes. */
+router.post('/adaptar/cuestionario', protect, adaptar.cuestionario);
+router.post('/adaptar/estado', protect, adaptar.estado);
+router.post('/adaptar/comprender', protect, adaptar.comprender);
+router.post('/adaptar/construir', protect, adaptar.construir);
 
 router.post('/listar', ctrl.listar);
 router.post('/aplicar', ctrl.aplicar);
