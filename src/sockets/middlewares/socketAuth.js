@@ -11,6 +11,14 @@ function errorConCodigo(code) {
   return err;
 }
 
+// Rol «equipo» (utils/rolEquipo.js): el canal en vivo todavía manda a cada
+// socket eventos de todas las cuentas, con teléfonos. Hasta que tenga salas
+// por cuenta (tramo 2) un usuario «equipo» o una sesión de Team no entran.
+function cerradoParaEquipo(decoded, user) {
+  if (decoded?.origen === "team") return true;
+  return String((user ? user.rol : decoded?.rol) || "") === "equipo";
+}
+
 function usuarioDelSocket(decoded, user) {
   return {
     id_sub_usuario: Number(decoded.id_sub_usuario),
@@ -42,10 +50,12 @@ module.exports = function socketAuth() {
     try {
       const { ok, code, user } = await sesionVigente(decoded);
       if (!ok) return next(errorConCodigo(code));
+      if (cerradoParaEquipo(decoded, user)) return next(errorConCodigo("EQUIPO_SIN_CANAL"));
       socket.user = usuarioDelSocket(decoded, user);
     } catch (err) {
       // fail-open, igual que antes: si la base falla se confía en el token.
       console.warn("[socketAuth] sesionVigente falló —", err.message);
+      if (cerradoParaEquipo(decoded, null)) return next(errorConCodigo("EQUIPO_SIN_CANAL"));
       socket.user = usuarioDelSocket(decoded, null);
     }
     next();
@@ -125,11 +135,19 @@ module.exports.socketAuthSuave = function socketAuthSuave() {
         contar(socket, "sin", code);
         return next();
       }
+      if (cerradoParaEquipo(decoded, user)) {
+        contar(socket, "rechazados", "EQUIPO_SIN_CANAL");
+        return next(errorConCodigo("EQUIPO_SIN_CANAL"));
+      }
       socket.user = usuarioDelSocket(decoded, user);
       contar(socket, "con");
     } catch (err) {
       // fail-open: si la base falla no se corta el chat de nadie.
       console.warn("[socketAuthSuave] sesionVigente falló —", err.message);
+      if (cerradoParaEquipo(decoded, null)) {
+        contar(socket, "rechazados", "EQUIPO_SIN_CANAL");
+        return next(errorConCodigo("EQUIPO_SIN_CANAL"));
+      }
       socket.user = usuarioDelSocket(decoded, null);
       contar(socket, "con");
     }
@@ -138,4 +156,5 @@ module.exports.socketAuthSuave = function socketAuthSuave() {
 };
 
 module.exports.SESION_MUERTA = SESION_MUERTA;
+module.exports.cerradoParaEquipo = cerradoParaEquipo;
 module.exports._conteo = conteo;

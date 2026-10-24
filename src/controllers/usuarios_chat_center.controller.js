@@ -19,6 +19,13 @@ const { actualizarSubUsuario } = require('./../utils/actualizarSubUsuario');
 const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
 const { tieneColumnaAccion } = require('../utils/historialEncargados');
+const { ROL_EQUIPO, puedeTenerRolEquipo } = require('../utils/rolEquipo');
+
+const RESPUESTA_ROL_EQUIPO = {
+  status: 'fail',
+  code: 'ROL_EQUIPO_NO_HABILITADO',
+  message: 'El rol «equipo» no está habilitado en esta cuenta.',
+};
 
 exports.listarUsuarios = catchAsync(async (req, res, next) => {
   // El id_usuario sale de la sesión, no del body (evita listar cuentas ajenas)
@@ -64,6 +71,10 @@ exports.agregarUsuario = catchAsync(async (req, res, next) => {
       status: 'fail',
       message: 'Todos los campos son obligatorios',
     });
+  }
+
+  if (String(rol) === ROL_EQUIPO && !puedeTenerRolEquipo(id_usuario)) {
+    return res.status(403).json(RESPUESTA_ROL_EQUIPO);
   }
 
   // Validar usuario o email de subusuario
@@ -121,6 +132,10 @@ exports.actualizarUsuario = catchAsync(async (req, res, next) => {
       status: 'fail',
       message: 'Este usuario no pertenece a tu cuenta',
     });
+  }
+
+  if (String(rol) === ROL_EQUIPO && !puedeTenerRolEquipo(target.id_usuario)) {
+    return res.status(403).json(RESPUESTA_ROL_EQUIPO);
   }
 
   const esSelf =

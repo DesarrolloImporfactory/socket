@@ -86,6 +86,19 @@ function buscar(metodo, path) {
   return REGLAS.find((r) => r.metodo === m && ps.some((p) => r.rx.test(p))) || null;
 }
 
+// Un token de Team (o de un usuario «equipo») nunca usa la puerta abierta: va
+// siempre por protect, que lo limita a /api/v1/equipo/ y le tapa los teléfonos.
+function tokenDeEquipo(authorization) {
+  const token = String(authorization || '').startsWith('Bearer') ? String(authorization).split(' ')[1] : null;
+  if (!token) return false;
+  try {
+    const d = jwt.verify(token, process.env.SECRET_JWT_SEED);
+    return d?.origen === 'team' || d?.rol === 'equipo';
+  } catch (_) {
+    return false;
+  }
+}
+
 // Qué le diría protect a esta petición, sin ir a la base.
 function clasificar(authorization) {
   if (!authorization || !authorization.startsWith('Bearer')) return 'TOKEN_MISSING';
@@ -180,7 +193,7 @@ function vigilar(req, res, next) {
   const regla = buscar(req.method, req.path);
   if (!regla) return next();
 
-  if (EXIGIDOS.has(regla.lote)) {
+  if (EXIGIDOS.has(regla.lote) || tokenDeEquipo(req.headers.authorization)) {
     const code = clasificar(req.headers.authorization);
     if (code) anotar(regla, code + '_RECHAZADO', req);
     return protect(req, res, next);
@@ -196,4 +209,4 @@ function vigilar(req, res, next) {
   next();
 }
 
-module.exports = { vigilar, buscar, clasificar, exigidos, REGLAS, resumir };
+module.exports = { vigilar, buscar, clasificar, exigidos, tokenDeEquipo, REGLAS, resumir };

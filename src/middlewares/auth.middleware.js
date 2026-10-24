@@ -3,6 +3,11 @@ const AppError = require('../utils/appError');
 const Configuraciones = require('../models/configuraciones.model');
 const { db } = require('../database/config');
 const { sesionVigente } = require('../utils/sesionVigente');
+const {
+  esEquipo,
+  rutaPermitidaEquipo,
+  envolverParaEquipo,
+} = require('../utils/rolEquipo');
 
 const jwt = require('jsonwebtoken');
 
@@ -10,6 +15,7 @@ const MENSAJES_SESION = {
   USER_NOT_FOUND: 'El usuario de esta sesión ya no existe.',
   USER_SUSPENDED: 'Tu acceso está suspendido. Habla con tu administrador.',
   TOKEN_REVOKED: 'Sesión cerrada en otro dispositivo',
+  EQUIPO_SOLO_TEAM: 'Tu usuario entra solo desde Team.',
 };
 
 /*  Este middleware protege las rutas privadas
@@ -65,6 +71,28 @@ exports.protect = catchAsync(async (req, res, next) => {
       code,
       message: MENSAJES_SESION[code],
     });
+  }
+
+  // Rol «equipo» (ver utils/rolEquipo.js): solo con la sesión de Team, solo
+  // rutas de /api/v1/equipo/ y con los teléfonos tapados en la respuesta.
+  // Una sesión de Team tampoco sirve si al usuario le quitaron el rol: con otro
+  // rol vería los teléfonos y todas las rutas.
+  if (esEquipo(user) || decoded.origen === 'team') {
+    if (decoded.origen !== 'team' || !esEquipo(user)) {
+      return res.status(401).json({
+        status: 'fail',
+        code: 'EQUIPO_SOLO_TEAM',
+        message: MENSAJES_SESION.EQUIPO_SOLO_TEAM,
+      });
+    }
+    if (!rutaPermitidaEquipo(req.originalUrl)) {
+      return res.status(403).json({
+        status: 'fail',
+        code: 'EQUIPO_RUTA_NO_PERMITIDA',
+        message: 'Tu rol no tiene acceso a esta sección',
+      });
+    }
+    envolverParaEquipo(res);
   }
 
   req.sessionUser = user;

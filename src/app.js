@@ -86,6 +86,7 @@ const calendarsRouter = require('./routes/calendars.routes');
 const appointmentsRouter = require('./routes/appointments.routes');
 
 const mentoriasErpRouter = require('./routes/mentorias_erp.routes');
+const equipoRouter = require('./routes/equipo.routes');
 
 const debugRouter = require('./routes/debug.routes');
 
@@ -411,6 +412,7 @@ app.use('/uploads', express.static(path.resolve(__dirname, 'uploads')));
 app.use('/api/v1/calendars', calendarsRouter);
 app.use('/api/v1/appointments', appointmentsRouter);
 app.use('/api/v1/mentorias_erp', mentoriasErpRouter);
+app.use('/api/v1/equipo', equipoRouter);
 app.use('/api/v1/debug', debugRouter);
 app.use('/api/v1', googleAuthRoutes);
 app.use('/api/v1/messenger', messengerRouter);
