@@ -28,7 +28,7 @@ const { cargasDelTelefono, bloqueCarga, textoParaCliente, codigosEnMensaje } = r
 const { buscadorDeArchivo, bloqueFichas, buscarConRescate } = require('./fichas');
 const { revisarRespuesta } = require('./guardia');
 const { paisDelTelefono } = require('./telefono');
-const { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad } = require('./senales');
+const { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad, esMensajeDeBot } = require('./senales');
 const T = require('./textos');
 
 const MINUTOS_MEMORIA = 20; // la carga leída y las fichas mostradas siguen valiendo para los mensajes que siguen
@@ -189,6 +189,12 @@ async function prepararTurno(p) {
      escribiendo, el saludo anterior ya se contestó, o el modelo calla por algo. */
   const saludoSinContestar = !previo && !adj.adjuntos.length && esSoloSaludo(dicho);
 
+  /* Lo escribió el bot de ventas de la tienda del alumno (senales.js): el motor
+     no le contesta, así los dos bots no se quedan hablando. Se mira lo que
+     escribió, no la descripción de sus adjuntos. Se apaga con
+     soporte_expertos.callar_bots = false. */
+  const mensajeDeBot = opciones.callar_bots !== false && esMensajeDeBot(String(p.mensaje || ''));
+
   await log(
     `🎓 soporte_expertos: carga=${carga ? `${carga.estado}${carga.cargas.length ? ` (${carga.cargas.length})` : ''}` : 'no consultada'}` +
       ` · fichas=[${fichas.map((f) => `${f.ficha.id} ${f.cercania ?? ''}`.trim()).join(', ')}]` +
@@ -196,7 +202,8 @@ async function prepararTurno(p) {
       (adj.esNotaDeVoz ? ' · nota de voz' : '') +
       (otro.pide ? ` · pide datos ajenos (${otro.motivo})` : '') +
       (reclamoPorDemora ? ' · reclama por la demora' : reclamo ? ' · reclamo' : '') +
-      (saludoSinContestar ? ' · primer saludo' : ''),
+      (saludoSinContestar ? ' · primer saludo' : '') +
+      (mensajeDeBot ? ' · mensaje de un bot de tienda' : ''),
   );
 
   return {
@@ -211,6 +218,7 @@ async function prepararTurno(p) {
       reclamo,
       reclamoPorDemora,
       saludoSinContestar,
+      mensajeDeBot,
       dioCantidad: cantidadDicha,
       respaldo: {
         firme,
@@ -239,6 +247,7 @@ function hechosDeEmergencia(mensaje = '') {
     reclamo: false,
     reclamoPorDemora: false,
     saludoSinContestar: false,
+    mensajeDeBot: false,
     dioCantidad: false,
     respaldo: { firme: fijos, eco: String(mensaje || ''), estado: fijos },
     textoSeguro: T.MENSAJE_ASESOR,

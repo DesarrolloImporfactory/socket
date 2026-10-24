@@ -393,6 +393,27 @@ function quitarAvisoRepetido(texto) {
   return { texto: sin, cambios: 1 };
 }
 
+/* ── «Recibí» una sola vez ──────────────────────────────────────────────── */
+/** «Recibí tu proforma. Recibí tu mensaje. Tu asesor la revisa…» → «Recibí tu
+    proforma. Tu asesor la revisa…». El modelo nombra lo que llegó y después pega
+    el paso a asesor entero: el cliente lee «Recibí» dos veces seguidas (anoche,
+    23-oct, en 5 de 55 respuestas). Solo se quita el «Recibí tu mensaje.» que va
+    DESPUÉS de otro «Recibí…» que nombra algo; lo que sigue queda igual. Una
+    respuesta que repite «Recibí tu mensaje» diez veces no se arregla aquí: es
+    basura y la frena el largo máximo. */
+// Un «Recibí» que nombra lo que llegó: «Recibí tu proforma», no otro «Recibí tu mensaje».
+const RE_RECIBI = /(?<!\p{L})recib(?:í|i|imos)(?!\p{L})(?! tu mensaje)/iu;
+const RE_RECIBI_TU_MENSAJE = /(?<!\p{L})Recib(?:í|i)(?:mos)? tu mensaje\.[ \t]*(\p{L})?/gu;
+function quitarRecibiRepetido(texto) {
+  let cambios = 0;
+  const out = texto.replace(RE_RECIBI_TU_MENSAJE, (m, letra, inicio, todo) => {
+    if (!RE_RECIBI.test(todo.slice(0, inicio))) return m;
+    cambios += 1;
+    return letra ? letra.toUpperCase() : '';
+  });
+  return { texto: cambios ? out.replace(/[ \t]{2,}/g, ' ').trim() : texto, cambios };
+}
+
 /* ── Una ficha con `pasar_a` no cierra sola ────────────────────────────── */
 const RE_PASA_A_ASESOR = /apenas abramos/i;
 const PALABRAS_DE_MUESTRA = 6;
@@ -478,6 +499,7 @@ function revisarRespuesta(respuesta, hechos = {}) {
     [corregirVoseo, 'voseo corregido'],
     [cambiarCargos, 'cargo interno cambiado'],
     [quitarAvisoRepetido, 'aviso de «un asesor te escribe» repetido: se dejó uno'],
+    [quitarRecibiRepetido, '«Recibí» repetido: se dejó uno'],
   ];
   for (const [fn, motivo] of pasos) {
     const r = fn(visible);
@@ -533,6 +555,7 @@ module.exports = {
   completarPase,
   ofreceLoQueNoPuede,
   quitarAvisoRepetido,
+  quitarRecibiRepetido,
   RE_PLAZO,
   MAX_RESPUESTA,
 };

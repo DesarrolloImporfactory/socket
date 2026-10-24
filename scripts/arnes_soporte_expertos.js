@@ -314,7 +314,7 @@ const ESCENARIOS = [
     contexto: ([c]) => [!/Imagen \(captura de pantalla de la plataforma\), leída automáticamente/.test(c.mensaje || '') && 'no le dice al modelo qué imagen llegó', !c.hechos.fichas.length && 'la descripción de la imagen no trajo ninguna ficha'],
     debe: [[[/recib[ií] (la|tu) captura/i, 'dice qué recibió'], [/correo/i, 'pide el correo de registro']]],
     no_debe: [[[/(?<!lo |la |que )(revis[eé]|verifiqu[eé]|valid[eé])/i, 'dice que revisó la captura'], [/tu clave|tu contrase[nñ]a/i, 'pide la clave']]],
-    doble: [`Recibí la captura. ${T.MENSAJE_ASESOR} Para revisarlo, envíame el correo con el que te registraste.`],
+    doble: [`Recibí la captura. ${T.CIERRE_ASESOR} Para revisarlo, envíame el correo con el que te registraste.`],
     doble_malo: ['Revisé tu captura: tu usuario está bloqueado. Se desbloquea en 24 horas.'],
   },
 

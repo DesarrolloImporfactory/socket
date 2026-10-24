@@ -598,6 +598,47 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
     prueba('tres pasos dichos de su carga se siguen frenando', datoSinRespaldo('Tu carga está en tránsito, luego en aduana y después liberada.', '', '') !== null);
   }
 
+  console.log('\n17. «Recibí» una sola vez, y a los bots de tienda no se les contesta (24-oct)');
+  {
+    const { esMensajeDeBot } = require('../src/utils/soporteExpertos/senales');
+    const r1 = revisarRespuesta('Recibí tu proforma. Recibí tu mensaje. Tu asesor la revisa y te escribe apenas abramos.', {});
+    prueba('«Recibí tu proforma. Recibí tu mensaje.» queda con un solo «Recibí»', r1.texto === 'Recibí tu proforma. Tu asesor la revisa y te escribe apenas abramos.', r1.texto);
+    const r2 = revisarRespuesta('Hola. Recibí la imagen del parlante. Recibí tu mensaje. Un asesor lo revisa y te escribe apenas abramos.', {});
+    prueba('«Recibí la imagen… Recibí tu mensaje.» queda con un solo «Recibí»', r2.texto === 'Hola. Recibí la imagen del parlante. Un asesor lo revisa y te escribe apenas abramos.', r2.texto);
+    prueba('«Entiendo tu preocupación. Recibí tu mensaje.» no se toca', !revisarRespuesta(T.MENSAJE_RECLAMO, {}).cambiada);
+    prueba('el paso a asesor solo no se toca', !revisarRespuesta(T.MENSAJE_ASESOR, {}).cambiada);
+    const bots = [
+      '🚛 Tu pedido está empacado y listo para salir\nEse problema que te llevó a escribir sigue ahí',
+      'Gracias Juan! 😊 ¿En qué ciudad te lo enviamos?',
+      'Johan, ¿en qué ciudad lo recibes? 😊',
+      '🎁 Envío GRATIS pero se cae hoy\nNormalmente el envío cuesta $8',
+      'Gracias por la info. ¿Qué producto te interesa comprar? 😊',
+      '¿Quieres que lo pase a un asesor para que te ayude? 😊',
+      'Hola! 😊 Soy Sara de Tobaresi Store, un gusto saludarte. ¿Qué producto te interesa?',
+      '💵 1 por $26 / 🔥 2 por $38 / 🚚 Envío gratis y pagas al recibir',
+    ];
+    prueba('los mensajes de bots de tienda de anoche se reconocen', bots.every(esMensajeDeBot), bots.filter((b) => !esMensajeDeBot(b)).join(' | '));
+    const personas = [
+      'Mira este caso, el bot le envía este segundo mensaje y no le pregunta a qué ciudad lo enviamos',
+      'Mi bot les dice a mis clientes ¿qué producto te interesa? y no avanza, ¿qué hago?',
+      'Cuál sería el tiempo de entrega?',
+      '¿A qué ciudad lo envían?',
+      'Hola amigo cuéntame cómo va el envío de la mercadería',
+      'Ok por favor quiero avanzar el fin de semana gracias',
+      '[2/10, 17:04] Importaciones Yacelga: 🚛 Pedido empacado y listo para salir',
+      'Enviado por Mensaje fijo:\nsin IA\n¿Quieres entrenar en casa? 💵 1 por $20 / 2 por $35',
+      'Saludo + Validación del problema:\n\n"¡Hola! Claro que sí. ¿A qué ciudad te lo enviamos?"',
+    ];
+    prueba('lo que escribe una persona (aunque muestre su bot) no se calla', !personas.some(esMensajeDeBot), personas.filter(esMensajeDeBot).join(' | '));
+    olvidarTodo();
+    const t = await prepararTurno({ mensaje: 'Gracias Juan! 😊 ¿En qué ciudad te lo enviamos?', telefono: '593999000111', id_configuracion: 265, id_cliente: 1, opciones: { cargas: false, fichas: false } });
+    prueba('el turno marca el mensaje de bot de tienda', t.hechos.mensajeDeBot === true);
+    olvidarTodo();
+    const t2 = await prepararTurno({ mensaje: 'Gracias Juan! 😊 ¿En qué ciudad te lo enviamos?', telefono: '593999000111', id_configuracion: 265, id_cliente: 1, opciones: { cargas: false, fichas: false, callar_bots: false } });
+    prueba('con callar_bots = false no se marca', t2.hechos.mensajeDeBot === false);
+    olvidarTodo();
+  }
+
   console.log(`\n${fallos ? `HAY FALLAS: ${fallos} fallan, ${ok} pasan` : `TODO BIEN: ${ok} pasan, 0 fallan`}`);
   process.exit(fallos ? 1 : 0);
 })().catch((e) => {

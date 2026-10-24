@@ -123,4 +123,42 @@ function dioCantidad(texto) {
   return RE_CANTIDAD.test(llano(texto));
 }
 
-module.exports = { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad };
+/* Lo escribió el BOT DE VENTAS de la tienda de un alumno, no una persona.
+   Muchos alumnos atienden su tienda con un bot en el mismo WhatsApp con el que
+   nos escriben: cuando nuestro bot les contesta, el suyo responde «¿Qué producto
+   te interesa?», «¿A qué ciudad te enviamos?» o «Tu pedido está empacado», y
+   los dos bots se quedan hablando entre ellos (60 días hasta el 24-oct: 283
+   mensajes así en la 265). A eso no se le contesta.
+
+   Solo frases de vendedor dirigidas a un comprador, que un alumno no le dice a
+   su escuela. Y si el mensaje habla DEL bot («mira lo que le dice mi bot a mis
+   clientes»), es una persona mostrando un caso: se contesta. */
+const RE_BOT_DE_TIENDA = new RegExp(
+  [
+    '\\bque producto te interesa\\b',
+    '\\bsoy [a-zñ]+ (?:[a-zñ]+ )?de .{2,40}? un gusto saludarte\\b',
+    '\\b(?:en|a) que ciudad (?:(?:te|lo|la|se|quieres que|prefieres que|deseas que) )*(?:enviamos|enviemos|te lo enviamos|recibes|lo recibes)\\b',
+    '\\b(?:tu )?pedido (?:ya )?(?:esta )?(?:empacado|listo para salir|listo para despacho)\\b',
+    '\\benvio gratis\\b.*\\b(?:solo por hoy|se cae hoy|vence hoy|pagas al recibir|pago contra entrega)\\b',
+    '\\bguarda nuestro numero\\b',
+    '\\bquieres que (?:lo|te) pase (?:a|con) un asesor\\b',
+    '\\b1 por \\d+\\b.*\\b2 por \\d+\\b',
+  ].join('|'),
+);
+const RE_HABLA_DEL_BOT =
+  /\b(?:mi|el|la|tu|su|este|ese) (?:bot|ia|asistente|robot|chatbot|agente)\b|\b(?:le|les) (?:envia|manda|dice|responde|contesta|pregunta|escribe|sale)\b|\bmis? clientes?\b|\bme sale\b|\bmira (?:este|esto|como|lo que)\b|\bejemplo\b|\bpor que (?:dice|pregunta|responde|contesta|manda)\b/;
+
+/* Una persona que PEGA lo que escribió su bot: una copia de chat con fecha
+   («[2/10, 17:04] Importaciones Yacelga: …»), el panel («Enviado por Mensaje
+   fijo / sin IA»), un guion entre comillas («Saludo + Validación del problema:
+   "¡Hola!…»). Salieron así 3 de los 230 de la medición del 24-oct. */
+const RE_PEGADO =
+  /^\s*\[\d{1,2}\/\d{1,2}(?:\/\d{2,4})?,? \d{1,2}:\d{2}|enviado por|mensaje fijo|\bsin ia\b|validaci[oó]n del problema|^[^\n]{0,60}:\s*\n?\s*["“«]/im;
+
+function esMensajeDeBot(texto) {
+  const crudo = String(texto || '');
+  const t = llano(crudo);
+  return Boolean(t) && RE_BOT_DE_TIENDA.test(t) && !RE_HABLA_DEL_BOT.test(t) && !RE_PEGADO.test(crudo);
+}
+
+module.exports = { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad, esMensajeDeBot };

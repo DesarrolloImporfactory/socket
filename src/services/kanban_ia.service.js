@@ -2285,6 +2285,13 @@ async function procesarMensajeKanban(params) {
             : { ...ajustesIA.soporte_expertos, cargas: false },
         log,
       });
+      /* Lo escribió el bot de ventas de la tienda del alumno: no se le
+         contesta (sin llamar al modelo), o los dos bots se quedan hablando. */
+      if (turnoExpertos.hechos?.mensajeDeBot) {
+        await log(`🤖 soporte_expertos: el mensaje es de un bot de tienda; no se contesta (cliente=${id_cliente})`);
+        anotarSilencio(id_configuracion, id_cliente);
+        return { ok: true, motivo: 'mensaje_de_bot', silencio: true };
+      }
       if (turnoExpertos.bloque) bloqueContexto += `${turnoExpertos.bloque}\n\n`;
       // El mensaje como lo tiene que ver el modelo: con sus adjuntos nombrados
       // en vez del relleno genérico de «no se puede leer».
