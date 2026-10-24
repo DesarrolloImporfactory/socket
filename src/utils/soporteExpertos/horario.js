@@ -9,8 +9,10 @@
 
    Horario del equipo: ia_ajustes → soporte_expertos.horario_equipo
      { dias: [1,2,3,4,5], desde: '08:00', hasta: '17:30', utc: -5 }
-   Sin el ajuste vale ese mismo (L-V 08:00-17:30, hora de Ecuador). No hay
-   feriados: un feriado cuenta como día de oficina. */
+   Sin el ajuste el bot NO cambia «apenas abramos» (turno.js): el cambio es
+   por cuenta. El seguimiento, que se corre a mano por cuenta, usa L-V
+   08:00-17:30 de Ecuador si falta. No hay feriados: un feriado cuenta como
+   día de oficina. */
 
 'use strict';
 

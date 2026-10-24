@@ -143,16 +143,29 @@ const RE_BOT_DE_TIENDA = new RegExp(
     '\\bguarda nuestro numero\\b',
     '\\bquieres que (?:lo|te) pase (?:a|con) un asesor\\b',
     '\\b1 por \\d+\\b.*\\b2 por \\d+\\b',
-    // Respuesta automática del negocio del alumno (fuera de su horario) y el
-    // «ya te paso con un asesor» de su bot: 10 en los 14 días al 24-oct.
-    '\\bgracias por (?:tu|su) mensaje\\b.{0,80}\\b(?:en este momento|lo antes posible|tan pronto|horario)\\b',
-    '\\ben este momento no (?:podemos (?:responder|atenderte|contestar)|estamos disponibles|nos encontramos)\\b',
-    '\\bnuestro horario de (?:atencion|servicio) es\\b',
-    '\\bun asesor (?:te|le) (?:contactara|escribira|atendera) (?:en breve|pronto|a la brevedad|lo antes posible)\\b',
-    '\\bte paso con [a-zñ]+ ahora mismo\\b',
-    '\\bpaso tu caso (?:a|con) un asesor\\b',
   ].join('|'),
 );
+/* Respuesta automática del negocio del alumno (fuera de su horario) y el «ya te
+   paso con un asesor» de su bot: 10 en los 14 días al 24-oct. Son frases que
+   una persona también CITA para quejarse o para preguntar cómo ponerlas («me
+   dijeron que un asesor le escribirá pronto y nada», «cómo pongo en mi
+   WhatsApp nuestro horario de atención es…»), así que valen solo si abren el
+   mensaje (en los primeros 40 caracteres) y no hay nada de una persona
+   contando su caso (RE_PERSONA_CUENTA). */
+const RE_AUTORESPUESTA = new RegExp(
+  '^.{0,40}?(?:' +
+    [
+      '\\bgracias por (?:tu|su) mensaje\\b.{0,80}\\b(?:en este momento|lo antes posible|tan pronto|horario)\\b',
+      '\\ben este momento no (?:podemos (?:responder|atenderte|contestar)|estamos disponibles|nos encontramos)\\b',
+      '\\bnuestro horario de (?:atencion|servicio) es\\b',
+      '\\bun asesor (?:te|le) (?:contactara|escribira|atendera) (?:en breve|pronto|a la brevedad|lo antes posible)\\b',
+      '\\bte paso con (?!el\\b|ella\\b|usted\\b|ellos\\b)[a-zñ]+ ahora mismo\\b',
+      '\\bpaso tu caso (?:a|con) un asesor\\b',
+    ].join('|') +
+    ')',
+);
+const RE_PERSONA_CUENTA =
+  /\b(?:me (?:dijeron|dicen|dijo|ponen|pusieron|sale|salio|responden|contestan|escriben)|mi (?:whatsapp|negocio|tienda|numero|pagina|bot|soci[oa])|es mi|mensaje (?:de ausencia|de bienvenida|automatico)|como (?:pongo|hago|configuro|activo|cambio|puedo|se pone)|quiero poner|nadie|ya van|(?:hace|van|llevo) (?:\w+ )?(?:dias|semanas)|\d+ (?:dias|semanas)|porque|cansad[oa]|todavia|aun no|sigo esperando)\b/;
 const RE_HABLA_DEL_BOT =
   /\b(?:mi|el|la|tu|su|este|ese) (?:bot|ia|asistente|robot|chatbot|agente)\b|\b(?:le|les) (?:envia|manda|dice|responde|contesta|pregunta|escribe|sale)\b|\bmis? clientes?\b|\bme sale\b|\bmira (?:este|esto|como|lo que)\b|\bejemplo\b|\bpor que (?:dice|pregunta|responde|contesta|manda)\b/;
 
@@ -166,7 +179,8 @@ const RE_PEGADO =
 function esMensajeDeBot(texto) {
   const crudo = String(texto || '');
   const t = llano(crudo);
-  return Boolean(t) && RE_BOT_DE_TIENDA.test(t) && !RE_HABLA_DEL_BOT.test(t) && !RE_PEGADO.test(crudo);
+  if (!t || RE_HABLA_DEL_BOT.test(t) || RE_PEGADO.test(crudo)) return false;
+  return RE_BOT_DE_TIENDA.test(t) || (RE_AUTORESPUESTA.test(t) && !RE_PERSONA_CUENTA.test(t));
 }
 
 /* NO PIDE NADA: agradece, confirma o avisa que él hará algo («ok», «listo
@@ -189,17 +203,22 @@ const PARTE_DE_ACUSE =
 const PARTE_DE_RELLENO =
   'el lunes|manana|mas tarde|luego|en un rato|en la tarde|en la noche|' +
   '(?:apenas|cuando|re cuanto) (?:me (?:los|las|lo|la) (?:den|de|pasen|envien|manden)|pueda|tenga)(?: la \\w+)?|' +
-  'muchas|mil|ing|inge|amig[oa]|estimad[oa]|senor\\w*|don|dona|lic|por favor|porfa|y|e|a|tu|usted|saludos|' +
+  'muchas|mil|ing|inge|amig[oa]|estimad[oa]|senor\\w*|don|dona|lic|y|e|a|tu|usted|saludos|' +
   'buen[ao]?s? (?:dias?|tardes?|noches?)';
 const RE_SOLO_ACUSE = new RegExp(`^(?:(?:${PARTE_DE_ACUSE}|${PARTE_DE_RELLENO})(?: |$))+$`);
 const RE_UN_ACUSE = new RegExp(`(?:^| )(?:${PARTE_DE_ACUSE})(?: |$)`);
 const RE_SOLO_EMOJI = /^(?:[\s‍️]|\p{Extended_Pictographic}|\p{Emoji_Modifier})+$/u; // sin dígitos: «1» o un número no son emoji
+// Solo los emojis de acuse: 😡, 👎, 🤔 o ‼️ solos son una queja o una duda (revisión del 24-oct).
+const RE_EMOJI_DE_ACUSE = /^(?:[\s‍️]|\p{Emoji_Modifier}|[👍👌🙏❤♥💙💚😊🙂☺😀😃😄😁🥰😍🤗🙌✅✔💪👏🫡🤝💯⭐🌟✨🎉🥳😎👋])+$/u;
+// «ok y», «bueno y», «listo a»: el mensaje se cortó, falta lo que pide.
+const RE_TERMINA_CORTADO = / (?:y|e|o|a|pero|que|de|con|para|en|por|del|al)$/;
 
 function noPideNada(texto) {
   const crudo = String(texto || '').trim();
   if (!crudo || crudo.includes('?')) return false;
-  if (RE_SOLO_EMOJI.test(crudo)) return true; // 👍 🙏 ❤️ solos
+  if (RE_SOLO_EMOJI.test(crudo)) return RE_EMOJI_DE_ACUSE.test(crudo); // 👍 🙏 ❤️ solos
   const t = llano(crudo);
+  if (RE_TERMINA_CORTADO.test(t)) return false;
   return t.length <= 120 && RE_SOLO_ACUSE.test(t) && RE_UN_ACUSE.test(t);
 }
 

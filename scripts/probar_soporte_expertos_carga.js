@@ -23,7 +23,7 @@ require.cache[rutaDb] = { id: rutaDb, filename: rutaDb, loaded: true, exports: {
 const { hablaDeCarga, pideDatosDeOtro } = require('../src/utils/soporteExpertos/intencion');
 const { cargasDelTelefono, bloqueCarga, textoParaCliente, codigosEnMensaje, esHistorica, enFlujo } = require('../src/utils/soporteExpertos/cargaCliente');
 const { buscadorDeArchivo } = require('../src/utils/soporteExpertos/fichas');
-const { prepararTurno, revisarTurno, olvidarTodo } = require('../src/utils/soporteExpertos/turno');
+const { prepararTurno, revisarTurno, olvidarTodo, pideEstado } = require('../src/utils/soporteExpertos/turno');
 const T = require('../src/utils/soporteExpertos/textos');
 const { baseDeMentira, DATOS, TEL, HOY } = require('./soporte_expertos/base_de_mentira');
 // Estas pruebas describen el bot de noche: la hora queda fija un sábado a las 21:00 de Ecuador.
@@ -450,6 +450,16 @@ const turno = (mensaje, tel, extra = {}) =>
     revisarTurno(a.hechos.textoSeguro, a.hechos, { ahora: t0 });
     a = await turno('para el 30 de octubre', tel, { ahora: t0 + 25 * 60e3 });
     prueba('pasados 20 minutos ya no cuenta como dicho', a.hechos.cargaYaDicha === false);
+    olvidarTodo();
+    // Revisión independiente del 24-oct: todas estas vuelven a pedir el estado.
+    const piden = ['y mi carga?', 'qué día llega?', 'cuánto falta para que llegue?', 'llegó ya?', 'ya llegó mi carga', 'me das el estado?', 'info de mi carga porfa', 'tracking?', 'en qué fecha llega?', 'cuándo llegará?', 'y la marca IMP-2231?'];
+    prueba('las maneras de volver a pedir el estado cuentan como pedirlo', piden.every(pideEstado), piden.filter((x) => !pideEstado(x)).join(' | '));
+    const noPiden = ['lo que ya está en bodega lo dejamos para el contenedor del 15 de noviembre', 'hasta cuándo reciben en la bodega de China?', 'para el contenedor del 30 cuándo es el cierre?'];
+    prueba('contar algo de la carga o preguntar por la recepción no es pedir el estado', !noPiden.some(pideEstado), noPiden.filter(pideEstado).join(' | '));
+    a = await turno('cuándo llega mi carga?', tel, { ahora: t0 });
+    revisarTurno(a.hechos.textoSeguro, a.hechos, { ahora: t0 });
+    a = await turno('qué día llega?', tel, { ahora: t0 + 5 * 60e3 });
+    prueba('«qué día llega?» a los 5 min: se le da el estado otra vez', a.hechos.cargaYaDicha === false && /📦 CARGA DE ESTE CLIENTE/.test(a.bloque));
     olvidarTodo();
   }
 

@@ -57,16 +57,24 @@ function guardar(clave, valor) {
 
 const decible = (f) => [f.respuesta_base, ...f.pasos, f.enlace, f.pedir].filter(Boolean).join('\n');
 
-/* Pide otra vez el ESTADO de su carga («¿cuándo llega?», «¿cómo va?»). Lo
-   que no: «hasta cuándo reciben en la bodega», «lo dejo para el contenedor del
-   15»: eso ya no es el estado, es para el asesor de logística. */
+/* Pide otra vez el ESTADO de su carga («¿cuándo llega?», «¿cómo va?», «y mi
+   carga?»). Ante la duda, SÍ lo pide: callarle el estado a quien lo pide es
+   peor que repetírselo. Lo único que no cuenta: un mensaje sin pregunta que
+   cuenta algo largo («lo que ya está en bodega lo dejamos para el contenedor
+   del 15») o que pregunta por la recepción de la bodega («hasta cuándo
+   reciben»): eso es para el asesor de logística. (Revisión del 24-oct: «qué
+   día llega?», «cuánto falta?», «llegó ya?», «tracking?», «info de mi carga
+   porfa» se quedaban sin respuesta.) */
 const RE_PIDE_ESTADO =
-  /\b(?:cuando (?:llega|llegaria|sale|estaria)|donde (?:esta|va|se encuentra)|como va|en que (?:va|estado)|estado de (?:mi|la|las|mis)|fecha (?:de|estimada de) llegada|novedad\w*)\b/;
-// «ya llegó?» pregunta; «lo que ya está en bodega lo dejamos…» cuenta algo.
-const RE_YA_LLEGO = /\bya (?:llego|salio|esta en|estan en)\b/;
+  /\b(?:cuando (?:llega\w*|sale|saldria|estaria|arriba)|(?:que|en que) (?:dia|fecha) (?:llega\w*|sale)|cuanto (?:falta|tarda|demora|se demora)|donde (?:esta|va|anda|se encuentra)|como (?:va|vamos|sigue)|en que (?:va|estado)|(?:el )?estado de (?:mi|la|las|mis)|me (?:das|da|dan|pasas|pasan) (?:el )?(?:estado|status)|status|tracking|rastreo|fecha (?:de|estimada de) llegada|novedad\w*|ya (?:llego|salio|arribo)|llego ya|info\w* (?:de|sobre) (?:mi|la|mis)|^y (?:la|mi|el|los|las|mis) (?:marca|cotizacion|carga|mercaderia|mercancia|importacion|pedido|contenedor)s?)\b/;
+const RE_RECEPCION = /\b(?:hasta cuando (?:reciben|recibe|reciban)|reciben|recepcion|cierre|cierra|contenedor del)\b/;
 const pideEstado = (t) => {
   const l = sinTildes(String(t || '').toLowerCase());
-  return RE_PIDE_ESTADO.test(l) || (RE_YA_LLEGO.test(l) && l.includes('?'));
+  if (RE_RECEPCION.test(l)) return false;
+  if (RE_PIDE_ESTADO.test(l)) return true;
+  // Pregunta corta sobre la carga («y mi carga?», «y la marca X?»).
+  const palabras = l.replace(/[^a-z0-9ñ ]+/g, ' ').trim().split(/\s+/).filter(Boolean).length;
+  return hablaDeCarga(t) && (l.includes('?') || palabras <= 6);
 };
 
 /* Huellas del texto de la carga: con ellas se sabe si la respuesta ya lo dijo
@@ -196,8 +204,11 @@ async function prepararTurno(p) {
   // ── ¿El equipo está atendiendo? ───────────────────────────────────────
   /* Los textos fijos dicen «apenas abramos»; de día eso es falso. El modelo los
      sigue usando tal cual (la guardia no le deja prometer tiempos) y al final
-     del turno revisarTurno cambia «apenas abramos» por «en breve». */
-  const atendiendo = equipoAtendiendo(deps.ahora, opciones.horario_equipo);
+     del turno revisarTurno cambia «apenas abramos» por «en breve».
+     Solo en la cuenta que declara `horario_equipo`: soporte_expertos también
+     está en la 10 (WAPP IMPORTSUIT), con otro equipo y otras horas, y a esa no
+     se le cambia el texto (revisión del 24-oct). */
+  const atendiendo = Boolean(opciones.horario_equipo) && equipoAtendiendo(deps.ahora, opciones.horario_equipo);
   if (atendiendo) {
     bloques.push(
       '🕘 AHORA EL EQUIPO ESTÁ ATENDIENDO (horario de oficina). No digas que estamos cerrados, que es fuera de horario ni que es de noche o fin de semana. ' +
@@ -220,6 +231,8 @@ async function prepararTurno(p) {
     cargaDichaTs: carga ? previo?.cargaDichaTs || null : null,
     fichas: fichasVistas,
     dioCantidad: cantidadDicha,
+    // Cuándo el bot terminó su respuesta con una pregunta (lo marca revisarTurno).
+    preguntoTs: previo?.preguntoTs || null,
   });
 
   /* Fichas que pasan el caso a una persona (`pasar_a`): no pueden cerrar solas.
@@ -269,6 +282,9 @@ async function prepararTurno(p) {
     !adj.adjuntos.length &&
     (!p.tipo_mensaje || p.tipo_mensaje === 'text') &&
     !otro.pide &&
+    // «dale», «ok» o «de acuerdo» a una pregunta del bot («¿te envío el
+    // tutorial?») es un sí: se contesta (revisión del 24-oct).
+    !(previo?.preguntoTs && ahora - previo.preguntoTs <= MINUTOS_MEMORIA * 60 * 1000) &&
     noPideNada(String(p.mensaje || ''));
 
   await log(
@@ -357,6 +373,8 @@ function revisarTurno(respuesta, hechos, { ahora = Date.now() } = {}) {
   /* ¿La respuesta trae el estado de la carga? Si ya se le había dicho y no lo
      volvió a pedir, se cambia por el paso a asesor; si no, se anota que ya se
      le dijo (para el próximo mensaje de esta conversación). */
+  const enMemoria = h.clave && memoria.get(h.clave);
+  if (enMemoria) enMemoria.preguntoTs = /\?/.test(String(rev.texto || '')) ? ahora : null;
   const huellas = h.huellasCarga || [];
   if (huellas.length && huellas.some((x) => String(rev.texto || '').includes(x))) {
     if (h.cargaYaDicha) {
@@ -381,4 +399,4 @@ function olvidarTodo() {
   memoria.clear();
 }
 
-module.exports = { prepararTurno, revisarTurno, hechosDeEmergencia, olvidarTodo, MINUTOS_MEMORIA };
+module.exports = { prepararTurno, revisarTurno, hechosDeEmergencia, olvidarTodo, pideEstado, MINUTOS_MEMORIA };
