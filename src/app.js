@@ -364,6 +364,10 @@ app.use((req, res, next) => {
 });
 
 app.use('/api/v1', limiter);
+
+// Rutas privadas que aún no piden sesión: se vigilan y se cierran por lotes
+// (ver middlewares/rutasSinSesion.js).
+app.use(require('./middlewares/rutasSinSesion').vigilar);
 // routes
 app.use('/api/v1/auth', authRouter);
 app.use('/api/v1/users', userRouter);
