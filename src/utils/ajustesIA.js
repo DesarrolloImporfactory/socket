@@ -106,7 +106,8 @@ function normalizarHorario(h) {
 
 /* true → todo encendido (menos las herramientas); un objeto apaga lo que traiga en false. */
 function normalizarSoporteExpertos(v) {
-  if (v === true) return { cargas: true, fichas: true, guardia: true, herramientas: false, diagnostico: false };
+  if (v === true)
+    return { cargas: true, fichas: true, guardia: true, herramientas: false, diagnostico: false, callar_bots: true, callar_acuses: true };
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   return {
     cargas: v.cargas !== false,
@@ -118,6 +119,10 @@ function normalizarSoporteExpertos(v) {
     // Revisar la cuenta IMPORCHAT del que escribe (revisar_mi_imporchat): solo
     // con herramientas y pedido explícito. Ver soporteExpertos/diagnosticoCuenta.js.
     diagnostico: v.herramientas === true && v.diagnostico === true,
+    // No contestarle al bot de la tienda del alumno ni a un «ok / gracias»:
+    // encendidos salvo que la cuenta los apague (senales.js).
+    callar_bots: v.callar_bots !== false,
+    callar_acuses: v.callar_acuses !== false,
   };
 }
 

@@ -28,7 +28,7 @@ const { cargasDelTelefono, bloqueCarga, textoParaCliente, codigosEnMensaje } = r
 const { buscadorDeArchivo, bloqueFichas, buscarConRescate } = require('./fichas');
 const { revisarRespuesta } = require('./guardia');
 const { paisDelTelefono } = require('./telefono');
-const { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad, esMensajeDeBot } = require('./senales');
+const { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad, esMensajeDeBot, noPideNada } = require('./senales');
 const T = require('./textos');
 
 const MINUTOS_MEMORIA = 20; // la carga leída y las fichas mostradas siguen valiendo para los mensajes que siguen
@@ -195,6 +195,17 @@ async function prepararTurno(p) {
      soporte_expertos.callar_bots = false. */
   const mensajeDeBot = opciones.callar_bots !== false && esMensajeDeBot(String(p.mensaje || ''));
 
+  /* Solo agradece, confirma o avisa que él hará algo («ok», «listo amigo
+     gracias», «el lunes te los paso»): no se contesta (senales.noPideNada).
+     Con un adjunto sí se mira (el «ok» puede venir con el comprobante). Se
+     apaga con soporte_expertos.callar_acuses = false. */
+  const sinPedido =
+    opciones.callar_acuses !== false &&
+    !adj.adjuntos.length &&
+    (!p.tipo_mensaje || p.tipo_mensaje === 'text') &&
+    !otro.pide &&
+    noPideNada(String(p.mensaje || ''));
+
   await log(
     `🎓 soporte_expertos: carga=${carga ? `${carga.estado}${carga.cargas.length ? ` (${carga.cargas.length})` : ''}` : 'no consultada'}` +
       ` · fichas=[${fichas.map((f) => `${f.ficha.id} ${f.cercania ?? ''}`.trim()).join(', ')}]` +
@@ -203,7 +214,8 @@ async function prepararTurno(p) {
       (otro.pide ? ` · pide datos ajenos (${otro.motivo})` : '') +
       (reclamoPorDemora ? ' · reclama por la demora' : reclamo ? ' · reclamo' : '') +
       (saludoSinContestar ? ' · primer saludo' : '') +
-      (mensajeDeBot ? ' · mensaje de un bot de tienda' : ''),
+      (mensajeDeBot ? ' · mensaje de un bot de tienda' : '') +
+      (sinPedido ? ' · no pide nada' : ''),
   );
 
   return {
@@ -219,6 +231,7 @@ async function prepararTurno(p) {
       reclamoPorDemora,
       saludoSinContestar,
       mensajeDeBot,
+      noPideNada: sinPedido,
       dioCantidad: cantidadDicha,
       respaldo: {
         firme,
@@ -248,6 +261,7 @@ function hechosDeEmergencia(mensaje = '') {
     reclamoPorDemora: false,
     saludoSinContestar: false,
     mensajeDeBot: false,
+    noPideNada: false,
     dioCantidad: false,
     respaldo: { firme: fijos, eco: String(mensaje || ''), estado: fijos },
     textoSeguro: T.MENSAJE_ASESOR,

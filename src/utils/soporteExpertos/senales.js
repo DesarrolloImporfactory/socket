@@ -161,4 +161,38 @@ function esMensajeDeBot(texto) {
   return Boolean(t) && RE_BOT_DE_TIENDA.test(t) && !RE_HABLA_DEL_BOT.test(t) && !RE_PEGADO.test(crudo);
 }
 
-module.exports = { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad, esMensajeDeBot };
+/* NO PIDE NADA: agradece, confirma o avisa que él hará algo («ok», «listo
+   amigo gracias», «ya le reviso», «el lunes te los paso»). El prompt ya decía
+   que eso se calla (caso E), pero el modelo igual contestaba «Recibido. Lo sumo
+   a tu caso para el asesor.»: 7 de las 73 respuestas reales del 23 y 24-oct, y
+   dos veces seguidas en el mismo chat. Ahora el motor calla sin llamar al modelo.
+
+   Todo el mensaje tiene que ser de esta lista Y traer al menos una palabra de
+   acuse: «buenas tardes amigo» o «estimado» solos no entran (llaman a alguien,
+   eso se contesta), ni «por favor» solo (pide que se haga algo), ni «sí» o
+   «claro» (contestan una pregunta). Con un «?» no entra. */
+const PARTE_DE_ACUSE =
+  'ok+|okey|okay|oki|okis|vale|listo|listos|perfecto|excelente|genial|super|chevere|de acuerdo|entendido|entiendo|comprendo|esta bien|bueno|buenisimo|dale|ya|' +
+  'graci\\w*|muy amables?|de nada|igualmente|idem|amen|bendiciones|dios (?:te|le|les) bendiga|' +
+  'quedo (?:atent[oa]|al pendiente|pendiente|en espera|a la espera|a las ordenes)|(?:estamos|seguimos) en contacto|' +
+  '(?:te|le|les) (?:aviso|confirmo|escribo)|' +
+  'ya (?:lo|la|le) (?:reviso|veo|hago|intento|pido|envio|mando|paso)|ya trato de hacerlo|voy a (?:revisar|intentar|probar)(?:lo|la)?|lo reviso|lo intento|' +
+  '(?:te|le|les) (?:los|las|lo|la) (?:paso|envio|mando|hago llegar)';
+const PARTE_DE_RELLENO =
+  'el lunes|manana|mas tarde|luego|en un rato|en la tarde|en la noche|' +
+  '(?:apenas|cuando|re cuanto) (?:me (?:los|las|lo|la) (?:den|de|pasen|envien|manden)|pueda|tenga)(?: la \\w+)?|' +
+  'muchas|mil|ing|inge|amig[oa]|estimad[oa]|senor\\w*|don|dona|lic|por favor|porfa|y|e|a|tu|usted|saludos|' +
+  'buen[ao]?s? (?:dias?|tardes?|noches?)';
+const RE_SOLO_ACUSE = new RegExp(`^(?:(?:${PARTE_DE_ACUSE}|${PARTE_DE_RELLENO})(?: |$))+$`);
+const RE_UN_ACUSE = new RegExp(`(?:^| )(?:${PARTE_DE_ACUSE})(?: |$)`);
+const RE_SOLO_EMOJI = /^(?:[\s‍️]|\p{Extended_Pictographic}|\p{Emoji_Modifier})+$/u; // sin dígitos: «1» o un número no son emoji
+
+function noPideNada(texto) {
+  const crudo = String(texto || '').trim();
+  if (!crudo || crudo.includes('?')) return false;
+  if (RE_SOLO_EMOJI.test(crudo)) return true; // 👍 🙏 ❤️ solos
+  const t = llano(crudo);
+  return t.length <= 120 && RE_SOLO_ACUSE.test(t) && RE_UN_ACUSE.test(t);
+}
+
+module.exports = { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad, esMensajeDeBot, noPideNada };

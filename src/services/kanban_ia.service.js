@@ -2292,6 +2292,14 @@ async function procesarMensajeKanban(params) {
         anotarSilencio(id_configuracion, id_cliente);
         return { ok: true, motivo: 'mensaje_de_bot', silencio: true };
       }
+      /* Solo agradece o confirma («ok», «listo gracias», «el lunes te lo
+         paso»): no se contesta. El prompt ya lo mandaba callar y el modelo
+         igual respondía «Recibido» (23-oct: 7 de 73 respuestas). */
+      if (turnoExpertos.hechos?.noPideNada) {
+        await log(`🤫 soporte_expertos: el cliente solo agradece o confirma; no se contesta (cliente=${id_cliente})`);
+        anotarSilencio(id_configuracion, id_cliente);
+        return { ok: true, motivo: 'no_pide_nada', silencio: true };
+      }
       if (turnoExpertos.bloque) bloqueContexto += `${turnoExpertos.bloque}\n\n`;
       // El mensaje como lo tiene que ver el modelo: con sus adjuntos nombrados
       // en vez del relleno genérico de «no se puede leer».
