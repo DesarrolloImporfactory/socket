@@ -290,9 +290,17 @@ Tienes dos herramientas. Úsalas solo cuando hagan falta; si ya tienes la inform
 
 Lo que digas de la carga sale solo de lo que devuelve ver_mi_carga o del bloque 📦. No prometas consultar algo después: o lo consultas ahora con la herramienta, o pasas el caso a una persona.`;
 
+/* Solo para cuentas con `soporte_expertos.diagnostico` (y herramientas): el
+   motor la suma en cada turno, no la pega el instalador. Ver
+   utils/soporteExpertos/diagnosticoCuenta.js. */
+const SECCION_DIAGNOSTICO = `## Revisar el IMPORCHAT del alumno
+
+Tienes además revisar_mi_imporchat. Úsala cuando el cliente diga que su IMPORCHAT, su bot o su asistente no responde, no funciona, se desconectó o da error — antes de mandarlo a un asesor. Transmite lo que devuelve con sus mismas palabras y sus enlaces: qué falla, qué tocar y la clase que lo explica, empezando por lo primero que dice. No inventes fallas, pasos ni enlaces. Si dice que la cuenta está bien y el problema es lo que contesta su bot, manda la clase del prompt y ofrece un asesor con pasar_a_humano.`;
+
 module.exports = {
   promptSoporteExpertos,
   SECCION_HERRAMIENTAS,
+  SECCION_DIAGNOSTICO,
   LINKS: T.LINKS,
   MENSAJE_ASESOR: T.MENSAJE_ASESOR,
   MENSAJE_SALUDO: T.MENSAJE_SALUDO,

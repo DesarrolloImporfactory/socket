@@ -106,7 +106,7 @@ function normalizarHorario(h) {
 
 /* true → todo encendido (menos las herramientas); un objeto apaga lo que traiga en false. */
 function normalizarSoporteExpertos(v) {
-  if (v === true) return { cargas: true, fichas: true, guardia: true, herramientas: false };
+  if (v === true) return { cargas: true, fichas: true, guardia: true, herramientas: false, diagnostico: false };
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   return {
     cargas: v.cargas !== false,
@@ -115,6 +115,9 @@ function normalizarSoporteExpertos(v) {
     // Herramientas de Claude (consultar la carga, pasar a un asesor): apagadas
     // salvo que la cuenta las pida explícito. Ver utils/claude/herramientas.js.
     herramientas: v.herramientas === true,
+    // Revisar la cuenta IMPORCHAT del que escribe (revisar_mi_imporchat): solo
+    // con herramientas y pedido explícito. Ver soporteExpertos/diagnosticoCuenta.js.
+    diagnostico: v.herramientas === true && v.diagnostico === true,
   };
 }
 

@@ -62,6 +62,9 @@ const T = require('../src/utils/soporteExpertos/textos');
 const { promptSoporteExpertos } = require('../src/utils/prompt_soporte_expertos.data');
 const { procesar, entrada, crearLlamador } = require('./soporte_expertos/bot_real');
 const { baseDeMentira, DATOS, TEL, HOY } = require('./soporte_expertos/base_de_mentira');
+const { crearHerramientas, sumarHechosHerramientas } = require('../src/utils/soporteExpertos/herramientas');
+const ajustesIA = require('../src/utils/ajustesIA');
+const CUENTA = require('./soporte_expertos/cuenta_imporchat_de_mentira');
 
 const FICHAS = buscadorDeArchivo();
 const ESPERA = '[espera]:true';
@@ -536,6 +539,41 @@ const ESCENARIOS = [
     doble: [(c) => c.hechos.textoSeguro.replace(/^Hola, /, '').replace(/^./, (x) => x.toUpperCase())],
     doble_malo: ['Sí, como te indicó tu asesor, llega el 20 de octubre sin falta.'],
   },
+
+  /* ═══ SU IMPORCHAT (revisar_mi_imporchat) ═══
+     `imporchat`: cambios a la cuenta IMPORCHAT de mentira. La herramienta
+     corre de verdad (diagnosticoCuenta.js contra esa cuenta) y su texto pasa
+     por sumarHechosHerramientas antes de la guardia, como en el motor. */
+  {
+    nombre: 'imporchat_bot_no_contesta', categoria: 'imporchat', quien: TEL.sin_carga,
+    imporchat: { conexiones: [CUENTA.conexion({ openai_activo: 0, openai_error_msg: 'You have no credits', openai_error_at: '2026-10-22T15:00:00Z' })] },
+    turnos: [{ cliente: 'hola mi bot de imporchat no les contesta a mis clientes desde ayer' }],
+    espera: ['contesta'],
+    debe: [[[/sin saldo/i, 'dice que la llave no tiene saldo'], [/platform\.openai\.com/, 'dice dónde recargar'], [/cursos\/32\?contenido=655/, 'manda la clase de OpenAI']]],
+    no_debe: [[[/sk-/, 'muestra la llave'], [/plan venci|desconectad/i, 'agrega una falla que no salió']]],
+    doble: [(c) => c.diagnostico.texto],
+    doble_malo: ['Tu bot no contesta porque tu plan venció. Mira esta clase: https://imporfactory.app/cursos/32?contenido=999'],
+  },
+  {
+    nombre: 'imporchat_whatsapp_desconectado', categoria: 'imporchat', quien: TEL.sin_carga,
+    imporchat: { conexiones: [CUENTA.conexion({ wa_status: 'DISCONNECTED', wa_status_at: '2026-10-23T15:00:00Z' })] },
+    turnos: [{ cliente: 'se me desconectó el WhatsApp del chat center, ya no me llegan los mensajes' }],
+    espera: ['contesta'],
+    debe: [[[/desconectado/i, 'dice que está desconectado'], [/Reconectar/, 'dice qué botón tocar'], [/cursos\/32\?contenido=654/, 'manda la clase de WhatsApp']]],
+    no_debe: [[[/sin saldo|llave/i, 'agrega una falla que no salió']]],
+    doble: [(c) => c.diagnostico.texto],
+    doble_malo: ['Tu WhatsApp está desconectado desde hace 5 días: reconéctalo.'],
+  },
+  {
+    nombre: 'imporchat_bot_responde_raro', categoria: 'imporchat', quien: TEL.sin_carga,
+    imporchat: {},
+    turnos: [{ cliente: 'mi bot responde cualquier cosa, les pregunta la ciudad antes de tiempo a mis clientes' }],
+    espera: ['contesta'],
+    debe: [[[/bien conectada/, 'dice que la cuenta está bien'], [/cursos\/32\?contenido=869/, 'manda la clase del prompt'], [/asesor/, 'ofrece un asesor']]],
+    no_debe: [[[/desconectad|sin saldo|apagado/i, 'inventa una falla']]],
+    doble: [(c) => c.diagnostico.texto],
+    doble_malo: ['Tu cuenta está bien. Cambia el prompt así: «Pregunta la ciudad al final». Mira https://imporfactory.app/cursos/32?contenido=777'],
+  },
 ].filter(Boolean);
 
 /* ── Lo que se revisa en TODA respuesta que le llegaría al cliente ─────── */
@@ -602,6 +640,25 @@ async function armarContextos(esc) {
 
 const valor = (d, ctx) => (typeof d === 'function' ? d(ctx) : d);
 
+/* Los escenarios de IMPORCHAT: corre revisar_mi_imporchat contra la cuenta de
+   mentira (su WhatsApp de registro = el número del escenario) y suma su texto a
+   los hechos del turno, como el paso 9.5 del motor. */
+async function revisarImporchat(esc, ctxs) {
+  const cuenta = CUENTA.escenario({ usuarios: [{ id_usuario: 7, pais: '', lead: esc.quien }], ...esc.imporchat });
+  for (const [i, turno] of esc.turnos.entries()) {
+    const b = CUENTA.baseFalsa(cuenta);
+    const h = crearHerramientas({
+      telefono: esc.quien, mensaje: turno.cliente, canalVerificable: true, diagnostico: true, idConfiguracionPropia: 265,
+      deps: { consultarImporchat: b.consultar, verificarAcceso: CUENTA.PERMITIDO, ahora: CUENTA.AHORA, estadosReconectar: CUENTA.ESTADOS_RECONECTAR, ajustesIA },
+    });
+    const texto = await h.lista.find((x) => x.definicion.name === 'revisar_mi_imporchat').ejecutar({});
+    const diagnostico = h.diagnosticoConsultado();
+    if (diagnostico?.estado !== 'revisada') throw new Error(`la cuenta de mentira no se pudo revisar (${diagnostico?.estado})`);
+    ctxs[i].diagnostico = diagnostico;
+    sumarHechosHerramientas(ctxs[i].hechos, [texto], null, { mensaje: turno.cliente, respuesta: '', diagnostico });
+  }
+}
+
 (async () => {
   if (LISTA) {
     for (const e of ESCENARIOS) console.log(`${e.categoria.padEnd(24)} ${e.nombre}  (${e.espera.join(' → ')})`);
@@ -629,6 +686,7 @@ const valor = (d, ctx) => (typeof d === 'function' ? d(ctx) : d);
     cuenta.escenarios++;
     const fallas = [];
     const { ctxs, base } = await armarContextos(esc);
+    if (esc.imporchat) await revisarImporchat(esc, ctxs);
 
     // 1. El contexto que arma el código.
     const fallasCtx = (esc.contexto ? esc.contexto(ctxs, base) : []).filter(Boolean).map((f) => `contexto: ${f}`);
@@ -671,6 +729,9 @@ const valor = (d, ctx) => (typeof d === 'function' ? d(ctx) : d);
         const copia = esc.turnos.map((_, j) => (j === i ? procesar(valor(malo, ctxs[j]), ctxs[j].hechos) : turnos[j]));
         const frenada = copia[i].guardia.cambiada && !copia[i].guardia.corregida;
         const marcadas = evaluar(esc, copia).filter((f) => f.startsWith(`turno ${i + 1}`));
+        if (frenada && esc.imporchat && ctxs[i].diagnostico.resultado !== 'sin_causa' && copia[i].texto !== ctxs[i].diagnostico.texto) {
+          fallas.push(`turno ${i + 1}: la guardia frenó la respuesta mala pero no mandó el diagnóstico: «${String(copia[i].texto).slice(0, 70)}»`);
+        }
         if (frenada) {
           cuenta.porGuardia++;
           atajes.push(`turno ${i + 1}: frenada por la guardia (${copia[i].guardia.motivos.slice(-1)[0]})`);

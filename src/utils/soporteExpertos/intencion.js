@@ -286,4 +286,14 @@ function pideDatosDeOtro(texto, telefonoRemitente) {
   return { pide: false, motivo: null };
 }
 
-module.exports = { hablaDeCarga, pideDatosDeOtro };
+/* ¿El cliente habla de SU IMPORCHAT o de su bot? Misma regla estricta que se
+   midió el 24-oct sobre 60 días de la 265 (951 mensajes de 273 personas).
+   Solo decide si el diagnóstico puede reemplazar al «un asesor te escribe»
+   cuando la guardia rechaza la respuesta (herramientas.js); no dispara nada. */
+const DE_IMPORCHAT =
+  /imporchat|chat ?center|mi bot|el bot|del bot|api ?key|open ?ai|chat ?gpt|prompt|desconect|no me responde el|no responde el bot|no contesta el bot|probar como cliente|columna|kanban/;
+function hablaDeImporchat(texto) {
+  return DE_IMPORCHAT.test(limpiar(texto));
+}
+
+module.exports = { hablaDeCarga, hablaDeImporchat, pideDatosDeOtro };

@@ -63,9 +63,12 @@ async function crearLlamador({ modelo = 'gpt-4.1', max_tokens = 900 } = {}) {
   mismo bucle y las mismas herramientas que el motor (ejecutarConClaudeHerramientas
   + crearHerramientas), el prompt con la sección de herramientas, y la carga
   sale de `consultar` (la base de mentira). `cliente` permite pasar uno falso.
+  Con `diagnostico: true` se suma revisar_mi_imporchat (como la bandera
+  `soporte_expertos.diagnostico`): la cuenta IMPORCHAT sale de
+  `consultarImporchat` y el plan de `verificarAcceso`, que llegan por turno.
 */
 function crearLlamadorClaude({
-  apiKey, modelo = 'claude-sonnet-5-5', max_tokens = 4000, esfuerzo = 'low', herramientas = false, cliente: inyectado = null,
+  apiKey, modelo = 'claude-sonnet-5-5', max_tokens = 4000, esfuerzo = 'low', herramientas = false, diagnostico = false, cliente: inyectado = null,
 } = {}) {
   if (!apiKey && !inyectado) throw new Error('falta la llave de Claude');
   let cliente = inyectado;
@@ -73,8 +76,11 @@ function crearLlamadorClaude({
     const Anthropic = require('@anthropic-ai/sdk');
     cliente = new Anthropic({ apiKey });
   }
-  const { SECCION_HERRAMIENTAS } = require('../../src/utils/prompt_soporte_expertos.data');
-  const instructions = promptSoporteExpertos() + (herramientas ? `\n\n${SECCION_HERRAMIENTAS}` : '');
+  const { SECCION_HERRAMIENTAS, SECCION_DIAGNOSTICO } = require('../../src/utils/prompt_soporte_expertos.data');
+  const instructions =
+    promptSoporteExpertos() +
+    (herramientas ? `\n\n${SECCION_HERRAMIENTAS}` : '') +
+    (herramientas && diagnostico ? `\n\n${SECCION_DIAGNOSTICO}` : '');
   const historias = new Map();
   let n = 0;
   const llamarSimple = async (input, prev) => {
@@ -101,8 +107,11 @@ function crearLlamadorClaude({
     const { crearHerramientas } = require('../../src/utils/soporteExpertos/herramientas');
     const previos = historias.get(prev) || [];
     const h = crearHerramientas({
-      telefono: turno.telefono, mensaje: turno.mensaje, canalVerificable: true,
-      deps: { consultar: turno.consultar, hoy: turno.hoy },
+      telefono: turno.telefono, mensaje: turno.mensaje, canalVerificable: true, diagnostico,
+      deps: {
+        consultar: turno.consultar, hoy: turno.hoy,
+        consultarImporchat: turno.consultarImporchat, verificarAcceso: turno.verificarAcceso, ahora: turno.ahora,
+      },
     });
     const r = await ejecutarConClaudeHerramientas({
       instructions, input, model: modelo, max_tokens, herramientas: h.lista,
@@ -113,7 +122,8 @@ function crearLlamadorClaude({
     return {
       respuesta: r.respuesta, response_id: id,
       usage: { input: r.usage.input - r.usage.cached - r.cacheEscrito, output: r.usage.output, cache_lee: r.usage.cached, cache_escribe: r.cacheEscrito },
-      hechosHerramientas: r.hechosHerramientas, cargaConsultada: h.cargaConsultada(), llamadas: r.llamadas,
+      hechosHerramientas: r.hechosHerramientas, cargaConsultada: h.cargaConsultada(),
+      diagnosticoConsultado: h.diagnosticoConsultado(), llamadas: r.llamadas,
     };
   };
   return { llamar: herramientas ? llamarConHerramientas : llamarSimple, instructions, cliente, cerrar: async () => {} };
@@ -129,6 +139,7 @@ function crearLlamadorClaude({
 async function responderTurno({
   telefono, id_cliente, mensaje, tipo = 'text', contexto_motor = null, previous_response_id = null,
   llamar = null, doble = null, consultar, buscador, hoy, id_configuracion = 265,
+  consultarImporchat, verificarAcceso, ahora,
 }) {
   const ctx = await prepararTurno({
     mensaje, telefono, tipo_mensaje: tipo, id_configuracion, id_cliente,
@@ -139,11 +150,15 @@ async function responderTurno({
   let usage = null;
   let llamadas = 0;
   if (llamar) {
-    const r = await llamar(entrada(ctx, { cliente: mensaje, contexto_motor }), previous_response_id, { telefono, mensaje, consultar, hoy });
+    const r = await llamar(entrada(ctx, { cliente: mensaje, contexto_motor }), previous_response_id, {
+      telefono, mensaje, consultar, hoy, consultarImporchat, verificarAcceso, ahora,
+    });
     response_id = r.response_id || previous_response_id;
     if (r.hechosHerramientas?.length) {
       const { sumarHechosHerramientas } = require('../../src/utils/soporteExpertos/herramientas');
-      sumarHechosHerramientas(ctx.hechos, r.hechosHerramientas, r.cargaConsultada, { mensaje, respuesta: r.respuesta });
+      sumarHechosHerramientas(ctx.hechos, r.hechosHerramientas, r.cargaConsultada, {
+        mensaje, respuesta: r.respuesta, diagnostico: r.diagnosticoConsultado,
+      });
     }
     llamadas = r.llamadas || 1;
     usage = r.usage || null;
