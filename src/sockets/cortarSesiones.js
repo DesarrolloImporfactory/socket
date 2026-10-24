@@ -46,8 +46,12 @@ function cortarSesionesDe(io, id_sub_usuario, code = 'USER_SUSPENDED') {
   let cortados = 0;
   for (const s of socketsConSesion(io)) {
     if (Number(s.user.id_sub_usuario) === id) {
-      cortar(s, code);
-      cortados += 1;
+      try {
+        cortar(s, code);
+        cortados += 1;
+      } catch (err) {
+        console.warn('[cortarSesiones] no se pudo cortar', s.id, '—', err.message);
+      }
     }
   }
   return cortados;
