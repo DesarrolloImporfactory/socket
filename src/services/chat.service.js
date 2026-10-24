@@ -113,12 +113,17 @@ class ChatService {
         }
       }
 
-      if (filtros.selectedEtiquetas && filtros.selectedEtiquetas.length > 0) {
-        whereClause += ` AND (${filtros.selectedEtiquetas
-          .map(
-            (etiqueta) =>
-              `JSON_CONTAINS(etiquetas, '{"id": ${etiqueta.value}}', '$')`,
-          )
+      // Los filtros llegan del cliente (también por el socket sin sesión):
+      // nada de lo que mandan se pega crudo en el SQL. Una etiqueta es un id
+      // entero; lo que no lo sea se ignora.
+      const idsEtiquetas = Array.isArray(filtros.selectedEtiquetas)
+        ? filtros.selectedEtiquetas
+            .map((etiqueta) => Number(etiqueta?.value))
+            .filter((n) => Number.isInteger(n) && n > 0)
+        : [];
+      if (idsEtiquetas.length > 0) {
+        whereClause += ` AND (${idsEtiquetas
+          .map((n) => `JSON_CONTAINS(etiquetas, '{"id": ${n}}', '$')`)
           .join(' AND ')})`;
       }
 
@@ -138,7 +143,7 @@ class ChatService {
       }
 
       if (filtros.selectedEstado_contacto?.value) {
-        whereClause += ` AND estado_db = '${filtros.selectedEstado_contacto.value}'`;
+        whereClause += ` AND estado_db = :estadoContacto`;
       }
 
       // Filtro lectura
@@ -290,6 +295,9 @@ class ChatService {
         cursorFecha,
         cursorId,
         limit,
+        ...(filtros.selectedEstado_contacto?.value && {
+          estadoContacto: String(filtros.selectedEstado_contacto.value),
+        }),
         ...(filtrandoSinRespuesta && {
           minutosSinRespuesta: Math.floor(minutosSinRespuesta),
         }),
