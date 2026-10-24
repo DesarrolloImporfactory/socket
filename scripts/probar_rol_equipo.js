@@ -43,7 +43,14 @@ doble('models/sub_usuarios_chat_center.model', {
   update: async () => [1],
 });
 doble('models/configuraciones.model', {});
-doble('database/config', { db: {}, db_2: {} });
+// Sequelize real sin conectar: los modelos se definen y nada toca una base.
+const { Sequelize } = require('sequelize');
+const falsa = () => {
+  const d = new Sequelize('mysql://x:y@127.0.0.1:9/z', { logging: false });
+  d.query = async () => [];
+  return d;
+};
+doble('database/config', { db: falsa(), db_2: falsa() });
 
 const { protect } = require(path.join(SRC, 'middlewares/auth.middleware'));
 const rutas = require(path.join(SRC, 'middlewares/rutasSinSesion'));

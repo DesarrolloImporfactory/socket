@@ -69,3 +69,99 @@ exports.yo = catchAsync(async (req, res) => {
     },
   });
 });
+
+/* ───────── Chat de Team: solo lectura ─────────
+ *
+ *  Lo mismo que ve un asesor de ventas en la pantalla vieja (sus chats y los
+ *  en espera de sus canales), pero por REST y con sesión: el chat viejo pide
+ *  la lista por el socket sin sesión. Los teléfonos salen tapados por protect.
+ *  Responder (manda WhatsApp a clientes) va aparte, cuando se pueda probar con
+ *  un número de prueba.
+ */
+
+const { db } = require('../database/config');
+const ChatService = require('../services/chat.service');
+const { canalesDeUsuarioEnConfig, sqlFiltroCanales } = require('../utils/canalesDepartamento');
+
+const MAX_CHATS = 30;
+
+async function conexionDeLaCuenta(id_configuracion, id_usuario) {
+  const id = Number(id_configuracion);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const [fila] = await db.query(
+    `SELECT id, nombre_configuracion FROM configuraciones
+      WHERE id = ? AND id_usuario = ? AND suspendido = 0 LIMIT 1`,
+    { replacements: [id, Number(id_usuario)], type: db.QueryTypes.SELECT },
+  );
+  return fila || null;
+}
+
+/*  GET /api/v1/equipo/conexiones — las líneas de la cuenta (sin su número). */
+exports.conexiones = catchAsync(async (req, res) => {
+  const filas = await db.query(
+    `SELECT id, nombre_configuracion FROM configuraciones
+      WHERE id_usuario = ? AND suspendido = 0 ORDER BY id`,
+    { replacements: [Number(req.sessionUser.id_usuario)], type: db.QueryTypes.SELECT },
+  );
+  res.json({ status: 'success', data: filas });
+});
+
+/*  Filtros que acepta Team. Todo lo demás se ignora: findChats arma SQL con
+ *  ellos, y buscar por número dejaría adivinar teléfonos (¿existe este?). */
+function filtrosDeEquipo(q) {
+  const filtros = {};
+  const termino = String(q.q || '').trim().slice(0, 60);
+  if (termino && !/\d{3,}/.test(termino)) filtros.searchTerm = termino;
+  if (['no_leidos', 'leidos'].includes(q.lectura)) filtros.selectedLectura = { value: q.lectura };
+  if (['abierto', 'resueltos'].includes(q.estado)) filtros.selectedTab = q.estado;
+  if (['wa', 'ig', 'ms'].includes(q.canal)) filtros.source = q.canal;
+  return filtros;
+}
+
+/*  GET /api/v1/equipo/chats?id_configuracion=&scope=mine|espera
+ *      &cursorFecha=&cursorId=&limit=&q=&lectura=&estado=&canal= */
+exports.chats = catchAsync(async (req, res, next) => {
+  const u = req.sessionUser;
+  const cfg = await conexionDeLaCuenta(req.query.id_configuracion, u.id_usuario);
+  if (!cfg) return next(new AppError('Conexión no válida', 404));
+
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), MAX_CHATS);
+  const cursorId = Number(req.query.cursorId) || null;
+  const cursorFecha = cursorId && req.query.cursorFecha ? String(req.query.cursorFecha).slice(0, 40) : null;
+
+  const chats = await new ChatService().findChats(cfg.id, u.id_sub_usuario, u.rol, {
+    cursorFecha,
+    cursorId,
+    limit,
+    filtros: filtrosDeEquipo(req.query),
+    scopeChats: req.query.scope === 'espera' ? 'espera' : 'mine',
+  });
+  res.json({ status: 'success', data: chats });
+});
+
+/*  ¿Este asesor puede abrir este chat? Lo mismo que lo deja verlo en la
+ *  lista: es suyo, o está en espera en uno de sus canales. */
+async function chatVisible(id_cliente, cfg, u) {
+  const filtroCanal = sqlFiltroCanales(await canalesDeUsuarioEnConfig(u.id_sub_usuario, cfg.id));
+  const [fila] = await db.query(
+    `SELECT id FROM clientes_chat_center
+      WHERE id = ? AND id_configuracion = ? AND propietario != 1
+        AND (id_encargado = ? OR (id_encargado IS NULL${filtroCanal ? ` AND ${filtroCanal}` : ''}))
+      LIMIT 1`,
+    { replacements: [id_cliente, cfg.id, u.id_sub_usuario], type: db.QueryTypes.SELECT },
+  );
+  return Boolean(fila);
+}
+
+/*  GET /api/v1/equipo/chats/:id_cliente/mensajes?id_configuracion= */
+exports.mensajes = catchAsync(async (req, res, next) => {
+  const u = req.sessionUser;
+  const id_cliente = Number(req.params.id_cliente);
+  if (!Number.isInteger(id_cliente) || id_cliente <= 0) return next(new AppError('Chat no válido', 400));
+  const cfg = await conexionDeLaCuenta(req.query.id_configuracion, u.id_usuario);
+  if (!cfg || !(await chatVisible(id_cliente, cfg, u))) {
+    return next(new AppError('Chat no encontrado', 404));
+  }
+  const data = await new ChatService().getChatsByClient(id_cliente, cfg.id);
+  res.json({ status: 'success', data });
+});
