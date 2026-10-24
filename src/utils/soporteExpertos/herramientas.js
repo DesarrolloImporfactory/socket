@@ -33,6 +33,7 @@ function crearHerramientas({
 } = {}) {
   let ultimaCarga = null;
   let ultimoDiagnostico = null;
+  let ultimoPase = null; // motivo de pasar_a_humano (lo usa el escalado por área)
 
   const verMiCarga = {
     definicion: {
@@ -102,14 +103,17 @@ function crearHerramientas({
         additionalProperties: false,
       },
     },
-    ejecutar: async (input = {}) =>
-      `Responde exactamente: ${input.motivo === 'reclamo' ? T.MENSAJE_RECLAMO : T.MENSAJE_ASESOR}`,
+    ejecutar: async (input = {}) => {
+      ultimoPase = ['pago', 'reclamo', 'cotizacion', 'otro'].includes(input.motivo) ? input.motivo : 'otro';
+      return `Responde exactamente: ${input.motivo === 'reclamo' ? T.MENSAJE_RECLAMO : T.MENSAJE_ASESOR}`;
+    },
   };
 
   return {
     lista: [...(cargas ? [verMiCarga] : []), ...(diagnostico ? [revisarMiImporchat] : []), pasarAHumano],
     cargaConsultada: () => ultimaCarga,
     diagnosticoConsultado: () => ultimoDiagnostico,
+    paseConsultado: () => ultimoPase,
   };
 }
 

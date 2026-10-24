@@ -107,7 +107,16 @@ function normalizarHorario(h) {
 /* true → todo encendido (menos las herramientas); un objeto apaga lo que traiga en false. */
 function normalizarSoporteExpertos(v) {
   if (v === true)
-    return { cargas: true, fichas: true, guardia: true, herramientas: false, diagnostico: false, callar_bots: true, callar_acuses: true };
+    return {
+      cargas: true,
+      fichas: true,
+      guardia: true,
+      herramientas: false,
+      diagnostico: false,
+      callar_bots: true,
+      callar_acuses: true,
+      escalar: false,
+    };
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   return {
     cargas: v.cargas !== false,
@@ -125,6 +134,8 @@ function normalizarSoporteExpertos(v) {
     callar_acuses: v.callar_acuses !== false,
     // Horario del equipo (soporteExpertos/horario.js): solo si la cuenta lo trae.
     ...(v.horario_equipo && typeof v.horario_equipo === 'object' ? { horario_equipo: v.horario_equipo } : {}),
+    // A quién va el caso (soporteExpertos/escalado.js): apagado salvo 'simulado' o 'real'.
+    escalar: v.escalar === 'simulado' || v.escalar === 'real' ? v.escalar : false,
   };
 }
 

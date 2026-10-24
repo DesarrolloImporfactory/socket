@@ -4450,6 +4450,59 @@ async function procesarMensajeKanban(params) {
     }
   }
 
+  /* ── Soporte Expertos: a quién va el caso (ajustes → soporte_expertos.escalar) ──
+     Si lo que salió deja el caso a una persona, se decide el área y la persona
+     del equipo (soporteExpertos/escalado.js). 'simulado' solo lo anota en el
+     log; 'real' además asigna el chat si no tiene encargado o el suyo ya no
+     está, y deja una nota interna. Nunca le escribe al cliente ni tumba el turno. */
+  const modoEscalar = ajustesIA.soporte_expertos?.escalar;
+  if (soloTexto && (modoEscalar === 'simulado' || modoEscalar === 'real') && !params.es_prueba) {
+    try {
+      const { escalarCaso, esPase } = require('../utils/soporteExpertos/escalado');
+      if (esPase(soloTexto)) {
+        const { crearHistorial } = require('../utils/historialEncargados');
+        await escalarCaso({
+          modo: modoEscalar,
+          id_configuracion,
+          id_cliente,
+          telefono,
+          mensaje,
+          motivo: herramientasTurno?.paseConsultado?.() || null,
+          hechos: turnoExpertos?.hechos || {},
+          log,
+          deps: {
+            consultar: (sql, replacements) =>
+              db.query(sql, {
+                replacements,
+                type: /^\s*select/i.test(sql) ? db.QueryTypes.SELECT : db.QueryTypes.UPDATE,
+              }),
+            crearHistorial: (datos) => crearHistorial(datos, null),
+            crearNota: async (texto) => {
+              const [propietario] = await db.query(
+                'SELECT id FROM clientes_chat_center WHERE id_configuracion = ? AND propietario = 1 LIMIT 1',
+                { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+              );
+              await MensajeClienteModel.create({
+                id_configuracion,
+                id_cliente: propietario?.id ?? id_cliente,
+                mid_mensaje: null,
+                tipo_mensaje: 'notificacion',
+                visto: 0,
+                texto_mensaje: texto,
+                rol_mensaje: 3,
+                celular_recibe: String(id_cliente),
+                responsable: 'IA_Escalado Expertos',
+              });
+            },
+            emitir: () => enviarConsultaAPI(id_configuracion, id_cliente).catch(() => {}),
+          },
+        });
+      }
+    } catch (eEsc) {
+      await log(`⚠️ soporte_expertos (escalar): ${eEsc.message}`).catch(() => {});
+    }
+  }
+
   // ✅ Si llegó hasta aquí, OpenAI está funcionando
   await marcarOpenAIActivo(
     id_configuracion,
