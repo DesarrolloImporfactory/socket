@@ -143,6 +143,14 @@ const RE_BOT_DE_TIENDA = new RegExp(
     '\\bguarda nuestro numero\\b',
     '\\bquieres que (?:lo|te) pase (?:a|con) un asesor\\b',
     '\\b1 por \\d+\\b.*\\b2 por \\d+\\b',
+    // Respuesta automática del negocio del alumno (fuera de su horario) y el
+    // «ya te paso con un asesor» de su bot: 10 en los 14 días al 24-oct.
+    '\\bgracias por (?:tu|su) mensaje\\b.{0,80}\\b(?:en este momento|lo antes posible|tan pronto|horario)\\b',
+    '\\ben este momento no (?:podemos (?:responder|atenderte|contestar)|estamos disponibles|nos encontramos)\\b',
+    '\\bnuestro horario de (?:atencion|servicio) es\\b',
+    '\\bun asesor (?:te|le) (?:contactara|escribira|atendera) (?:en breve|pronto|a la brevedad|lo antes posible)\\b',
+    '\\bte paso con [a-zñ]+ ahora mismo\\b',
+    '\\bpaso tu caso (?:a|con) un asesor\\b',
   ].join('|'),
 );
 const RE_HABLA_DEL_BOT =

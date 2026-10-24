@@ -637,6 +637,17 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
     const t2 = await prepararTurno({ mensaje: 'Gracias Juan! 😊 ¿En qué ciudad te lo enviamos?', telefono: '593999000111', id_configuracion: 265, id_cliente: 1, opciones: { cargas: false, fichas: false, callar_bots: false } });
     prueba('con callar_bots = false no se marca', t2.hechos.mensajeDeBot === false);
     olvidarTodo();
+    const autos = [
+      'Gracias por tu mensaje. En este momento no podemos responder, pero lo haremos lo antes posible.',
+      'Gracias por tu mensaje. En este momento no estamos disponibles, pero te responderemos tan pronto regresemos.',
+      'Gracias por contactarnos! 📱 Nuestro horario de atención es de lunes a viernes de 8:30 a 18:00',
+      'Perfecto Jacqueline, un asesor te contactará en breve. Gracias!',
+      'Perfecto Juan, te paso con Jose ahora mismo. Un momento por favor 😊',
+      'Perfecto, gracias. Paso tu caso con un asesor y te escribirán en breve 🙌',
+    ];
+    prueba('las respuestas automáticas de su negocio se callan', autos.every(esMensajeDeBot), autos.filter((b) => !esMensajeDeBot(b)).join(' | '));
+    const noAutos = ['Gracias por tu mensaje, ¿cuándo llega mi carga?', '¿Cuál es el horario de atención de la bodega?', 'Un asesor me dijo que me contactaría en breve y nada'];
+    prueba('una persona que pregunta por el horario no se calla', !noAutos.some(esMensajeDeBot), noAutos.filter(esMensajeDeBot).join(' | '));
     prueba('callar_bots = false se guarda en los ajustes', n({ soporte_expertos: { callar_bots: false } }).soporte_expertos.callar_bots === false);
   }
 
