@@ -95,10 +95,10 @@ function base(chat) {
   prueba('lo atiende Beto (activo): NO se le quita', d.asignar === false);
 
   console.log('\n4. Qué respuesta cuenta como «pasar a una persona»');
-  for (const t of [T.MENSAJE_ASESOR, T.MENSAJE_RECLAMO, T.MENSAJE_CARGA_A_LOGISTICA, T.MENSAJE_RECIBIDO, 'Recibí tu mensaje. Tu asesor lo revisa y te escribe en breve.']) {
+  for (const t of [T.MENSAJE_ASESOR, T.MENSAJE_RECLAMO, T.MENSAJE_CARGA_A_LOGISTICA, T.MENSAJE_RECIBIDO, T.MENSAJE_ARCHIVO, T.MENSAJE_SIN_CARGA, T.MENSAJE_SOLO_TU_NUMERO, 'Recibí tu mensaje. Tu asesor lo revisa y te escribe en breve.', 'Recibí tu comprobante. Las facturas las lleva el área de cobranza.']) {
     prueba(`es pase: «${t.slice(0, 50)}…»`, esPase(t));
   }
-  for (const t of [T.MENSAJE_CLASE, 'En Ideas de Productos encuentras productos para traer de China: https://imporfactory.app/ideas-productos']) {
+  for (const t of [T.MENSAJE_CLASE, T.MENSAJE_SALUDO, 'En Ideas de Productos encuentras productos para traer de China: https://imporfactory.app/ideas-productos', 'Para el flete pídele a tu asesor el número de cotización y revísalo en https://imporfactory.app/seguimiento-carga']) {
     prueba(`no es pase: «${t.slice(0, 50)}…»`, !esPase(t));
   }
 

@@ -84,6 +84,14 @@ prueba('es el bot de su tienda: nada', r.caso === null);
 r = d([cli(ec(26, '08:30'), 'quiero cotizar'), bot(ec(26, '08:31'), T.MENSAJE_CLASE)], ec(26, '12:00'));
 prueba('el bot le resolvió (no fue un pase): nada', r.caso === null && /el bot le respondi/.test(r.razon));
 
+r = d([cli(ec(26, '08:30'), 'quiero cotizar 500 lámparas'), bot(ec(26, '08:31')), cli(ec(26, '08:40'), '¿y qué datos necesitan?'), bot(ec(26, '08:41'), T.MENSAJE_CLASE)], ec(26, '12:00'));
+prueba('hubo pase y después el bot contestó otra cosa: sigue esperando al asesor', r.caso === 'espera_asesor', JSON.stringify(r));
+r = d([cli(ec(26, '08:30'), 'hola'), bot(ec(26, '08:31'), T.MENSAJE_CLASE), cli(ec(26, '08:45'), '¿y cuánto sale el flete?')], ec(26, '11:00'));
+prueba('el bot contestó el primero y no el último: espera_equipo', r.caso === 'espera_equipo', JSON.stringify(r));
+prueba('el reloj corre desde el que quedó sin contestar (08:45)', r.esperaMin === 135, String(r.esperaMin));
+r = d([cli(ec(26, '08:30'), 'hola'), bot(ec(26, '08:31'), T.MENSAJE_CLASE), cli(ec(26, '08:45'), '¿y cuánto sale el flete?')], ec(26, '10:00'));
+prueba('…y con 1 h 15 todavía no', r.caso === null);
+
 console.log('\n4. Gestión con un asesor sin respuesta: solo se lista para el equipo');
 r = d([humano(ec(26, '08:00')), cli(ec(26, '08:30'), '¿y cuánto sale el flete?')], ec(26, '11:00'));
 prueba('2 h 30 sin respuesta: espera_equipo para Belén, sin texto', r.caso === 'espera_equipo' && r.accion === 'listar' && r.destino.id === 378 && !r.texto);

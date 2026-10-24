@@ -104,8 +104,12 @@ function notaInterna(decision, mensaje) {
 }
 
 /* ¿La respuesta que sale deja el caso a una persona? (el paso a asesor, el de
-   reclamo, el de logística o el de cobranza). */
-const RE_PASE = /\b(?:un asesor|tu asesor|el area de|lo sumo a tu caso)\b/;
+   reclamo, el de logística o el de cobranza). Tiene que DEJARLO («un asesor lo
+   revisa», «te escribe», «lo sumo a tu caso»): una ficha que solo nombra al
+   asesor («pídele a tu asesor…») o el saludo («si hace falta un asesor…») no
+   cuenta (revisión del 24-oct). */
+const RE_PASE =
+  /\b(?:(?:un|tu) asesor (?:(?:lo|la|los|las) )?revis\w*|asesor (?:te|le) escrib\w*|lo sumo a tu caso|el area de [a-z]+ (?:revisa|lleva|te escribe)|las lleva el area)\b/;
 const esPase = (texto) => RE_PASE.test(llano(texto));
 
 /**

@@ -51,7 +51,7 @@ async function main() {
        FROM clientes_chat_center c
       WHERE c.id_configuracion = ? AND c.propietario <> 1 AND c.deleted_at IS NULL
         AND EXISTS (SELECT 1 FROM mensajes_clientes m
-                     WHERE m.celular_recibe = c.id AND m.id_configuracion = c.id_configuracion
+                     WHERE m.celular_recibe = CAST(c.id AS CHAR) AND m.id_configuracion = c.id_configuracion
                        AND m.rol_mensaje = 0 AND m.created_at >= NOW() - INTERVAL ? DAY)`,
     { replacements: [id_configuracion, dias], type: db.QueryTypes.SELECT },
   );
@@ -71,7 +71,8 @@ async function main() {
         WHERE m.celular_recibe = ? AND m.id_configuracion = ? AND m.deleted_at IS NULL
           AND m.created_at >= NOW() - INTERVAL 8 DAY
         ORDER BY m.id`,
-      { replacements: [c.id, id_configuracion], type: db.QueryTypes.SELECT },
+      // celular_recibe es texto: con el id como texto la búsqueda usa el índice.
+      { replacements: [String(c.id), id_configuracion], type: db.QueryTypes.SELECT },
     );
     const mensajes = filas.map((f) => ({ ...f, rol: Number(f.rol), t: Number(f.t) }));
     const d = decidirSeguimiento({
@@ -89,6 +90,10 @@ async function main() {
         replacements: [id_configuracion],
         type: db.QueryTypes.SELECT,
       });
+      if (!cfg?.id_telefono || !cfg?.token) {
+        cuenta['no se escribió: la cuenta no tiene teléfono o token'] = (cuenta['no se escribió: la cuenta no tiene teléfono o token'] || 0) + 1;
+        continue;
+      }
       const { enviarMensajeWhatsapp } = require('../src/utils/webhook_whatsapp/enviarMensajes');
       await enviarMensajeWhatsapp({
         phone_whatsapp_to: c.celular_cliente,

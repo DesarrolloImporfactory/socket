@@ -98,14 +98,23 @@ function decidirSeguimiento({ mensajes = [], ahora = Date.now(), horario = HORAR
   const enSemana = ms.filter((m) => esSeguimiento(m) && ahora - m.t < 7 * 86400000).length;
   if (enSemana >= TOPE_SEMANA) return { caso: null, razon: `tope de ${TOPE_SEMANA} seguimientos en 7 días` };
 
-  const esperaMin = minutosHabiles(desde, ahora, horario);
   const texto = pendientes.map((m) => m.tx || '').join('\n');
   const area = areaDelCaso({ mensaje: texto });
   const destino = personaDelArea(area, telefono);
-  // Lo último que le dijo el bot: si le respondió sin pasarlo a una persona, quedó atendido.
-  const ultimoBot = [...desdeAqui].reverse().find((m) => esDelBot(m) && !esSeguimiento(m));
-  if (ultimoBot && !esPase(ultimoBot.tx)) return { caso: null, razon: 'el bot le respondió' };
-  const paseDelBot = Boolean(ultimoBot);
+  /* Si en este turno el bot le pasó el caso a una persona (aunque después le
+     haya contestado otra cosa, p. ej. una ficha), espera a esa persona. Si no
+     hubo pase, cuenta lo que quedó sin contestar después de la última
+     respuesta del bot: si no queda nada, el bot lo atendió (revisión del 24-oct). */
+  const delBot = desdeAqui.filter((m) => esDelBot(m) && !esSeguimiento(m));
+  const paseDelBot = delBot.some((m) => esPase(m.tx));
+  let esperaDesde = desde;
+  if (!paseDelBot && delBot.length) {
+    const ultimoBot = delBot[delBot.length - 1];
+    const sinContestar = pendientes.filter((m) => m.t > ultimoBot.t || (m.t === ultimoBot.t && m.id > ultimoBot.id));
+    if (!sinContestar.length) return { caso: null, razon: 'el bot le respondió' };
+    esperaDesde = sinContestar[0].t;
+  }
+  const esperaMin = minutosHabiles(esperaDesde, ahora, horario);
 
   if (!paseDelBot) {
     if (esperaMin < UMBRAL_EQUIPO) return { caso: null, razon: `espera ${esperaMin} min de oficina (< ${UMBRAL_EQUIPO})` };
