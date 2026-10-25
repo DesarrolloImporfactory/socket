@@ -332,6 +332,8 @@ const {
   pareceResumenDePedido,
   nombrePaisDe,
   aparecioEnCliente,
+  mismoTelefono,
+  telefonoCanalValido,
   ciudadAproxEnCliente,
 } = require('../utils/fichaPedido');
 // Lectura del resumen de cierre: renglón de producto ("… x2") y corrección
@@ -708,13 +710,22 @@ function camposFaltantesCierre(respuesta, ficha = null) {
 
   if (telefono !== null) {
     const digitos = (telefono.match(/\d/g) || []).length;
+    /* El número desde el que escribe (ficha._telefonoCanal) y el que la ficha
+       ya validó (ficha.telefono: escrito en el chat, aunque sea fuera de la
+       ventana) son datos reales, no inventos. Sin esto, "a este mismo
+       número" bloqueaba el cierre y se le pedía el teléfono a quien ya lo
+       había dado (cfg 569, oct-2026). */
+    const telDigits = telefono.replace(/\D/g, '');
+    const esRealConocido =
+      mismoTelefono(telDigits, ficha?._telefonoCanal) ||
+      mismoTelefono(telDigits, ficha?.telefono);
     if (
       esValorRelleno(telefono) ||
       /x{2,}/i.test(telefono) ||
       /confirmar/i.test(telefono) ||
       digitos < 9 ||
       // Anti-invento: un número que el cliente nunca escribió.
-      !dichoPorCliente(telefono.replace(/\D/g, ''), { esTelefono: true })
+      (!esRealConocido && !dichoPorCliente(telDigits, { esTelefono: true }))
     ) {
       faltan.push('- Teléfono');
     }
@@ -2061,6 +2072,9 @@ async function procesarMensajeKanban(params) {
             telefono,
           }),
           log,
+          // El número desde el que escribe: dato real para el teléfono de la
+          // ficha ("a este mismo") y para el validador del cierre.
+          telefonoCanal: telefono,
         });
         /* País de la cuenta: México exige código postal (Dropi MX no cotiza
            sin él). Manda el país de la integración Dropi, que es donde se
@@ -3291,12 +3305,25 @@ async function procesarMensajeKanban(params) {
            pedía "Nombre completo" a quien ya lo había escrito dos veces). Lo
            que se completa sale también en el mensaje al cliente, que ve el
            resumen entero. */
-        if (fichaPedido) {
-          const comp = completarResumenConFicha(respuestaRaw, fichaPedido);
+        /* Sin ficha (sin llave para el extractor, o fuera de la fase de
+           datos) igual se sanea el teléfono: una línea de relleno
+           ("09XXXXXXXX (a confirmar)") se reemplaza por el número desde el
+           que escribe en vez de bloquear el cierre y pedírselo. Una venta no
+           se frena por el teléfono cuando el chat ya lo trae. */
+        const fichaParaCompletar =
+          fichaPedido ||
+          (telefonoCanalValido(telefono)
+            ? {
+                _telefonoCanal: telefonoCanalValido(telefono),
+                _paisNombre: nombrePaisDe({ telefono }),
+              }
+            : null);
+        if (fichaParaCompletar) {
+          const comp = completarResumenConFicha(respuestaRaw, fichaParaCompletar);
           if (comp.completados.length) {
             respuestaRaw = comp.texto;
             await log(
-              `📋 Resumen de cierre completado con la ficha: ${comp.completados.join(', ')}`,
+              `📋 Resumen de cierre completado con ${fichaPedido ? 'la ficha' : 'el número del chat'}: ${comp.completados.join(', ')}`,
             );
           }
         }

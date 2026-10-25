@@ -109,6 +109,69 @@ function aparecioEnCliente(valor, textoCliente, { esTelefono = false } = {}) {
   return palabras.every((w) => base.includes(w));
 }
 
+/* ── El número desde el que escribe ("el del canal") ──
+   Es el único teléfono que el sistema conoce sin que el cliente lo escriba:
+   llega en el webhook y contextoColumna se lo muestra al modelo como respaldo
+   ("si dice 'a este mismo', usa este y sigue"). El anti-invento no puede
+   tratarlo como inventado: es real y es de la persona que está escribiendo.
+   Antes lo hacía —el número del chat nunca está en el texto del cliente— y
+   cada "a este mismo número" terminaba en "ayúdame con este dato: Teléfono"
+   (cfg 569 y 185 cuentas más, 8.000 bloqueos en 30 días, oct-2026).
+   Un PSID de Messenger/Instagram (16-17 dígitos) no es un teléfono. */
+function telefonoCanalValido(raw) {
+  const d = String(raw || '').replace(/\D/g, '');
+  return d.length >= 9 && d.length <= 15 ? d : '';
+}
+function mismoTelefono(a, b) {
+  const da = String(a || '').replace(/\D/g, '');
+  const db_ = String(b || '').replace(/\D/g, '');
+  return da.length >= 9 && db_.length >= 9 && da.slice(-9) === db_.slice(-9);
+}
+/* "A este mismo", "al que te escribo", "este número": la persona dice que la
+   contacten al número desde el que escribe. */
+const NO_ES_NUMERO =
+  String.raw`(?!\s+(?:color|producto|lugar|sitio|d[ií]a|precio|tono|modelo|talla|direcci[oó]n|pedido|rato|mes|punto|lado|champ[uú]|shampoo))`;
+const RE_ESTE_MISMO = new RegExp(
+  [
+    // "a este mismo", "con este mismo", "es el mismo", "del mismo"
+    String.raw`\b(?:a|con|es|al|del)\s+(?:este|ese|el)\s+mism[oa]s?\b` + NO_ES_NUMERO,
+    String.raw`\bal\s+mismo\b`,
+    // "este mismo número", "el mismo del que le escribo", "el mismo que estamos chateando"
+    String.raw`\b(?:este|ese|el)\s+mism[oa]s?\s+(?:n[uú]mero|celular|cel\b|whats\w*|chat|tel[eé]fono|del\s+que|con\s+el\s+que|que\s+estamos|de\s+aqu[ií]|de\s+ac[aá])`,
+    String.raw`\bmismo\s+n[uú]mero\b`,
+    String.raw`\beste\s+n[uú]mero\b`,
+    String.raw`\bes\s+este\b`,
+    // "a este número", "a este", "a este celular"
+    String.raw`\b(?:a|al)\s+este(?:\s+mism[oa]s?)?\b` + NO_ES_NUMERO,
+    String.raw`\bal\s+que\s+(?:te\s+|le\s+)?escribo\b`,
+    String.raw`\bdesde\s+(?:donde|el\s+que)\s+(?:te\s+|le\s+)?escribo\b`,
+    String.raw`\beste\s+(?:celular|cel|whats\w*|chat)\b`,
+    String.raw`\bpor\s+aqu[ií]\s+mismo\b`,
+    String.raw`\bel\s+de\s+(?:ac[aá]|aqu[ií])\b`,
+    // respuesta corta: "este mismo", "el mismo", "el mismo pues"
+    String.raw`^\s*(?:este|ese|el)\s+mism[oa]s?(?:\s+\w+){0,2}\s*[.!]*\s*$`,
+  ].join('|'),
+  'im',
+);
+function dijoEsteMismo(textoReciente) {
+  return RE_ESTE_MISMO.test(String(textoReciente || ''));
+}
+/* Cómo se le muestra el número del canal al cliente en el resumen: en el
+   formato local del país (593961102356 → 0961102356), que es como él lo
+   reconoce y como lo piden los prompts. */
+function telefonoCanalLocal(digits, paisNombre) {
+  const iso =
+    Object.keys(PAIS_POR_ISO).find((k) => PAIS_POR_ISO[k] === paisNombre) ||
+    'EC';
+  try {
+    const { normalizarPorPais } = require('./telefonoDropi');
+    const n = normalizarPorPais(digits, iso);
+    return n.valido ? n.telefono : digits;
+  } catch (_) {
+    return digits;
+  }
+}
+
 /* Distancia de edición con corte: para typos basta saber si es ≤ tope. */
 function distanciaEdicion(a, b, tope) {
   if (Math.abs(a.length - b.length) > tope) return tope + 1;
@@ -284,6 +347,46 @@ async function cargarTranscript(id_configuracion, id_cliente, limite = 30) {
   };
 }
 
+/* ¿El cliente escribió ese número en ALGÚN mensaje de esta conversación,
+   aunque haya quedado fuera de la ventana del transcript (30 mensajes /
+   72 h)? Caso real: lo da al inicio, la charla se alarga y al cerrar el
+   anti-invento lo trataba como inventado y se lo volvía a pedir. Se mira
+   solo en mensajes del cliente de este chat, desde el último reinicio. */
+async function telefonoEnHistorial(id_configuracion, id_cliente, digits) {
+  const d = String(digits || '').replace(/\D/g, '');
+  if (d.length < 9) return false;
+  try {
+    const [cli] = await db.query(
+      `SELECT reinicio_conversacion_at FROM clientes_chat_center
+        WHERE id = ? LIMIT 1`,
+      { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+    );
+    const desde = cli?.reinicio_conversacion_at || null;
+    const msgs = await db.query(
+      `SELECT texto_mensaje FROM mensajes_clientes
+        WHERE celular_recibe = ? AND id_configuracion = ? AND rol_mensaje = 0
+          AND deleted_at IS NULL
+          AND created_at >= NOW() - INTERVAL 30 DAY
+          ${desde ? 'AND created_at > ?' : ''}
+          AND texto_mensaje REGEXP '[0-9][0-9 .-]{7,}[0-9]'
+        ORDER BY id DESC LIMIT 20`,
+      {
+        replacements: desde
+          ? [String(id_cliente), id_configuracion, desde]
+          : [String(id_cliente), id_configuracion],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    return msgs.some((m) =>
+      String(m.texto_mensaje || '')
+        .replace(/\D/g, '')
+        .includes(d.slice(-9)),
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
 /* El apellido que llegó en un mensaje aparte. Caso 610/302 (prueba del
    2026-08-20): "Josué" → el bot pide el apellido → "Yumbulema, mi teléfono es
    0995438411", y el extractor dejó "Josué" solo. Si el asistente pidió el
@@ -338,6 +441,10 @@ async function extraerFichaPedido({
      devuelve cargarTranscript: { transcript, textoCliente, items, firma,
      nCliente }. Si no viene, se lee la BD como siempre. */
   transcriptExterno = null,
+  /* Número desde el que escribe la persona (el del webhook). Con él, el
+     teléfono del canal cuenta como dato real: si el modelo lo usó, o si el
+     cliente dijo "a este mismo", la ficha lo toma y el cierre no se bloquea. */
+  telefonoCanal = null,
 }) {
   const { extraerJsonIA, proveedorExtractor } = require('./claude/extractorJson');
   if (
@@ -398,11 +505,39 @@ async function extraerFichaPedido({
   const huboResumen = items.some(
     (it) => it.rol === 'ASISTENTE' && /(?:^|\n)[^\n]{0,6}?Producto\s*:/i.test(it.texto),
   );
-  const telefono = aparecioEnCliente(v('telefono'), textoCliente, {
-    esTelefono: true,
-  })
-    ? v('telefono').replace(/\D/g, '')
+  /* Teléfono, en este orden:
+     1. lo escribió el cliente (en la ventana del transcript) → ese;
+     2. el modelo puso el número del canal (lo vio en DATOS TÉCNICOS) → ese;
+     3. lo escribió el cliente pero hace más de 30 mensajes / 72 h (fuera de
+        la ventana) → se busca en todo su historial del chat;
+     4. no escribió ninguno pero dijo "a este mismo" → el del canal.
+     Lo que no entra en ninguno es un invento del modelo y se descarta. */
+  const canal = telefonoCanalValido(telefonoCanal);
+  const telIa = v('telefono').replace(/\D/g, '');
+  let telefono = aparecioEnCliente(telIa, textoCliente, { esTelefono: true })
+    ? telIa
     : '';
+  let telefonoDelCanal = false;
+  if (!telefono && canal && mismoTelefono(telIa, canal)) {
+    telefono = telefonoCanalLocal(canal, paisNombre);
+    telefonoDelCanal = true;
+  }
+  if (!telefono && telIa.length >= 9 && !transcriptExterno) {
+    if (await telefonoEnHistorial(id_configuracion, id_cliente, telIa)) {
+      telefono = telIa;
+    }
+  }
+  if (!telefono && canal) {
+    const recientes = items
+      .filter((it) => it.rol === 'CLIENTE')
+      .slice(-4)
+      .map((it) => it.texto)
+      .join('\n');
+    if (dijoEsteMismo(recientes)) {
+      telefono = telefonoCanalLocal(canal, paisNombre);
+      telefonoDelCanal = true;
+    }
+  }
   /* La ciudad tolera el typo del cliente ("Guayuquil"): se acepta aunque no
      coincida literal, y después se corrige contra la lista de ciudades EC
      para que el resumen y el auto-orden reciban una ciudad real. */
@@ -458,6 +593,12 @@ async function extraerFichaPedido({
     /* Lo que escribió el CLIENTE, para el candado anti-invento del cierre: un
        dato del resumen (ciudad, teléfono) que no esté acá lo inventó el modelo. */
     _textoCliente: textoCliente,
+    /* El número desde el que escribe (dígitos) y si el teléfono de la ficha
+       salió de ahí (el modelo lo usó o el cliente dijo "a este mismo"). El
+       validador del cierre lo acepta como dato real; el bloque de la ficha
+       le dice al modelo que no lo pida ni lo confirme. */
+    _telefonoCanal: canal,
+    _telefonoDelCanal: telefonoDelCanal,
   };
 
   CACHE.set(clave, { firma, ficha, ts: ahora });
@@ -701,7 +842,13 @@ function bloqueFichaPedido(
           : ' (solo el nombre de pila: pide el APELLIDO, no el nombre otra vez)'),
     );
   }
-  if (f.telefono) lineas.push(`✅ Teléfono: ${f.telefono}`);
+  if (f.telefono)
+    lineas.push(
+      `✅ Teléfono: ${f.telefono}` +
+        (f._telefonoDelCanal
+          ? ' (es el número desde el que escribe: lo usas tal cual en el resumen, no se lo pidas ni le pidas que lo escriba)'
+          : ''),
+    );
   if (f.ciudad)
     lineas.push(`✅ Ciudad: ${f.ciudad}${f.provincia ? ` (${f.provincia})` : ''}`);
   if (f.entrega === 'agencia' && retiroDirectorio) {
@@ -903,21 +1050,43 @@ function completarResumenConFicha(texto, ficha) {
     }
   }
 
-  // Teléfono: solo si la línea vino de relleno/enmascarada.
+  /* Teléfono. Tres casos, y en ninguno se bloquea el cierre por el número:
+     - de relleno/enmascarado ("[tu numero]", "09XXXXXXXX (a confirmar)") →
+       el de la ficha; si no hay, el número desde el que escribe; si tampoco,
+       se quita la línea (el auto-orden usa el del canal);
+     - un número de 9+ dígitos que el cliente NO escribió, que no es el de la
+       ficha ni el del canal → lo inventó el modelo: se pisa con el de la
+       ficha o el del canal. Antes esto bloqueaba el cierre y le pedía el
+       teléfono a quien ya había dicho "a este mismo";
+     - el de la ficha o el del canal → se deja. */
   const iT = idxDe(/^[^\n]{0,6}?Tel[eé]fono\s*:/i);
   if (iT >= 0) {
     const vT = valorDe(iT);
     const digitos = (vT.match(/\d/g) || []).length;
+    const canal = telefonoCanalValido(ficha._telefonoCanal);
+    const respaldo =
+      ficha.telefono || (canal ? telefonoCanalLocal(canal, ficha._paisNombre) : '');
     if (esRelleno(vT) || digitos < 9) {
-      if (ficha.telefono) {
-        reemplazarValor(iT, ficha.telefono);
-        completados.push('telefono');
+      if (respaldo) {
+        reemplazarValor(iT, respaldo);
+        completados.push(ficha.telefono ? 'telefono' : 'telefono (canal)');
       } else {
         // Sin teléfono del cliente: se quita la línea falsa; el auto-orden
         // usa el número desde el que escribe.
         lineas.splice(iT, 1);
         completados.push('telefono');
       }
+    } else if (
+      respaldo &&
+      !mismoTelefono(vT, ficha.telefono) &&
+      !mismoTelefono(vT, canal) &&
+      ficha._textoCliente !== undefined &&
+      !aparecioEnCliente(vT, ficha._textoCliente, { esTelefono: true })
+    ) {
+      reemplazarValor(iT, respaldo);
+      completados.push(
+        ficha.telefono ? 'telefono (inventado → ficha)' : 'telefono (inventado → canal)',
+      );
     }
   }
 
@@ -1013,6 +1182,12 @@ module.exports = {
   direccionTieneNumeracion,
   intentosPedirReferencia,
   completarResumenConFicha,
+  // El número desde el que escribe como dato real del cierre (batería y
+  // kanban_ia): sin esto, "a este mismo número" bloqueaba el cierre.
+  telefonoCanalValido,
+  mismoTelefono,
+  dijoEsteMismo,
+  telefonoCanalLocal,
   esCierreNarrado,
   pareceResumenDePedido,
   aparecioEnCliente,
