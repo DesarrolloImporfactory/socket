@@ -31,7 +31,8 @@ const { revisarRespuesta } = require('./guardia');
 const { paisDelTelefono } = require('./telefono');
 const { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad, esMensajeDeBot, noPideNada } = require('./senales');
 const T = require('./textos');
-const { equipoAtendiendo, textoAlHorario } = require('./horario');
+const { equipoAtendiendo, proximaApertura, textoAlHorario } = require('./horario');
+const { esColumnaEcommerce } = require('./escalado');
 
 const MINUTOS_MEMORIA = 20; // la carga leída y las fichas mostradas siguen valiendo para los mensajes que siguen
 const MAX_MEMORIA = 3000;
@@ -91,6 +92,7 @@ function huellasDeCarga(textoCarga) {
 /**
  * @param {object} p
  *   mensaje, telefono, tipo_mensaje, id_configuracion, id_cliente,
+ *   columna   estado_contacto del chat (dice si es un chat de ecommerce)
  *   opciones  { cargas, fichas, guardia } (ia_ajustes.soporte_expertos)
  *   deps      { consultar, buscador, ahora, hoy } — solo para pruebas
  *   log       función de log del motor
@@ -208,7 +210,16 @@ async function prepararTurno(p) {
      Solo en la cuenta que declara `horario_equipo`: soporte_expertos también
      está en la 10 (WAPP IMPORTSUIT), con otro equipo y otras horas, y a esa no
      se le cambia el texto (revisión del 24-oct). */
-  const atendiendo = Boolean(opciones.horario_equipo) && equipoAtendiendo(deps.ahora, opciones.horario_equipo);
+  /* Ecommerce también atiende el sábado de 8:00 a 12:00: el chat que está en
+     una columna de ecommerce, o cuya pregunta la responde una ficha de
+     ecommerce, usa ese horario (si la cuenta lo trae). */
+  const pasarA = fichas[0]?.ficha?.pasar_a || '';
+  const esEcommerce = esColumnaEcommerce(p.columna) || pasarA === 'ecommerce';
+  const horario = (esEcommerce && opciones.horario_ecommerce) || opciones.horario_equipo || null;
+  const atendiendo = Boolean(horario) && equipoAtendiendo(deps.ahora, horario);
+  /* Fuera de horario, «apenas abramos» dice cuándo abre el equipo («el lunes
+     desde las 8:00»), solo con soporte_expertos.decir_apertura. */
+  const apertura = opciones.decir_apertura && horario && !atendiendo ? proximaApertura(deps.ahora, horario) : null;
   if (atendiendo) {
     bloques.push(
       '🕘 AHORA EL EQUIPO ESTÁ ATENDIENDO (horario de oficina). No digas que estamos cerrados, que es fuera de horario ni que es de noche o fin de semana. ' +
@@ -298,7 +309,8 @@ async function prepararTurno(p) {
       (mensajeDeBot ? ' · mensaje de un bot de tienda' : '') +
       (sinPedido ? ' · no pide nada' : '') +
       (cargaYaDicha ? ' · el estado de la carga ya se dijo' : '') +
-      (atendiendo ? ' · equipo atendiendo' : ''),
+      (esEcommerce ? ' · ecommerce' : '') +
+      (atendiendo ? ' · equipo atendiendo' : apertura ? ` · abre ${apertura}` : ''),
   );
 
   return {
@@ -317,6 +329,9 @@ async function prepararTurno(p) {
       noPideNada: sinPedido,
       cargaYaDicha,
       equipoAtendiendo: atendiendo,
+      apertura,
+      esEcommerce,
+      pasarA,
       huellasCarga: huellasDeCarga(textoCarga),
       clave,
       dioCantidad: cantidadDicha,
@@ -351,6 +366,9 @@ function hechosDeEmergencia(mensaje = '') {
     noPideNada: false,
     cargaYaDicha: false,
     equipoAtendiendo: false,
+    apertura: null,
+    esEcommerce: false,
+    pasarA: '',
     huellasCarga: [],
     clave: null,
     dioCantidad: false,
@@ -359,11 +377,12 @@ function hechosDeEmergencia(mensaje = '') {
   };
 }
 
-/* Con el equipo atendiendo, «apenas abramos» → «en breve» (horario.js). No
-   cuenta como respuesta cambiada: es el mismo texto aprobado, ajustado a la hora. */
+/* Con el equipo atendiendo, «apenas abramos» → «en breve»; fuera de horario y
+   con `apertura`, → «el lunes desde las 8:00» (horario.js). No cuenta como
+   respuesta cambiada: es el mismo texto aprobado, ajustado a la hora. */
 function alHorario(rev, h) {
-  if (!h.equipoAtendiendo || !rev?.texto) return rev;
-  return { ...rev, texto: textoAlHorario(rev.texto, true) };
+  if ((!h.equipoAtendiendo && !h.apertura) || !rev?.texto) return rev;
+  return { ...rev, texto: textoAlHorario(rev.texto, h.equipoAtendiendo, h.apertura) };
 }
 
 /** Pasa la respuesta del modelo por la guardia con los hechos del turno. */

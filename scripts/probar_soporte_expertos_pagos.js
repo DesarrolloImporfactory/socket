@@ -195,6 +195,11 @@ const ALUMNA = { id_users: 50, whatsapp: '+593 98 700 0111', email: 'ana@gmail.c
     ['ya pagué', null],
     ['te mando el comprobante', null],
     ['quiero cotizar 500 lámparas', null],
+    // 24-oct, el del retén: pedía las facturas así.
+    ['me puede enviar las cotizaciones de los 2 últimos pagos', 'factura'],
+    ['necesito los recibos de mis pagos', 'factura'],
+    ['cuáles pagos tengo registrados', 'saldo'],
+    ['quiero una cotización de 2 productos', null],
   ]) prueba(`«${t}» → ${e}`, pidePagos(t) === e, String(pidePagos(t)));
 
   console.log('\n7. La herramienta en el motor');

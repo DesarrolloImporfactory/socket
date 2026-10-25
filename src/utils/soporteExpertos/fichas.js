@@ -510,7 +510,32 @@ function bloqueFichas(resultados, o = {}) {
 const UMBRAL_RESCATE = 0.55;
 const TEMAS_RESCATE = new Set(['carga', 'cotización', 'proveedor']);
 
+/* Las plantillas de «Nutrición» de IMPORCHAT (recuperacion_textos.js) le piden
+   al cliente que conteste UNA palabra: «Respóndeme *tip*», «*seguimientos*»,
+   «*anuncios*». Una palabra sola no es una pregunta para el buscador, así que
+   el 24-oct los 12 que pidieron el tip recibieron «un asesor lo revisa». Esa
+   respuesta (sola, con un «sí» o un «quiero» delante) abre su ficha. */
+const PALABRA_CLAVE = Object.freeze({
+  tip: 'ia-tip-bot-cotiza-solo',
+  seguimientos: 'ia-tip-seguimientos',
+  seguimiento: 'ia-tip-seguimientos',
+  anuncios: 'ia-tip-anuncios',
+});
+const RE_PALABRA_CLAVE = /^(?:(?:si|sii+|ok|dale|quiero|quiero el|quiero los|el|los|mandame el|enviame el)\s+)?(tip|seguimientos?|anuncios)(?:\s+(?:por favor|porfa|gracias))?$/;
+function fichaDePalabraClave(buscador, mensaje) {
+  const t = sinTildes(String(mensaje || '').toLowerCase())
+    .replace(/[^a-z\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const m = RE_PALABRA_CLAVE.exec(t);
+  if (!m) return null;
+  const ficha = (buscador.fichas || []).find((f) => f.id === PALABRA_CLAVE[m[1]]);
+  return ficha ? { ficha, cercania: 1, puntaje: 1, cierraSola: !ficha.pasar_a, palabraClave: true } : null;
+}
+
 function buscarConRescate(buscador, mensaje, o = {}) {
+  const clave = fichaDePalabraClave(buscador, mensaje);
+  if (clave) return [clave];
   const r = buscador.buscar(mensaje, o);
   if (r.length) return r;
   return buscador

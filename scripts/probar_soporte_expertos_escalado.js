@@ -8,7 +8,9 @@ const path = require('path');
 const rutaDb = require.resolve(path.join(__dirname, '../src/database/config'));
 require.cache[rutaDb] = { id: rutaDb, filename: rutaDb, loaded: true, exports: { db: {}, db_2: {} } };
 
-const { EQUIPO, YA_NO_ESTAN, areaDelCaso, decidirEscalado, notaInterna, esPase, escalarCaso } = require('../src/utils/soporteExpertos/escalado');
+const { EQUIPO, ECOMMERCE, YA_NO_ESTAN, areaDelCaso, asesorEcommerce, decidirEscalado, notaInterna, esPase, escalarCaso } = require('../src/utils/soporteExpertos/escalado');
+const H = require('../src/utils/soporteExpertos/horario');
+const F = require('../src/utils/soporteExpertos/fichas');
 const T = require('../src/utils/soporteExpertos/textos');
 const ajustes = require('../src/utils/ajustesIA');
 
@@ -132,6 +134,98 @@ function base(chat) {
   prueba('«simulado» se guarda', n({ escalar: 'simulado' }) === 'simulado');
   prueba('«real» se guarda', n({ escalar: 'real' }) === 'real');
   prueba('true (ambiguo) queda apagado', n({ escalar: true }) === false);
+
+  console.log('\n7. Ecommerce → Beto (1886) y Juan Felipe (2474) (Daniel, 25-oct)');
+  const area = (o) => areaDelCaso(o);
+  prueba('pregunta de Dropi → ecommerce', area({ mensaje: 'no me aparece el producto en dropi' }) === 'ecommerce');
+  prueba('«¿hay stock en Dropi? cuánto cuesta» no es cotización (24-oct salió a Belén)', area({ mensaje: 'hay stock en dropi? cuanto cuesta' }) === 'ecommerce');
+  prueba('campaña / IMPORCHAT / Shopify → ecommerce', ['mi campaña no gasta', 'el bot de imporchat no responde', 'tengo tienda en shopify'].every((m) => area({ mensaje: m }) === 'ecommerce'));
+  prueba('ficha con pasar_a ecommerce → ecommerce', area({ mensaje: 'ayuda', hechos: { pasarA: 'ecommerce' } }) === 'ecommerce');
+  prueba('chat en una columna de ecommerce → ecommerce', area({ mensaje: 'tengo una duda', columna: 'primera_venta' }) === 'ecommerce');
+  prueba('columna de importación no es ecommerce', area({ mensaje: 'tengo una duda', columna: 'cotizaciones' }) === 'otro');
+  prueba('el catálogo del proveedor no es ecommerce', area({ mensaje: 'quiero cotizar del catalogo del proveedor' }) === 'cotizacion');
+  prueba('un pago sigue yendo a Johan aunque esté en ecommerce', area({ mensaje: 'ya pagué la cuota', columna: 'imporchat' }) === 'pago');
+  prueba('teléfono par → Beto, impar → Juan Felipe', asesorEcommerce('593987000110').id === 1886 && asesorEcommerce('593987000111').id === 2474);
+  prueba('los dos de ecommerce están en el equipo', ECOMMERCE.map((e) => e.id).join() === '1886,2474');
+  d = decidirEscalado({ mensaje: 'mi campaña no gasta', telefono: '593987000110', encargado: null });
+  prueba('sin encargado: se asigna al asesor de ecommerce', d.area === 'ecommerce' && d.asignar && d.destino.id === 1886);
+  d = decidirEscalado({ mensaje: 'mi campaña no gasta', telefono: '593987000110', encargado: { id: 2474, activo: true } });
+  prueba('lo tiene Juan Felipe y el reparto diría Beto: se queda con Juan Felipe', !d.asignar && /asesor de ecommerce/.test(d.razon));
+  d = decidirEscalado({ mensaje: 'mi campaña no gasta', telefono: '593987000110', encargado: { id: 377, activo: true } });
+  prueba('lo tiene Johan (activo): no se le quita', !d.asignar);
+
+  console.log('\n8. Reembolso, baja o pausa → caso de escalamiento');
+  prueba('«quiero el reembolso» → reembolso', area({ mensaje: 'quiero el reembolso de mi dinero' }) === 'reembolso');
+  prueba('«quiero pausar el servicio» → reembolso', area({ mensaje: 'quiero pausar el servicio un mes' }) === 'reembolso');
+  prueba('«darme de baja» → reembolso', area({ mensaje: 'quiero darme de baja' }) === 'reembolso');
+  prueba('aunque venga como reclamo, es reembolso', area({ mensaje: 'esto es una estafa quiero mi dinero', hechos: { reclamo: true } }) === 'reembolso');
+  prueba('la ficha reembolso-o-baja → reembolso', area({ mensaje: 'ya no quiero nada', hechos: { fichas: ['reembolso-o-baja'] } }) === 'reembolso');
+  prueba('«reembolso en Alibaba» de un pago normal no es esto', area({ mensaje: 'ya hice el pago' }) === 'pago');
+  d = decidirEscalado({ mensaje: 'quiero el reembolso', telefono: EC, encargado: { id: 1886, activo: true }, responsableCaso: { id: 353, nombre: 'Vivi' } });
+  prueba('va a quien recibe los escalamientos; abre caso; no le quita el chat a Beto', d.destino.id === 353 && d.caso && !d.asignar);
+  d = decidirEscalado({ mensaje: 'quiero el reembolso', telefono: EC, encargado: null });
+  prueba('sin destinatario de escalamientos: Johan', d.destino.id === 377 && d.caso);
+
+  /* Base de mentira con casos: responde según la consulta. */
+  function baseCasos({ chat, casoAbierto = false }) {
+    const w = { sql: [], notas: [], historial: [] };
+    return {
+      w,
+      deps: {
+        consultar: async (sql, rep) => {
+          w.sql.push({ sql, rep });
+          if (/FROM incidencias_casos_destinatarios/.test(sql)) return [{ id: 353, nombre: 'Vivi ImporFactory' }];
+          if (/^\s*SELECT id FROM incidencias_chat_center/.test(sql)) return casoAbierto ? [{ id: 5 }] : [];
+          if (/^\s*select/i.test(sql)) return [chat];
+          if (/^\s*INSERT INTO incidencias_chat_center/.test(sql)) return [777, 1];
+          return [];
+        },
+        crearHistorial: async (h) => w.historial.push(h),
+        crearNota: async (t) => w.notas.push(t),
+      },
+    };
+  }
+  let bc = baseCasos({ chat: { id: 20, id_encargado: 1886, suspendido: 0, estado_contacto: 'imporchat' } });
+  r = await escalarCaso({ modo: 'simulado', id_configuracion: 265, id_cliente: 20, telefono: EC, mensaje: 'quiero el reembolso', deps: bc.deps });
+  prueba('simulado: decide el caso pero no escribe', r.caso && !r.aplicado && !bc.w.sql.some((x) => /INSERT|UPDATE/.test(x.sql)));
+  bc = baseCasos({ chat: { id: 20, id_encargado: 1886, suspendido: 0, estado_contacto: 'imporchat' } });
+  r = await escalarCaso({ modo: 'real', id_configuracion: 265, id_cliente: 20, telefono: EC, mensaje: 'quiero el reembolso', deps: bc.deps });
+  const ins = bc.w.sql.find((x) => /INSERT INTO incidencias_chat_center/.test(x.sql));
+  prueba('real: abre el caso de escalamiento para Vivi (353), sin resolver', r.casoAbierto && ins && ins.rep[3] === 353 && /'escalamiento'/.test(ins.sql) && /sin_resolver/.test(ins.sql));
+  prueba('real: deja el evento «creado» del caso', bc.w.sql.some((x) => /INSERT INTO incidencias_casos_eventos/.test(x.sql) && x.rep[0] === 777));
+  prueba('real: no le quita el chat a Beto', !bc.w.sql.some((x) => /UPDATE clientes_chat_center/.test(x.sql)));
+  prueba('real: la nota dice que abrió el caso', /Abrió un caso de escalamiento para Vivi/.test(bc.w.notas[0] || ''), bc.w.notas[0]);
+  bc = baseCasos({ chat: { id: 20, id_encargado: 1886, suspendido: 0 }, casoAbierto: true });
+  r = await escalarCaso({ modo: 'real', id_configuracion: 265, id_cliente: 20, telefono: EC, mensaje: 'quiero el reembolso ya', deps: bc.deps });
+  prueba('ya hay un caso sin resolver: no lo duplica ni deja nota', !r.casoAbierto && !bc.w.sql.some((x) => /INSERT/.test(x.sql)) && !bc.w.notas.length);
+  bc = baseCasos({ chat: { id: 21, id_encargado: null, suspendido: null, estado_contacto: 'primera_venta' } });
+  r = await escalarCaso({ modo: 'real', id_configuracion: 265, id_cliente: 21, telefono: '593987000111', mensaje: 'tengo una duda', deps: bc.deps });
+  prueba('real: chat de ecommerce sin encargado → Juan Felipe (por la columna)', r.aplicado && r.destino.id === 2474);
+  prueba('«tu caso pasa a la persona responsable» cuenta como pase', esPase('Entiendo tu pedido. Tu caso pasa a la persona responsable.'));
+
+  console.log('\n9. Horario de ecommerce (sábado 8:00-12:00) y próxima apertura');
+  const ec = (s) => Date.parse(`${s}-05:00`);
+  prueba('sábado 9:00: ecommerce atiende, el resto no', H.equipoAtendiendo(ec('2026-10-24T09:00'), H.HORARIO_ECOMMERCE) && !H.equipoAtendiendo(ec('2026-10-24T09:00')));
+  prueba('sábado 12:30: ecommerce ya no atiende', !H.equipoAtendiendo(ec('2026-10-24T12:30'), H.HORARIO_ECOMMERCE));
+  prueba('sábado 13:00 → «el lunes desde las 8:00»', H.proximaApertura(ec('2026-10-24T13:00')) === 'el lunes desde las 8:00');
+  prueba('viernes 18:00, ecommerce → «mañana desde las 8:00»', H.proximaApertura(ec('2026-10-23T18:00'), H.HORARIO_ECOMMERCE) === 'mañana desde las 8:00');
+  prueba('lunes 7:00 → «hoy desde las 8:00»', H.proximaApertura(ec('2026-10-26T07:00')) === 'hoy desde las 8:00');
+  prueba('atendiendo: no hay próxima apertura', H.proximaApertura(ec('2026-10-26T10:00')) === null);
+  prueba('el sábado suma minutos hábiles en ecommerce', H.minutosHabiles(ec('2026-10-23T17:00'), ec('2026-10-26T09:00')) === 90 && H.minutosHabiles(ec('2026-10-23T17:00'), ec('2026-10-26T09:00'), H.HORARIO_ECOMMERCE) === 330);
+  prueba('«apenas abramos» → la apertura, solo si se la pasan', H.textoAlHorario('te escribe apenas abramos.', false, 'el lunes desde las 8:00') === 'te escribe el lunes desde las 8:00.' && H.textoAlHorario('te escribe apenas abramos.', false) === 'te escribe apenas abramos.');
+  prueba('un tramo extra mal escrito se ignora', !H.normalizarHorarioEquipo({ ...H.HORARIO_EQUIPO, extra: [{ dias: [6], desde: '12:00', hasta: '08:00' }] }).extra);
+  const na = (v) => ajustes.normalizar({ soporte_expertos: v }).soporte_expertos;
+  prueba('decir_apertura apagado salvo true; horario_ecommerce pasa tal cual', na({}).decir_apertura === false && na({ decir_apertura: true }).decir_apertura === true && na({ horario_ecommerce: H.HORARIO_ECOMMERCE }).horario_ecommerce.extra.length === 1);
+
+  console.log('\n10. Respuestas de una palabra a las plantillas de «Nutrición»');
+  const b2 = F.buscadorDeArchivo();
+  const id1 = (m) => F.buscarConRescate(b2, m, { pais: 'ec' })[0]?.ficha.id;
+  prueba('«tip» → video de cómo lanzar la campaña', id1('tip') === 'ia-tip-bot-cotiza-solo' && /contenido=737/.test(F.buscarConRescate(b2, 'Tip ✨', {})[0].ficha.respuesta_base));
+  prueba('«Sí, tip» / «*tip*» también', id1('Sí, tip') === 'ia-tip-bot-cotiza-solo' && id1('*tip*') === 'ia-tip-bot-cotiza-solo');
+  prueba('«seguimientos» y «anuncios» abren las suyas', id1('seguimientos') === 'ia-tip-seguimientos' && id1('Anuncios') === 'ia-tip-anuncios');
+  prueba('«el tip de la semana no me sirve» no es la palabra clave', id1('el tip de la semana no me sirve') !== 'ia-tip-bot-cotiza-solo');
+  prueba('«estoy en la bodega» → horario de retiros', /lunes a viernes, de 8:00 a 17:00/.test(F.buscarConRescate(b2, 'estoy en la bodega para retirar', { pais: 'ec' })[0]?.ficha.respuesta_base || ''));
+  prueba('«quiero empezar a vender sus productos» → catálogo + paso a paso', id1('quiero empezar a vender sus productos') === 'eco-catalogo-y-paso-a-paso');
 
   console.log(`\n${fallos ? `HAY FALLAS: ${fallos} fallan, ${ok} pasan` : `TODO BIEN: ${ok} pasan, 0 fallan`}`);
   process.exit(fallos ? 1 : 0);

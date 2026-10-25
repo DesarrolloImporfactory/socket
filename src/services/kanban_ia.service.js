@@ -2272,6 +2272,8 @@ async function procesarMensajeKanban(params) {
         tipo_mensaje: params.tipo_mensaje,
         id_configuracion,
         id_cliente,
+        // La columna dice si es un chat de ecommerce (horario con el sábado).
+        columna: estado_contacto,
         /* La carga se busca por el número de WhatsApp del remitente, y eso
            solo vale cuando el número lo entrega Meta. Dos casos en que NO se
            consulta (el bot pide la marca o la cotización para logística):
@@ -3077,6 +3079,7 @@ async function procesarMensajeKanban(params) {
       respuestaRaw = require('../utils/soporteExpertos/horario').textoAlHorario(
         turnoExpertos?.hechos?.textoSeguro || require('../utils/soporteExpertos/textos').MENSAJE_ASESOR,
         Boolean(turnoExpertos?.hechos?.equipoAtendiendo),
+        turnoExpertos?.hechos?.apertura || null,
       );
     }
   }
@@ -4489,7 +4492,11 @@ async function procesarMensajeKanban(params) {
             consultar: (sql, replacements) =>
               db.query(sql, {
                 replacements,
-                type: /^\s*select/i.test(sql) ? db.QueryTypes.SELECT : db.QueryTypes.UPDATE,
+                type: /^\s*select/i.test(sql)
+                  ? db.QueryTypes.SELECT
+                  : /^\s*insert/i.test(sql)
+                    ? db.QueryTypes.INSERT
+                    : db.QueryTypes.UPDATE,
               }),
             crearHistorial: (datos) => crearHistorial(datos, null),
             crearNota: async (texto) => {

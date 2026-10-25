@@ -117,6 +117,7 @@ function normalizarSoporteExpertos(v) {
       agenda: false,
       callar_bots: true,
       callar_acuses: true,
+      decir_apertura: false,
       escalar: false,
       seguimiento: false,
     };
@@ -144,6 +145,10 @@ function normalizarSoporteExpertos(v) {
     callar_acuses: v.callar_acuses !== false,
     // Horario del equipo (soporteExpertos/horario.js): solo si la cuenta lo trae.
     ...(v.horario_equipo && typeof v.horario_equipo === 'object' ? { horario_equipo: v.horario_equipo } : {}),
+    // Horario de ecommerce (con el sábado 08:00-12:00): solo si la cuenta lo trae.
+    ...(v.horario_ecommerce && typeof v.horario_ecommerce === 'object' ? { horario_ecommerce: v.horario_ecommerce } : {}),
+    // Fuera de horario, «apenas abramos» → «el lunes desde las 8:00»: apagado salvo pedido explícito.
+    decir_apertura: v.decir_apertura === true,
     // A quién va el caso (soporteExpertos/escalado.js): apagado salvo 'simulado' o 'real'.
     escalar: v.escalar === 'simulado' || v.escalar === 'real' ? v.escalar : false,
     // Seguimiento al que quedó esperando (soporteExpertos/seguimiento.js): igual.

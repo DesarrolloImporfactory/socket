@@ -143,6 +143,10 @@ const RE_BOT_DE_TIENDA = new RegExp(
     '\\bguarda nuestro numero\\b',
     '\\bquieres que (?:lo|te) pase (?:a|con) un asesor\\b',
     '\\b1 por \\d+\\b.*\\b2 por \\d+\\b',
+    // Sábado 24-oct, después de publicar: dos bots que se escaparon.
+    '\\bquieres que te avisemos por este mismo numero\\b',
+    '\\bnecesitamos tu confirmacion del\\b',
+    '\\b(?:a )?domicilio o retiro en (?:agencia|oficina)\\b',
   ].join('|'),
 );
 /* Respuesta automática del negocio del alumno (fuera de su horario) y el «ya te

@@ -564,8 +564,8 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
   console.log('\n14. Ajustes de la cuenta y candado antes de leer audios e imágenes');
   const n = ajustes.normalizar;
   prueba('sin el ajuste, `soporte_expertos` es null (ninguna cuenta cambia)', n(null).soporte_expertos === null && n({ espera_rafaga_seg: 20 }).soporte_expertos === null && n({ soporte_expertos: false }).soporte_expertos === null);
-  prueba('`true` enciende las tres partes', igual(n({ soporte_expertos: true }).soporte_expertos, { cargas: true, fichas: true, guardia: true, herramientas: false, diagnostico: false, pagos: false, agenda: false, callar_bots: true, callar_acuses: true, escalar: false, seguimiento: false }));
-  prueba('un objeto apaga solo lo que trae en false', igual(n({ soporte_expertos: { cargas: false } }).soporte_expertos, { cargas: false, fichas: true, guardia: true, herramientas: false, diagnostico: false, pagos: false, agenda: false, callar_bots: true, callar_acuses: true, escalar: false, seguimiento: false }));
+  prueba('`true` enciende las tres partes', igual(n({ soporte_expertos: true }).soporte_expertos, { cargas: true, fichas: true, guardia: true, herramientas: false, diagnostico: false, pagos: false, agenda: false, callar_bots: true, callar_acuses: true, decir_apertura: false, escalar: false, seguimiento: false }));
+  prueba('un objeto apaga solo lo que trae en false', igual(n({ soporte_expertos: { cargas: false } }).soporte_expertos, { cargas: false, fichas: true, guardia: true, herramientas: false, diagnostico: false, pagos: false, agenda: false, callar_bots: true, callar_acuses: true, decir_apertura: false, escalar: false, seguimiento: false }));
   prueba('un valor raro no enciende nada', n({ soporte_expertos: 'si' }).soporte_expertos === null && n({ soporte_expertos: [1] }).soporte_expertos === null);
   const ec = (hora) => new Date(`2026-10-12T${hora}:00-05:00`);
   const noche = n({ horario: { desde: '16:00', hasta: '08:00' } });
@@ -609,6 +609,10 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
     prueba('«Recibí la imagen… Recibí tu mensaje.» queda con un solo «Recibí»', r2.texto === 'Hola. Recibí la imagen del parlante. Un asesor lo revisa y te escribe apenas abramos.', r2.texto);
     prueba('«Entiendo tu preocupación. Recibí tu mensaje.» no se toca', !revisarRespuesta(T.MENSAJE_RECLAMO, {}).cambiada);
     prueba('el paso a asesor solo no se toca', !revisarRespuesta(T.MENSAJE_ASESOR, {}).cambiada);
+    // Sábado 24-oct: a quien solo mandó el comprobante le dijo «tu pedido de factura».
+    const inv = revisarRespuesta('Recibí tu comprobante. Dejo anotado el pago y tu pedido de factura para cobranza. Recibí tu mensaje. Un asesor lo revisa y te escribe apenas abramos.', { respaldo: { firme: '', eco: '[IMAGEN: comprobante_pago] Produbanco' } });
+    prueba('no le atribuye un pedido de factura que no hizo', inv.cambiada && /pedido de factura/.test(inv.motivos.join()) && !/factura/.test(inv.texto));
+    prueba('si el cliente pidió la factura, sí se puede nombrar', !revisarRespuesta('Recibí tu comprobante y tu pedido de factura. Un asesor lo revisa y te escribe apenas abramos.', { respaldo: { firme: '', eco: 'Aquí el pago, necesito la Factura' } }).motivos.some((m) => /pedido de factura/.test(m)));
     const bots = [
       '🚛 Tu pedido está empacado y listo para salir\nEse problema que te llevó a escribir sigue ahí',
       'Gracias Juan! 😊 ¿En qué ciudad te lo enviamos?',
@@ -618,6 +622,9 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
       '¿Quieres que lo pase a un asesor para que te ayude? 😊',
       'Hola! 😊 Soy Sara de Tobaresi Store, un gusto saludarte. ¿Qué producto te interesa?',
       '💵 1 por $26 / 🔥 2 por $38 / 🚚 Envío gratis y pagas al recibir',
+      // Sábado 24-oct, después de publicar.
+      'Gracias! Necesitamos tu confirmación del ajuste especial del 10% y saber cómo prefieres recibir el pedido: ¿domicilio o retiro en agencia? 😊',
+      'Perfecto. ¿Quieres que te avisemos por este mismo número cuando el asesor responda? 📲',
     ];
     prueba('los mensajes de bots de tienda de anoche se reconocen', bots.every(esMensajeDeBot), bots.filter((b) => !esMensajeDeBot(b)).join(' | '));
     const personas = [
@@ -630,6 +637,8 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
       '[2/10, 17:04] Importaciones Yacelga: 🚛 Pedido empacado y listo para salir',
       'Enviado por Mensaje fijo:\nsin IA\n¿Quieres entrenar en casa? 💵 1 por $20 / 2 por $35',
       'Saludo + Validación del problema:\n\n"¡Hola! Claro que sí. ¿A qué ciudad te lo enviamos?"',
+      'Mi carga la quiero a domicilio, no retiro en agencia',
+      'Necesito su confirmación para pagar',
     ];
     prueba('lo que escribe una persona (aunque muestre su bot) no se calla', !personas.some(esMensajeDeBot), personas.filter(esMensajeDeBot).join(' | '));
     olvidarTodo();
@@ -693,6 +702,19 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
     olvidarTodo();
     const otra = await prepararTurno({ mensaje: 'necesito hablar con mi asesor', telefono: '593999000111', id_configuracion: 10, id_cliente: 4, opciones: { cargas: false, fichas: false }, deps: { ahora: ec('2026-10-23T10:00:00') } });
     prueba('cuenta sin horario_equipo (la 10): de día NO cambia el texto', otra.hechos.equipoAtendiendo === false && revisarTurno(T.MENSAJE_ASESOR, otra.hechos).texto === T.MENSAJE_ASESOR);
+    olvidarTodo();
+    // Ecommerce atiende el sábado de 8:00 a 12:00 (Daniel, 25-oct).
+    const H = require('../src/utils/soporteExpertos/horario');
+    const opSab = { cargas: false, fichas: false, horario_equipo: H.HORARIO_EQUIPO, horario_ecommerce: H.HORARIO_ECOMMERCE, decir_apertura: true };
+    const sabEco = await prepararTurno({ mensaje: 'necesito hablar con mi asesor', telefono: '593999000111', id_configuracion: 265, id_cliente: 5, columna: 'imporchat', opciones: opSab, deps: { ahora: ec('2026-10-24T10:00:00') } });
+    prueba('sábado 10:00, chat de ecommerce: el equipo atiende («en breve»)', sabEco.hechos.equipoAtendiendo && sabEco.hechos.esEcommerce && /en breve\.$/.test(revisarTurno(T.MENSAJE_ASESOR, sabEco.hechos).texto));
+    olvidarTodo();
+    const sabImp = await prepararTurno({ mensaje: 'necesito hablar con mi asesor', telefono: '593999000111', id_configuracion: 265, id_cliente: 6, columna: 'contacto_inicial', opciones: opSab, deps: { ahora: ec('2026-10-24T10:00:00') } });
+    const rSab = revisarTurno(T.MENSAJE_ASESOR, sabImp.hechos).texto;
+    prueba('sábado 10:00, chat de importación: dice «el lunes desde las 8:00»', !sabImp.hechos.equipoAtendiendo && /te escribe el lunes desde las 8:00\.$/.test(rSab), rSab);
+    olvidarTodo();
+    const sinAp = await prepararTurno({ mensaje: 'necesito hablar con mi asesor', telefono: '593999000111', id_configuracion: 265, id_cliente: 7, opciones: { ...opSab, decir_apertura: false }, deps: { ahora: ec('2026-10-24T10:00:00') } });
+    prueba('sin decir_apertura el texto de noche no cambia', revisarTurno(T.MENSAJE_ASESOR, sinAp.hechos).texto === T.MENSAJE_ASESOR);
     olvidarTodo();
     prueba('horario_equipo se guarda en los ajustes', igual(n({ soporte_expertos: { horario_equipo: { dias: [1], desde: '09:00', hasta: '12:00' } } }).soporte_expertos.horario_equipo, { dias: [1], desde: '09:00', hasta: '12:00' }));
   }
