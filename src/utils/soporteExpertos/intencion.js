@@ -263,13 +263,17 @@ const SOY_DEL_EQUIPO = /\bsoy (asesor|asesora|del equipo|de logistica|de soporte
  * ¿Pide datos de una carga que no es la del número que escribe?
  * @returns {{pide:boolean, motivo:string|null}}
  */
-function pideDatosDeOtro(texto, telefonoRemitente) {
+function pideDatosDeOtro(texto, telefonoRemitente, textoCliente = null) {
   const t = sinTildes(texto);
+  /* «Sin nombre de cliente visible» lo escribe la lectura de la foto, no el
+     cliente: el parentesco («de mi socio», «del cliente») se busca solo en lo
+     que escribió él (25-oct, una cotización propia quedó como ajena). */
+  const dichoPorEl = textoCliente == null ? t : sinTildes(textoCliente);
   // Todo lo que dispara la consulta de la carga pasa también por esta revisión.
   const deCarga = COSA.test(t) || PEDIDO.test(t) || /cotizacion|estado|llega|donde/.test(t) || hablaDeCarga(texto);
   if (!deCarga) return { pide: false, motivo: null };
 
-  if (TERCERO.test(t)) return { pide: true, motivo: 'la carga de otra persona' };
+  if (TERCERO.test(dichoPorEl)) return { pide: true, motivo: 'la carga de otra persona' };
   if (SOY_DEL_EQUIPO.test(t)) return { pide: true, motivo: 'dice ser del equipo' };
 
   // Un teléfono escrito en el mensaje que no es el del remitente.

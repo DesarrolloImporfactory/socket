@@ -374,6 +374,14 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
   for (const q of ['donde esta mi carga', 'mi numero es 0987654321 y quiero saber de mi carga', 'transferi a la cuenta 2204516087 el pago de mi carga', 'hola mi esposa quiere entrar al curso', 'pague 1500 dolares por mi carga']) {
     prueba(`no es pedir datos de otro: «${q}»`, !pideDatosDeOtro(q, W).pide);
   }
+  {
+    // 25-oct: la lectura de la foto dice «sin nombre de cliente visible»; no es pedir la carga de otro.
+    const { leerAdjuntos } = require('../src/utils/soporteExpertos/adjuntos');
+    const foto = leerAdjuntos('[IMAGEN: documento] Cotización de importación en USD, sin nombre de cliente visible. MONTO TOTAL: $20,075.48 USD.\nCliente: porqué me sale un costo tan alto', 'image');
+    prueba('foto «sin nombre de cliente visible» + pregunta propia: NO es datos de otro', !pideDatosDeOtro(foto.textoParaBuscar, W, foto.textoCliente).pide);
+    const ajena = leerAdjuntos('[IMAGEN: documento] Cotización de importación en USD.\nCliente: esta es la cotización de mi socio, cuanto le sale', 'image');
+    prueba('foto + «la cotización de mi socio»: sigue siendo datos de otro', pideDatosDeOtro(ajena.textoParaBuscar, W, ajena.textoCliente).pide);
+  }
 
   /* ───────────────────────────────────────────────────────────────────── */
   console.log('\n12. La guardia: lo que no se manda');

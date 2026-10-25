@@ -117,7 +117,7 @@ async function prepararTurno(p) {
   const bloques = [];
 
   // ── Datos de otra persona ─────────────────────────────────────────────
-  const otro = pideDatosDeOtro(dicho, p.telefono);
+  const otro = pideDatosDeOtro(dicho, p.telefono, adj.textoCliente);
   if (otro.pide) {
     bloques.push(
       `🔒 DATOS DE OTRA PERSONA: el cliente pide información que no es del número desde el que escribe (${otro.motivo}). ` +
