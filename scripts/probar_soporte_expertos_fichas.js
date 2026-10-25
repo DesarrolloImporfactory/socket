@@ -57,6 +57,9 @@ const FIJOS = [...Object.values(T.TEXTOS_FIJOS), ...Object.values(T.LINKS)].join
    COINCIDE BIEN: pregunta lo mismo que una ficha → esa ficha tiene que llegar. */
 const BIEN = [
   ['Qué es el CBM?', 'cbm'],
+  // 25-oct: así lo preguntó un cliente de la 265.
+  ['Me puedes enviar la dirección de las bodegas en Yiwu', 'agente-de-carga'],
+  ['pásame la dirección de la bodega de China', 'agente-de-carga'],
   ['que significa fob', 'fob'],
   ['qué quiere decir exw?', 'exw'],
   ['olvidé mi clave, cómo la recupero', 'olvide-mi-clave'],
