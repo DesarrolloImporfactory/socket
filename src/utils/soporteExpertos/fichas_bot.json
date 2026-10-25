@@ -410,7 +410,7 @@
   ],
   "respuesta_base": "Es pagar tu compra por dentro de Alibaba con el enlace que te envía el proveedor: la plataforma retiene el dinero hasta que confirmas que recibiste lo pactado y, si no, puedes abrir una disputa. La orden tiene que aparecer en tu cuenta, en tus órdenes: si no aparece ahí, no está protegida. Antes de pagar revisa que la cantidad, el precio y las especificaciones sean lo negociado, porque ese enlace funciona como el contrato.",
   "pasos": [],
-  "enlace": "",
+  "enlace": "https://imporfactory.app/cursos/30?contenido=385",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -418,7 +418,8 @@
   ],
   "fuentes": [
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `trade-assurance`",
-   "ENTRENAMIENTO_FRONT/decisiones.json · punto 7"
+   "ENTRENAMIENTO_FRONT/decisiones.json · punto 7",
+   "Curso 30 · lección 385 «VERIFICACION TRADE ASSURANCE» (automejora 25-oct)"
   ]
  },
  {
@@ -3320,6 +3321,30 @@
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m1_ecosistema.json · m1_03 «CREA LA CUENTA PUBLICITARIA EN META»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m1_ecosistema.md · §3, §5 (orden invertido) y §7"
+  ]
+ },
+ {
+  "id": "ia-conectar-cuenta-publicitaria",
+  "tema": "ecommerce-agente-ia",
+  "pais": "todos",
+  "preguntas": [
+   "como conecto imporchat con mi cuenta publicitaria",
+   "como vinculo mi cuenta de anuncios con imporchat",
+   "imporchat no ve mi cuenta publicitaria",
+   "como conecto meta ads con imporchat",
+   "como enlazo mis anuncios de meta con imporchat"
+  ],
+  "respuesta_base": "Para conectarla, primero tienen que existir tu portafolio comercial y tu cuenta publicitaria en Meta. En este video está el paso a paso para conectarla con IMPORCHAT:",
+  "pasos": [],
+  "enlace": "https://imporfactory.app/cursos/32?contenido=660",
+  "pasar_a": "",
+  "pedir": "",
+  "no_decir": [
+   "No pedir claves ni accesos de su cuenta de Meta.",
+   "Si las pantallas de Meta no se parecen a las del video, pasa al equipo de ecommerce: no inventes los menús."
+  ],
+  "fuentes": [
+   "Curso 32 · lección 660 «CONECTA IMPORCHAT CON TU CUENTA PUBLICITARIA» (automejora 25-oct; 40 chats en 30 días)"
   ]
  },
  {
