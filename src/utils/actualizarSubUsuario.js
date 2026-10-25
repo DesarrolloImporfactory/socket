@@ -1,5 +1,14 @@
 const bcrypt = require('bcrypt');
 const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.model');
+const AppError = require('./appError');
+const { ROL_EQUIPO, normalizarRol, puedeTenerRolEquipo } = require('./rolEquipo');
+
+// El rol «equipo» solo en las cuentas autorizadas (utils/rolEquipo.js).
+function revisarRolEquipo(id_usuario, rol) {
+  if (normalizarRol(rol) === ROL_EQUIPO && !puedeTenerRolEquipo(id_usuario)) {
+    throw new AppError('El rol «equipo» no está habilitado en esta cuenta.', 403);
+  }
+}
 
 const actualizarSubUsuario = async ({
   id_sub_usuario,
@@ -11,6 +20,11 @@ const actualizarSubUsuario = async ({
 }) => {
   if (!id_sub_usuario) {
     throw new Error('ID del subusuario es obligatorio');
+  }
+
+  if (normalizarRol(rol) === ROL_EQUIPO) {
+    const actual = await Sub_usuarios_chat_center.findByPk(id_sub_usuario);
+    revisarRolEquipo(actual?.id_usuario, rol);
   }
 
   const camposActualizar = {

@@ -23,9 +23,11 @@ require.cache[rutaDb] = { id: rutaDb, filename: rutaDb, loaded: true, exports: {
 const { hablaDeCarga, pideDatosDeOtro } = require('../src/utils/soporteExpertos/intencion');
 const { cargasDelTelefono, bloqueCarga, textoParaCliente, codigosEnMensaje, esHistorica, enFlujo } = require('../src/utils/soporteExpertos/cargaCliente');
 const { buscadorDeArchivo } = require('../src/utils/soporteExpertos/fichas');
-const { prepararTurno, olvidarTodo } = require('../src/utils/soporteExpertos/turno');
+const { prepararTurno, revisarTurno, olvidarTodo, pideEstado } = require('../src/utils/soporteExpertos/turno');
 const T = require('../src/utils/soporteExpertos/textos');
 const { baseDeMentira, DATOS, TEL, HOY } = require('./soporte_expertos/base_de_mentira');
+// Estas pruebas describen el bot de noche: la hora queda fija un sábado a las 21:00 de Ecuador.
+require('../src/utils/soporteExpertos/horario').fijarHoraParaPruebas(Date.parse('2026-10-24T21:00:00-05:00'));
 
 let ok = 0;
 let fallos = 0;
@@ -425,6 +427,41 @@ const turno = (mensaje, tel, extra = {}) =>
   olvidarTodo();
   t = await turno('en qué va la cotización 9101?', Q.mezcla, { datos: DATOS_FLUJO });
   prueba('🔒 la cotización que no viaja de OTRO cliente sigue señalándose como ajena', /El cliente escribió cotización 9101\. Ese código NO figura/.test(t.bloque));
+
+  /* ───────────────────────────────────────────────────────────────────── */
+  console.log('\n9. El estado de la carga no se repite (23-oct: la lista de 3 cargas salió dos veces)');
+  {
+    olvidarTodo();
+    const tel = TEL.transito_con_fecha;
+    const t0 = Date.parse('2026-10-23T19:10:00-05:00');
+    let a = await turno('cuándo llega mi carga?', tel, { ahora: t0 });
+    prueba('primera vez: va el bloque entero y no está marcada como dicha', /📦 CARGA DE ESTE CLIENTE/.test(a.bloque) && a.hechos.cargaYaDicha === false);
+    const r1 = revisarTurno(a.hechos.textoSeguro, a.hechos, { ahora: t0 });
+    prueba('el estado sale tal cual la primera vez', r1.texto === a.hechos.textoSeguro);
+    a = await turno('lo que ya está en bodega lo dejamos para el contenedor del 15 de noviembre', tel, { ahora: t0 + 10 * 60e3 });
+    prueba('10 min después, sin pedir el estado: no va el bloque entero, va el aviso de no repetir', a.hechos.cargaYaDicha === true && !/📦 CARGA DE ESTE CLIENTE/.test(a.bloque) && /YA se lo diste/.test(a.bloque));
+    prueba('…y el texto seguro es el paso a asesor', a.hechos.textoSeguro === T.MENSAJE_ASESOR);
+    const r2 = revisarTurno(`Hola, ${a.hechos.huellasCarga[0]} y lo demás.`, a.hechos, { ahora: t0 + 10 * 60e3 });
+    prueba('si el modelo igual repite el estado, sale el paso a asesor', r2.texto === T.MENSAJE_ASESOR && r2.cambiada, r2.texto);
+    a = await turno('y cuándo llega entonces?', tel, { ahora: t0 + 12 * 60e3 });
+    prueba('si vuelve a pedir el estado («cuándo llega»), se le da de nuevo', a.hechos.cargaYaDicha === false && /📦 CARGA DE ESTE CLIENTE/.test(a.bloque));
+    olvidarTodo();
+    a = await turno('cuándo llega mi carga?', tel, { ahora: t0 });
+    revisarTurno(a.hechos.textoSeguro, a.hechos, { ahora: t0 });
+    a = await turno('para el 30 de octubre', tel, { ahora: t0 + 25 * 60e3 });
+    prueba('pasados 20 minutos ya no cuenta como dicho', a.hechos.cargaYaDicha === false);
+    olvidarTodo();
+    // Revisión independiente del 24-oct: todas estas vuelven a pedir el estado.
+    const piden = ['y mi carga?', 'qué día llega?', 'cuánto falta para que llegue?', 'llegó ya?', 'ya llegó mi carga', 'me das el estado?', 'info de mi carga porfa', 'tracking?', 'en qué fecha llega?', 'cuándo llegará?', 'y la marca IMP-2231?'];
+    prueba('las maneras de volver a pedir el estado cuentan como pedirlo', piden.every(pideEstado), piden.filter((x) => !pideEstado(x)).join(' | '));
+    const noPiden = ['lo que ya está en bodega lo dejamos para el contenedor del 15 de noviembre', 'hasta cuándo reciben en la bodega de China?', 'para el contenedor del 30 cuándo es el cierre?'];
+    prueba('contar algo de la carga o preguntar por la recepción no es pedir el estado', !noPiden.some(pideEstado), noPiden.filter(pideEstado).join(' | '));
+    a = await turno('cuándo llega mi carga?', tel, { ahora: t0 });
+    revisarTurno(a.hechos.textoSeguro, a.hechos, { ahora: t0 });
+    a = await turno('qué día llega?', tel, { ahora: t0 + 5 * 60e3 });
+    prueba('«qué día llega?» a los 5 min: se le da el estado otra vez', a.hechos.cargaYaDicha === false && /📦 CARGA DE ESTE CLIENTE/.test(a.bloque));
+    olvidarTodo();
+  }
 
   console.log(`\n${fallos ? `HAY FALLAS: ${fallos} fallan, ${ok} pasan` : `TODO BIEN: ${ok} pasan, 0 fallan`}`);
   process.exit(fallos ? 1 : 0);

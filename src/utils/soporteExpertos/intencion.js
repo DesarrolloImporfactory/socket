@@ -280,10 +280,23 @@ function pideDatosDeOtro(texto, telefonoRemitente) {
     (d) => !mismoTelefono(telefonoRemitente, d) && soloDigitos(telefonoRemitente).slice(-9) !== d.slice(-9),
   );
   const loSenala = HABLA_DE_NUMERO.test(t) || /\b(del|al|con el|para el)\s+\+?\d/.test(t);
-  if (ajeno && loSenala && !NO_ES_TELEFONO.test(t)) {
+  // «Me registré en IMPORCHAT con el 0987…»: es el dato que pide el diagnóstico
+  // de la cuenta (que tiene sus propios candados), no la carga de otro.
+  const deRegistro = (hablaDeImporchat(texto) || /registr/.test(t)) && !hablaDeCarga(texto);
+  if (ajeno && loSenala && !NO_ES_TELEFONO.test(t) && !deRegistro) {
     return { pide: true, motivo: 'otro número de teléfono' };
   }
   return { pide: false, motivo: null };
 }
 
-module.exports = { hablaDeCarga, pideDatosDeOtro };
+/* ¿El cliente habla de SU IMPORCHAT o de su bot? Misma regla estricta que se
+   midió el 24-oct sobre 60 días de la 265 (951 mensajes de 273 personas).
+   Solo decide si el diagnóstico puede reemplazar al «un asesor te escribe»
+   cuando la guardia rechaza la respuesta (herramientas.js); no dispara nada. */
+const DE_IMPORCHAT =
+  /imporchat|chat ?center|mi bot|el bot|del bot|api ?key|open ?ai|chat ?gpt|prompt|desconect|no me responde el|no responde el bot|no contesta el bot|probar como cliente|columna|kanban/;
+function hablaDeImporchat(texto) {
+  return DE_IMPORCHAT.test(limpiar(texto));
+}
+
+module.exports = { hablaDeCarga, hablaDeImporchat, pideDatosDeOtro };

@@ -1117,14 +1117,16 @@ exports.abrirChatAtencion = catchAsync(async (req, res) => {
   };
 
   /* ¿A quién se le cuenta el tiempo?
-     - Un asesor de ventas: siempre a él (abre el chat para atenderlo, tenga
+     - Un asesor de ventas o de equipo: siempre a él (abre el chat para atenderlo, tenga
        o no encargado todavía).
      - Un administrador (o cualquier rol que no sea ventas): solo si el chat
        es suyo (id_encargado). Si entra a leer un chat de otro, no se registra
        su apertura ni se le arranca reloj: ve el del encargado. */
   const rol = req.sessionUser?.rol || null;
   const esPropio =
-    rol === 'ventas' || Number(chat.id_encargado) === Number(id_sub_usuario);
+    rol === 'ventas' ||
+    rol === 'equipo' ||
+    Number(chat.id_encargado) === Number(id_sub_usuario);
 
   if (esPropio) {
     const [fila] = await AtencionAperturas.findOrCreate({

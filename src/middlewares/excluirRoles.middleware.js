@@ -8,7 +8,9 @@ const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.mod
 
    Lee el rol fresco de la BD, igual que restrictToRoles: un cambio de rol
    aplica sin esperar a que el token expire. */
-const excluirRoles = (...rolesExcluidos) => {
+const excluirRoles = (...roles) => {
+  // Lo que no ve un asesor de ventas tampoco lo ve un usuario «equipo».
+  const rolesExcluidos = roles.includes('ventas') ? [...roles, 'equipo'] : roles;
   return async (req, res, next) => {
     const subUsuario = req.sessionUser;
 

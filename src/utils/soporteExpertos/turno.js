@@ -23,13 +23,15 @@
 'use strict';
 
 const { leerAdjuntos } = require('./adjuntos');
+const { sinTildes } = require('./texto');
 const { hablaDeCarga, pideDatosDeOtro } = require('./intencion');
 const { cargasDelTelefono, bloqueCarga, textoParaCliente, codigosEnMensaje } = require('./cargaCliente');
 const { buscadorDeArchivo, bloqueFichas, buscarConRescate } = require('./fichas');
 const { revisarRespuesta } = require('./guardia');
 const { paisDelTelefono } = require('./telefono');
-const { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad } = require('./senales');
+const { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad, esMensajeDeBot, noPideNada } = require('./senales');
 const T = require('./textos');
+const { equipoAtendiendo, textoAlHorario } = require('./horario');
 
 const MINUTOS_MEMORIA = 20; // la carga leída y las fichas mostradas siguen valiendo para los mensajes que siguen
 const MAX_MEMORIA = 3000;
@@ -54,6 +56,37 @@ function guardar(clave, valor) {
 }
 
 const decible = (f) => [f.respuesta_base, ...f.pasos, f.enlace, f.pedir].filter(Boolean).join('\n');
+
+/* Pide otra vez el ESTADO de su carga («¿cuándo llega?», «¿cómo va?», «y mi
+   carga?»). Ante la duda, SÍ lo pide: callarle el estado a quien lo pide es
+   peor que repetírselo. Lo único que no cuenta: un mensaje sin pregunta que
+   cuenta algo largo («lo que ya está en bodega lo dejamos para el contenedor
+   del 15») o que pregunta por la recepción de la bodega («hasta cuándo
+   reciben»): eso es para el asesor de logística. (Revisión del 24-oct: «qué
+   día llega?», «cuánto falta?», «llegó ya?», «tracking?», «info de mi carga
+   porfa» se quedaban sin respuesta.) */
+const RE_PIDE_ESTADO =
+  /\b(?:cuando (?:llega\w*|sale|saldria|estaria|arriba)|(?:que|en que) (?:dia|fecha) (?:llega\w*|sale)|cuanto (?:falta|tarda|demora|se demora)|donde (?:esta|va|anda|se encuentra)|como (?:va|vamos|sigue)|en que (?:va|estado)|(?:el )?estado de (?:mi|la|las|mis)|me (?:das|da|dan|pasas|pasan) (?:el )?(?:estado|status)|status|tracking|rastreo|fecha (?:de|estimada de) llegada|novedad\w*|ya (?:llego|salio|arribo)|llego ya|info\w* (?:de|sobre) (?:mi|la|mis)|^y (?:la|mi|el|los|las|mis) (?:marca|cotizacion|carga|mercaderia|mercancia|importacion|pedido|contenedor)s?)\b/;
+const RE_RECEPCION = /\b(?:hasta cuando (?:reciben|recibe|reciban)|reciben|recepcion|cierre|cierra|contenedor del)\b/;
+const pideEstado = (t) => {
+  const l = sinTildes(String(t || '').toLowerCase());
+  if (RE_RECEPCION.test(l)) return false;
+  if (RE_PIDE_ESTADO.test(l)) return true;
+  // Pregunta corta sobre la carga («y mi carga?», «y la marca X?»).
+  const palabras = l.replace(/[^a-z0-9ñ ]+/g, ' ').trim().split(/\s+/).filter(Boolean).length;
+  return hablaDeCarga(t) && (l.includes('?') || palabras <= 6);
+};
+
+/* Huellas del texto de la carga: con ellas se sabe si la respuesta ya lo dijo
+   (cada línea de una carga, sin el «Hola,» ni el «- »). */
+function huellasDeCarga(textoCarga) {
+  if (!textoCarga) return [];
+  return textoCarga
+    .split('\n')
+    .map((l) => l.replace(/^-\s*/, '').replace(/^Hola,\s*/, '').trim())
+    .filter((l) => l.length >= 40 && !/^con este número tienes/i.test(l))
+    .map((l) => l.slice(0, 60));
+}
 
 /**
  * @param {object} p
@@ -94,6 +127,7 @@ async function prepararTurno(p) {
   // ── La carga del que escribe ──────────────────────────────────────────
   let carga = null;
   let cargaTs = null;
+  let bloqueDeCarga = '';
   // Venían hablando de su carga (el último mensaje fue hace menos de 20 minutos).
   const veniaDeCarga = Boolean(previo?.carga) && previo.telefono === String(p.telefono);
   // …y lo leído sigue vigente; si ya venció, se vuelve a leer, no se suelta.
@@ -106,9 +140,27 @@ async function prepararTurno(p) {
       carga = await cargasDelTelefono(p.telefono, { consultar: deps.consultar, hoy: deps.hoy });
       cargaTs = ahora;
     }
-    bloques.push(bloqueCarga(carga, { codigos: codigosEnMensaje(dicho), mensajeAsesor: T.MENSAJE_ASESOR }));
+    bloqueDeCarga = bloqueCarga(carga, { codigos: codigosEnMensaje(dicho), mensajeAsesor: T.MENSAJE_ASESOR });
   }
   const textoCarga = carga?.estado === 'encontradas' ? textoParaCliente(carga, T.MENSAJE_ASESOR) : null;
+  /* El estado de su carga ya se lo dijo hace menos de 20 minutos y ahora no lo
+     vuelve a pedir: no se repite el bloque entero (23-oct: a quien preguntaba
+     hasta cuándo recibe la bodega para el contenedor del 30 se le mandó dos
+     veces la lista de sus 3 cargas). Lo nuevo que pregunta es para el asesor. */
+  const cargaYaDicha =
+    Boolean(textoCarga) &&
+    Boolean(previo?.cargaDichaTs) &&
+    ahora - previo.cargaDichaTs <= MINUTOS_MEMORIA * 60 * 1000 &&
+    !pideEstado(dicho);
+  if (bloqueDeCarga) {
+    bloques.push(
+      cargaYaDicha
+        ? '📦 CARGA: el estado de su carga YA se lo diste en esta conversación y ahora no lo vuelve a pedir. NO lo repitas ni copies sus líneas. ' +
+            'Si pregunta algo que ese estado no dice (hasta cuándo recibe la bodega, pasar su mercadería a otro contenedor, una fecha de corte, otra bodega), ' +
+            `es para el asesor de logística: responde exactamente: ${T.MENSAJE_ASESOR}`
+        : bloqueDeCarga,
+    );
+  }
 
   // ── Fichas de la base ─────────────────────────────────────────────────
   let fichas = [];
@@ -149,13 +201,39 @@ async function prepararTurno(p) {
     );
   }
 
+  // ── ¿El equipo está atendiendo? ───────────────────────────────────────
+  /* Los textos fijos dicen «apenas abramos»; de día eso es falso. El modelo los
+     sigue usando tal cual (la guardia no le deja prometer tiempos) y al final
+     del turno revisarTurno cambia «apenas abramos» por «en breve».
+     Solo en la cuenta que declara `horario_equipo`: soporte_expertos también
+     está en la 10 (WAPP IMPORTSUIT), con otro equipo y otras horas, y a esa no
+     se le cambia el texto (revisión del 24-oct). */
+  const atendiendo = Boolean(opciones.horario_equipo) && equipoAtendiendo(deps.ahora, opciones.horario_equipo);
+  if (atendiendo) {
+    bloques.push(
+      '🕘 AHORA EL EQUIPO ESTÁ ATENDIENDO (horario de oficina). No digas que estamos cerrados, que es fuera de horario ni que es de noche o fin de semana. ' +
+        'Usa los textos fijos tal cual están escritos: el sistema ajusta solo cuándo te escribe el asesor.',
+    );
+  }
+
   // ── Hechos del turno: con esto revisa la guardia ──────────────────────
   const fichasVistas = new Map(previo?.fichas || []);
   for (const { ficha } of fichas) fichasVistas.set(ficha.id, ficha);
   /* Si en esta conversación ya dijo cuántas unidades quiere, se recuerda: una
      ficha de cotización que la guardia complete no se la vuelve a pedir. */
   const cantidadDicha = Boolean(previo?.dioCantidad) || dioCantidad(dicho);
-  guardar(clave, { ts: ahora, telefono: String(p.telefono), carga: carga || null, cargaTs, fichas: fichasVistas, dioCantidad: cantidadDicha });
+  guardar(clave, {
+    ts: ahora,
+    telefono: String(p.telefono),
+    carga: carga || null,
+    cargaTs,
+    // Cuándo se le dijo el estado de la carga (lo marca revisarTurno).
+    cargaDichaTs: carga ? previo?.cargaDichaTs || null : null,
+    fichas: fichasVistas,
+    dioCantidad: cantidadDicha,
+    // Cuándo el bot terminó su respuesta con una pregunta (lo marca revisarTurno).
+    preguntoTs: previo?.preguntoTs || null,
+  });
 
   /* Fichas que pasan el caso a una persona (`pasar_a`): no pueden cerrar solas.
      La guardia agrega el paso a asesor si el modelo contestó con una y lo omitió
@@ -164,7 +242,6 @@ async function prepararTurno(p) {
     .filter((f) => f.pasar_a && f.respuesta_base)
     .map((f) => ({ id: f.id, partes: [f.respuesta_base, ...f.pasos], pedir: f.pedir || '' }));
 
-  const bloqueDeCarga = carga ? bloques.find((b) => b.startsWith('📦')) || '' : '';
   const firme = [
     ...Object.values(T.TEXTOS_FIJOS),
     ...Object.values(T.LINKS),
@@ -176,7 +253,8 @@ async function prepararTurno(p) {
   let textoSeguro = T.MENSAJE_ASESOR;
   if (otro.pide) textoSeguro = T.MENSAJE_SOLO_TU_NUMERO;
   else if (carga && hablaDeCarga(dicho)) {
-    if (textoCarga) textoSeguro = textoCarga;
+    if (cargaYaDicha) textoSeguro = T.MENSAJE_ASESOR;
+    else if (textoCarga) textoSeguro = textoCarga;
     else if (carga.estado === 'sin_carga' || carga.estado === 'solo_historicas') textoSeguro = T.MENSAJE_SIN_CARGA;
     else textoSeguro = T.MENSAJE_CARGA_A_LOGISTICA;
   }
@@ -189,6 +267,26 @@ async function prepararTurno(p) {
      escribiendo, el saludo anterior ya se contestó, o el modelo calla por algo. */
   const saludoSinContestar = !previo && !adj.adjuntos.length && esSoloSaludo(dicho);
 
+  /* Lo escribió el bot de ventas de la tienda del alumno (senales.js): el motor
+     no le contesta, así los dos bots no se quedan hablando. Se mira lo que
+     escribió, no la descripción de sus adjuntos. Se apaga con
+     soporte_expertos.callar_bots = false. */
+  const mensajeDeBot = opciones.callar_bots !== false && esMensajeDeBot(String(p.mensaje || ''));
+
+  /* Solo agradece, confirma o avisa que él hará algo («ok», «listo amigo
+     gracias», «el lunes te los paso»): no se contesta (senales.noPideNada).
+     Con un adjunto sí se mira (el «ok» puede venir con el comprobante). Se
+     apaga con soporte_expertos.callar_acuses = false. */
+  const sinPedido =
+    opciones.callar_acuses !== false &&
+    !adj.adjuntos.length &&
+    (!p.tipo_mensaje || p.tipo_mensaje === 'text') &&
+    !otro.pide &&
+    // «dale», «ok» o «de acuerdo» a una pregunta del bot («¿te envío el
+    // tutorial?») es un sí: se contesta (revisión del 24-oct).
+    !(previo?.preguntoTs && ahora - previo.preguntoTs <= MINUTOS_MEMORIA * 60 * 1000) &&
+    noPideNada(String(p.mensaje || ''));
+
   await log(
     `🎓 soporte_expertos: carga=${carga ? `${carga.estado}${carga.cargas.length ? ` (${carga.cargas.length})` : ''}` : 'no consultada'}` +
       ` · fichas=[${fichas.map((f) => `${f.ficha.id} ${f.cercania ?? ''}`.trim()).join(', ')}]` +
@@ -196,7 +294,11 @@ async function prepararTurno(p) {
       (adj.esNotaDeVoz ? ' · nota de voz' : '') +
       (otro.pide ? ` · pide datos ajenos (${otro.motivo})` : '') +
       (reclamoPorDemora ? ' · reclama por la demora' : reclamo ? ' · reclamo' : '') +
-      (saludoSinContestar ? ' · primer saludo' : ''),
+      (saludoSinContestar ? ' · primer saludo' : '') +
+      (mensajeDeBot ? ' · mensaje de un bot de tienda' : '') +
+      (sinPedido ? ' · no pide nada' : '') +
+      (cargaYaDicha ? ' · el estado de la carga ya se dijo' : '') +
+      (atendiendo ? ' · equipo atendiendo' : ''),
   );
 
   return {
@@ -211,6 +313,12 @@ async function prepararTurno(p) {
       reclamo,
       reclamoPorDemora,
       saludoSinContestar,
+      mensajeDeBot,
+      noPideNada: sinPedido,
+      cargaYaDicha,
+      equipoAtendiendo: atendiendo,
+      huellasCarga: huellasDeCarga(textoCarga),
+      clave,
       dioCantidad: cantidadDicha,
       respaldo: {
         firme,
@@ -239,15 +347,51 @@ function hechosDeEmergencia(mensaje = '') {
     reclamo: false,
     reclamoPorDemora: false,
     saludoSinContestar: false,
+    mensajeDeBot: false,
+    noPideNada: false,
+    cargaYaDicha: false,
+    equipoAtendiendo: false,
+    huellasCarga: [],
+    clave: null,
     dioCantidad: false,
     respaldo: { firme: fijos, eco: String(mensaje || ''), estado: fijos },
     textoSeguro: T.MENSAJE_ASESOR,
   };
 }
 
+/* Con el equipo atendiendo, «apenas abramos» → «en breve» (horario.js). No
+   cuenta como respuesta cambiada: es el mismo texto aprobado, ajustado a la hora. */
+function alHorario(rev, h) {
+  if (!h.equipoAtendiendo || !rev?.texto) return rev;
+  return { ...rev, texto: textoAlHorario(rev.texto, true) };
+}
+
 /** Pasa la respuesta del modelo por la guardia con los hechos del turno. */
-function revisarTurno(respuesta, hechos) {
-  return revisarRespuesta(respuesta, hechos || hechosDeEmergencia());
+function revisarTurno(respuesta, hechos, { ahora = Date.now() } = {}) {
+  const h = hechos || hechosDeEmergencia();
+  const rev = alHorario(revisarRespuesta(respuesta, h), h);
+  /* ¿La respuesta trae el estado de la carga? Si ya se le había dicho y no lo
+     volvió a pedir, se cambia por el paso a asesor; si no, se anota que ya se
+     le dijo (para el próximo mensaje de esta conversación). */
+  const enMemoria = h.clave && memoria.get(h.clave);
+  if (enMemoria) enMemoria.preguntoTs = /\?/.test(String(rev.texto || '')) ? ahora : null;
+  const huellas = h.huellasCarga || [];
+  if (huellas.length && huellas.some((x) => String(rev.texto || '').includes(x))) {
+    if (h.cargaYaDicha) {
+      return alHorario(
+        {
+          texto: T.MENSAJE_ASESOR,
+          cambiada: true,
+          corregida: false,
+          motivos: [...(rev.motivos || []), 'repetía el estado de la carga que ya se le había dado'],
+        },
+        h,
+      );
+    }
+    const m = h.clave && memoria.get(h.clave);
+    if (m) m.cargaDichaTs = ahora;
+  }
+  return rev;
 }
 
 /** Solo para pruebas. */
@@ -255,4 +399,4 @@ function olvidarTodo() {
   memoria.clear();
 }
 
-module.exports = { prepararTurno, revisarTurno, hechosDeEmergencia, olvidarTodo, MINUTOS_MEMORIA };
+module.exports = { prepararTurno, revisarTurno, hechosDeEmergencia, olvidarTodo, pideEstado, MINUTOS_MEMORIA };

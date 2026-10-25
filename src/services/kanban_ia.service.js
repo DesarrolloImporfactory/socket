@@ -2285,6 +2285,21 @@ async function procesarMensajeKanban(params) {
             : { ...ajustesIA.soporte_expertos, cargas: false },
         log,
       });
+      /* Lo escribió el bot de ventas de la tienda del alumno: no se le
+         contesta (sin llamar al modelo), o los dos bots se quedan hablando. */
+      if (turnoExpertos.hechos?.mensajeDeBot) {
+        await log(`🤖 soporte_expertos: el mensaje es de un bot de tienda; no se contesta (cliente=${id_cliente})`);
+        anotarSilencio(id_configuracion, id_cliente);
+        return { ok: true, motivo: 'mensaje_de_bot', silencio: true };
+      }
+      /* Solo agradece o confirma («ok», «listo gracias», «el lunes te lo
+         paso»): no se contesta. El prompt ya lo mandaba callar y el modelo
+         igual respondía «Recibido» (23-oct: 7 de 73 respuestas). */
+      if (turnoExpertos.hechos?.noPideNada) {
+        await log(`🤫 soporte_expertos: el cliente solo agradece o confirma; no se contesta (cliente=${id_cliente})`);
+        anotarSilencio(id_configuracion, id_cliente);
+        return { ok: true, motivo: 'no_pide_nada', silencio: true };
+      }
       if (turnoExpertos.bloque) bloqueContexto += `${turnoExpertos.bloque}\n\n`;
       // El mensaje como lo tiene que ver el modelo: con sus adjuntos nombrados
       // en vez del relleno genérico de «no se puede leer».
@@ -2705,14 +2720,34 @@ async function procesarMensajeKanban(params) {
       if (ajustesIA.soporte_expertos?.herramientas && turnoExpertos) {
         const { crearHerramientas } = require('../utils/soporteExpertos/herramientas');
         const { ejecutarConClaudeHerramientas } = require('../utils/claude/herramientas');
+        const { SECCION_DIAGNOSTICO, SECCION_PAGOS, SECCION_AGENDA } = require('../utils/prompt_soporte_expertos.data');
+        /* Revisar la cuenta IMPORCHAT del que escribe: bandera aparte
+           (soporte_expertos.diagnostico). La sección va al final de las
+           instrucciones fijas, no del bloque del producto, para que el
+           caché del prompt no cambie de un anuncio a otro. */
+        const conDiagnostico = ajustesIA.soporte_expertos.diagnostico === true;
+        // Cuotas, saldo y facturas del que escribe: bandera aparte (soporte_expertos.pagos).
+        const conPagos = ajustesIA.soporte_expertos.pagos === true;
+        // Reuniones y sesión de implementación, solo lectura: bandera aparte (soporte_expertos.agenda).
+        const conAgenda = ajustesIA.soporte_expertos.agenda === true;
         herramientasTurno = crearHerramientas({
           telefono,
           mensaje,
           canalVerificable: canalVerificableExpertos,
           cargas: ajustesIA.soporte_expertos.cargas !== false,
+          diagnostico: conDiagnostico,
+          pagos: conPagos,
+          agenda: conAgenda,
+          idConfiguracionPropia: id_configuracion,
         });
         resultado = await ejecutarConClaudeHerramientas({
           ...parametrosClaude,
+          instructions: [
+            parametrosClaude.instructions,
+            ...(conDiagnostico ? [SECCION_DIAGNOSTICO] : []),
+            ...(conPagos ? [SECCION_PAGOS] : []),
+            ...(conAgenda ? [SECCION_AGENDA] : []),
+          ].join('\n\n'),
           herramientas: herramientasTurno.lista,
         });
       } else {
@@ -3011,7 +3046,13 @@ async function procesarMensajeKanban(params) {
           turnoExpertos.hechos,
           resultado.hechosHerramientas,
           herramientasTurno?.cargaConsultada?.(),
-          { mensaje, respuesta: respuestaRaw },
+          {
+            mensaje,
+            respuesta: respuestaRaw,
+            diagnostico: herramientasTurno?.diagnosticoConsultado?.(),
+            pagos: herramientasTurno?.pagosConsultados?.(),
+            reuniones: herramientasTurno?.reunionesConsultadas?.(),
+          },
         );
       }
       // Si el 6.9 falló no hay hechos del turno: se revisa con los mínimos.
@@ -3033,9 +3074,10 @@ async function procesarMensajeKanban(params) {
       await log(
         `⚠️ soporte_expertos (guardia): ${eGuardia.message} — se manda el texto seguro en lugar de la respuesta sin revisar`,
       ).catch(() => {});
-      respuestaRaw =
-        turnoExpertos?.hechos?.textoSeguro ||
-        require('../utils/soporteExpertos/textos').MENSAJE_ASESOR;
+      respuestaRaw = require('../utils/soporteExpertos/horario').textoAlHorario(
+        turnoExpertos?.hechos?.textoSeguro || require('../utils/soporteExpertos/textos').MENSAJE_ASESOR,
+        Boolean(turnoExpertos?.hechos?.equipoAtendiendo),
+      );
     }
   }
 
@@ -4420,6 +4462,59 @@ async function procesarMensajeKanban(params) {
       }
     } catch (eFin) {
       await log(`⚠️ venta realizada: ${eFin.message}`);
+    }
+  }
+
+  /* ── Soporte Expertos: a quién va el caso (ajustes → soporte_expertos.escalar) ──
+     Si lo que salió deja el caso a una persona, se decide el área y la persona
+     del equipo (soporteExpertos/escalado.js). 'simulado' solo lo anota en el
+     log; 'real' además asigna el chat si no tiene encargado o el suyo ya no
+     está, y deja una nota interna. Nunca le escribe al cliente ni tumba el turno. */
+  const modoEscalar = ajustesIA.soporte_expertos?.escalar;
+  if (soloTexto && (modoEscalar === 'simulado' || modoEscalar === 'real') && !params.es_prueba) {
+    try {
+      const { escalarCaso, esPase } = require('../utils/soporteExpertos/escalado');
+      if (esPase(soloTexto)) {
+        const { crearHistorial } = require('../utils/historialEncargados');
+        await escalarCaso({
+          modo: modoEscalar,
+          id_configuracion,
+          id_cliente,
+          telefono,
+          mensaje,
+          motivo: herramientasTurno?.paseConsultado?.() || null,
+          hechos: turnoExpertos?.hechos || {},
+          log,
+          deps: {
+            consultar: (sql, replacements) =>
+              db.query(sql, {
+                replacements,
+                type: /^\s*select/i.test(sql) ? db.QueryTypes.SELECT : db.QueryTypes.UPDATE,
+              }),
+            crearHistorial: (datos) => crearHistorial(datos, null),
+            crearNota: async (texto) => {
+              const [propietario] = await db.query(
+                'SELECT id FROM clientes_chat_center WHERE id_configuracion = ? AND propietario = 1 LIMIT 1',
+                { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+              );
+              await MensajeClienteModel.create({
+                id_configuracion,
+                id_cliente: propietario?.id ?? id_cliente,
+                mid_mensaje: null,
+                tipo_mensaje: 'notificacion',
+                visto: 0,
+                texto_mensaje: texto,
+                rol_mensaje: 3,
+                celular_recibe: String(id_cliente),
+                responsable: 'IA_Escalado Expertos',
+              });
+            },
+            emitir: () => enviarConsultaAPI(id_configuracion, id_cliente).catch(() => {}),
+          },
+        });
+      }
+    } catch (eEsc) {
+      await log(`⚠️ soporte_expertos (escalar): ${eEsc.message}`).catch(() => {});
     }
   }
 

@@ -170,6 +170,13 @@ async function startServer() {
     // Controller socket reference
     chatController.setSocketIo(io);
 
+    // Sesión en el socket principal: suave (deja entrar sin token y lo
+    // cuenta en [SOCKET_SESION] cada hora) pero rechaza cuentas suspendidas,
+    // eliminadas o con la sesión cerrada. Cada minuto corta los sockets ya
+    // abiertos de quien quedó así. Ver sockets/cortarSesiones.js.
+    io.use(socketAuth.socketAuthSuave());
+    require('./sockets/cortarSesiones').iniciarRevisionDeSesiones(io);
+
     // Sockets base (GET_CHATS, etc.)
     new Sockets(io);
 

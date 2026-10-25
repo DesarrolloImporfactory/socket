@@ -269,7 +269,7 @@ exports.revision = catchAsync(async (req, res) => {
     type: db.QueryTypes.SELECT,
   });
   const esSuper = yo?.rol === 'super_administrador';
-  if (!esSuper && (!propia || yo?.rol === 'ventas')) {
+  if (!esSuper && (!propia || yo?.rol === 'ventas' || yo?.rol === 'equipo')) {
     return res.status(403).json({ status: 'error', message: 'Tu rol no puede dar seguimiento a las llamadas de esta conexión' });
   }
   if (!estado) {

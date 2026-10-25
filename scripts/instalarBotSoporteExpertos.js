@@ -57,6 +57,7 @@ const {
 } = require('../src/utils/prompt_soporte_expertos.data');
 const { buscadorDeArchivo } = require('../src/utils/soporteExpertos/fichas');
 const ajustesIA = require('../src/utils/ajustesIA');
+const { mezclarSoporteExpertos } = require('./soporte_expertos/mezclarAjustes');
 
 const arg = (k) =>
   (process.argv.find((a) => a.startsWith(`--${k}=`)) || '').split('=').slice(1).join('=');
@@ -173,7 +174,7 @@ async function main() {
     horario,
     solo_numeros: ABRIR ? [] : [...new Set([...(previo.solo_numeros || []), ...SOLO])],
     numeros_excluidos: [...new Set([...(previo.numeros_excluidos || []), ...EXCLUIR])],
-    soporte_expertos: { cargas: !SIN_CARGAS, fichas: !SIN_FICHAS, guardia: true, herramientas: HERRAMIENTAS },
+    soporte_expertos: mezclarSoporteExpertos(previo, { cargas: !SIN_CARGAS, fichas: !SIN_FICHAS, herramientas: HERRAMIENTAS }),
   };
   const leidos = ajustesIA.normalizar(ajustesNuevos);
   if (leidos.horario_invalido || !leidos.horario) {
