@@ -770,6 +770,109 @@ async function suiteA() {
         return f.some((x) => /Ciudad/i.test(x));
       })(),
     );
+
+    /* ── El número desde el que escribe es un dato real (cfg 569, oct-2026) ──
+       El candado anti-invento trataba el número del chat como inventado: el
+       cliente decía "a este mismo número", el modelo lo copiaba del bloque
+       DATOS TÉCNICOS y el cierre se bloqueaba con "ayúdame con este dato:
+       Teléfono" (8.000 bloqueos en 30 días, 186 cuentas). */
+    const {
+      telefonoCanalValido,
+      mismoTelefono,
+      dijoEsteMismo,
+      telefonoCanalLocal,
+      completarResumenConFicha: completarTel,
+    } = require('../src/utils/fichaPedido');
+    const resumenCanal = resumenTypo.replace('0962803007', '0961102356');
+    const textoEsteMismo =
+      'quiero 3\nguayaquil\ndomicilio\nMichael Ordonez, calderon calle geovanny rivera frente al portal\na este mismo número';
+    caso(
+      'cierre: el teléfono del chat (canal) NO cuenta como inventado',
+      !faltantesTypo(resumenCanal, {
+        _textoCliente: textoEsteMismo,
+        _telefonoCanal: '593961102356',
+      }).some((x) => /Tel/i.test(x)),
+    );
+    caso(
+      'cierre: sin número del canal, un teléfono que el cliente no escribió sigue bloqueando',
+      faltantesTypo(resumenCanal, { _textoCliente: textoEsteMismo }).some((x) =>
+        /Tel/i.test(x),
+      ),
+    );
+    caso(
+      'cierre: el teléfono que la ficha validó en el historial (fuera de ventana) pasa',
+      !faltantesTypo(resumenCanal, {
+        _textoCliente: 'ok dale',
+        telefono: '0961102356',
+      }).some((x) => /Tel/i.test(x)),
+    );
+    caso(
+      'canal: un PSID de Messenger (16-17 dígitos) no es teléfono; un 593… sí',
+      telefonoCanalValido('24567890123456789') === '' &&
+        telefonoCanalValido('593961102356') === '593961102356' &&
+        mismoTelefono('0961102356', '593961102356') &&
+        !mismoTelefono('0961102356', '593999707212') &&
+        telefonoCanalLocal('593961102356', 'Ecuador') === '0961102356' &&
+        telefonoCanalLocal('5215512345678', 'México') === '5512345678',
+    );
+    caso(
+      'canal: "a este mismo", "es el mismo q le escribo", "a este numero" se reconocen; "el mismo color" no',
+      dijoEsteMismo('A este mismo número porfa') &&
+        dijoEsteMismo('A este mismos número') &&
+        dijoEsteMismo('Es el mismo q le escribo') &&
+        dijoEsteMismo('A este numero') &&
+        dijoEsteMismo('Con este mismo que estamos chateando') &&
+        dijoEsteMismo('El mismo del que le estoy preguntando') &&
+        dijoEsteMismo('Este número es mi número de celular, al número que me estás escribiendo.') &&
+        dijoEsteMismo('Pero es el mismo') &&
+        dijoEsteMismo('quiero 2\nEl mismo') &&
+        dijoEsteMismo('al que te escribo') &&
+        !dijoEsteMismo('si el mismo color a mi amiga le gustó') &&
+        !dijoEsteMismo('Yo tengo el mismo y si mancha hasta las manos') &&
+        !dijoEsteMismo('A este rato me estoy acordando de algo') &&
+        !dijoEsteMismo('Okey el 15 de este mes hago un pedido') &&
+        !dijoEsteMismo('cuando llega este pedido'),
+    );
+    // Resumen con un número que el cliente no escribió y que no es el del
+    // chat (el modelo lo inventó): se pisa con el del canal, en formato local.
+    const resumenInventado = resumenTypo.replace('0962803007', '0999999999');
+    const cInv = completarTel(resumenInventado, {
+      telefono: '',
+      _textoCliente: textoEsteMismo,
+      _telefonoCanal: '593961102356',
+      _paisNombre: 'Ecuador',
+    });
+    caso(
+      'resumen: un teléfono inventado se reemplaza por el del chat (0961102356) y el cierre pasa',
+      /Telefono: 0961102356/.test(cInv.texto) &&
+        cInv.completados.some((c) => /canal/.test(c)) &&
+        motivoCierreInvalido(cInv.texto, {
+          _textoCliente: textoEsteMismo,
+          _telefonoCanal: '593961102356',
+        }) === null,
+      `completados=${cInv.completados} motivo=${motivoCierreInvalido(cInv.texto)}`,
+    );
+    // Sin ficha (solo el número del chat): la línea de relleno se completa en
+    // vez de bloquear.
+    const resumenRelleno = resumenTypo.replace('0962803007', '09XXXXXXXX (a confirmar)');
+    const cRel = completarTel(resumenRelleno, {
+      _telefonoCanal: '593961102356',
+      _paisNombre: 'Ecuador',
+    });
+    caso(
+      'resumen sin ficha: "09XXXXXXXX (a confirmar)" se completa con el número del chat',
+      /Telefono: 0961102356/.test(cRel.texto) && motivoCierreInvalido(cRel.texto) === null,
+      `motivo=${motivoCierreInvalido(cRel.texto)}`,
+    );
+    caso(
+      'resumen: el teléfono que el cliente SÍ escribió no se toca',
+      completarTel(resumenTypo, {
+        telefono: '0962803007',
+        _textoCliente: 'Michael Ordonez 0962803007',
+        _telefonoCanal: '593961102356',
+        _paisNombre: 'Ecuador',
+      }).completados.length === 0,
+    );
   }
 
   /* ── Flujo de venta por pasos (embudo manual del wizard) ──
