@@ -1241,6 +1241,119 @@ const resolverSolicitud = async ({
   return { ok: true };
 };
 
+/**
+ * Saldo acumulado de cada referidor, para el super admin.
+ *
+ * POR QUÉ EXISTE
+ * La pantalla de solicitudes solo muestra lo que alguien YA pidió. Lo que el
+ * negocio debe —comisiones disponibles que nadie reclamó todavía— no se veía
+ * en ningún lado, y es justo la cifra que hay que tener en reserva. También
+ * responde si los clientes están usando el programa: quién generó su enlace,
+ * quién trajo gente y quién de verdad cobra.
+ *
+ * Entra todo usuario que haya tocado el programa: generó su código, tiene al
+ * menos un referido o tiene alguna comisión. Se promueven primero las
+ * pendientes vencidas (promoverPendientes corre por usuario al abrir
+ * /referidos; aquí se corre global para que "disponible" sea el de hoy).
+ */
+const saldosReferidores = async () => {
+  await promoverPendientes();
+
+  const filas = await db.query(
+    `SELECT u.id_usuario, u.nombre, u.email_propietario, u.whatsapp_lead,
+            u.codigo_referido, u.referidos_pago_pref, u.estado,
+            (SELECT COUNT(*) FROM usuarios_chat_center r
+              WHERE r.referido_por = u.id_usuario)                            AS referidos_total,
+            (SELECT COUNT(*) FROM usuarios_chat_center r
+              WHERE r.referido_por = u.id_usuario
+                AND r.estado IN ('activo','trial_usage','promo_usage'))      AS referidos_activos,
+            (SELECT COUNT(*) FROM referidos_pagos p
+              WHERE p.id_usuario = u.id_usuario
+                AND p.estado IN ('solicitado','aprobado'))                   AS solicitudes_pendientes,
+            COALESCE(SUM(CASE WHEN c.estado = 'pendiente'
+                              THEN c.monto_comision_cent END), 0)            AS pendiente_cent,
+            COALESCE(SUM(CASE WHEN c.estado = 'disponible' AND c.id_pago IS NULL
+                              THEN c.monto_comision_cent END), 0)            AS disponible_cent,
+            COALESCE(SUM(CASE WHEN c.estado = 'disponible' AND c.id_pago IS NOT NULL
+                              THEN c.monto_comision_cent END), 0)            AS reservado_cent,
+            COALESCE(SUM(CASE WHEN c.estado = 'pagada'
+                              THEN c.monto_comision_cent END), 0)            AS pagado_cent,
+            COALESCE(SUM(CASE WHEN c.estado = 'revertida'
+                              THEN c.monto_comision_cent END), 0)            AS revertido_cent,
+            COALESCE(SUM(CASE WHEN c.estado <> 'revertida'
+                              THEN c.monto_comision_cent END), 0)            AS ganado_cent,
+            COUNT(c.id)                                                      AS comisiones_n,
+            MAX(c.created_at)                                                AS ultima_comision,
+            MIN(CASE WHEN c.estado = 'pendiente' THEN c.disponible_desde END) AS proxima_disponible
+       FROM usuarios_chat_center u
+       LEFT JOIN referidos_comisiones c ON c.id_usuario_referidor = u.id_usuario
+      WHERE u.codigo_referido IS NOT NULL
+         OR c.id IS NOT NULL
+         OR EXISTS (SELECT 1 FROM usuarios_chat_center r WHERE r.referido_por = u.id_usuario)
+      GROUP BY u.id_usuario
+      ORDER BY disponible_cent DESC, pendiente_cent DESC, referidos_total DESC, u.nombre ASC
+      LIMIT 2000`,
+    SELECT,
+  );
+
+  const num = (v) => Number(v || 0);
+  const totales = filas.reduce(
+    (t, f) => {
+      t.pendiente_cent += num(f.pendiente_cent);
+      t.disponible_cent += num(f.disponible_cent);
+      t.reservado_cent += num(f.reservado_cent);
+      t.pagado_cent += num(f.pagado_cent);
+      t.ganado_cent += num(f.ganado_cent);
+      t.referidos_total += num(f.referidos_total);
+      t.con_codigo += f.codigo_referido ? 1 : 0;
+      t.con_referidos += num(f.referidos_total) > 0 ? 1 : 0;
+      t.con_saldo += num(f.disponible_cent) + num(f.pendiente_cent) + num(f.reservado_cent) > 0 ? 1 : 0;
+      t.con_disponible += num(f.disponible_cent) > 0 ? 1 : 0;
+      t.con_solicitud += num(f.solicitudes_pendientes) > 0 ? 1 : 0;
+      return t;
+    },
+    {
+      referidores: filas.length,
+      pendiente_cent: 0,
+      disponible_cent: 0,
+      reservado_cent: 0,
+      pagado_cent: 0,
+      ganado_cent: 0,
+      referidos_total: 0,
+      con_codigo: 0,
+      con_referidos: 0,
+      con_saldo: 0,
+      con_disponible: 0,
+      con_solicitud: 0,
+    },
+  );
+  // Lo que hay que tener en caja: lo disponible (pueden pedirlo hoy) más lo
+  // ya reservado en solicitudes abiertas. Lo pendiente madura en DIAS_RETENCION.
+  totales.reserva_cent = totales.disponible_cent + totales.reservado_cent;
+
+  return {
+    filas: filas.map((f) => ({
+      ...f,
+      referidos_total: num(f.referidos_total),
+      referidos_activos: num(f.referidos_activos),
+      solicitudes_pendientes: num(f.solicitudes_pendientes),
+      pendiente_cent: num(f.pendiente_cent),
+      disponible_cent: num(f.disponible_cent),
+      reservado_cent: num(f.reservado_cent),
+      pagado_cent: num(f.pagado_cent),
+      revertido_cent: num(f.revertido_cent),
+      ganado_cent: num(f.ganado_cent),
+      comisiones_n: num(f.comisiones_n),
+      por_cobrar_cent: num(f.disponible_cent) + num(f.reservado_cent),
+    })),
+    totales,
+    reglas: {
+      dias_retencion: DIAS_RETENCION,
+      umbral_transferencia_cent: UMBRAL_TRANSFERENCIA_CENT,
+    },
+  };
+};
+
 // ═══════════════════════════════════════════════════════════════
 // Rendimiento de las tiendas de los referidos
 // ═══════════════════════════════════════════════════════════════
@@ -1445,4 +1558,5 @@ module.exports = {
   listarSolicitudes,
   detalleSolicitud,
   resolverSolicitud,
+  saldosReferidores,
 };

@@ -44,6 +44,13 @@ router.get(
   requireSuperAdmin,
   referidosController.detalleSolicitud,
 );
+// Saldos acumulados por referidor (lo que ya ganaron y aún no pidieron):
+// cuánto hay que tener en reserva y quién está usando el programa.
+router.get(
+  '/admin/saldos',
+  requireSuperAdmin,
+  referidosController.saldosReferidores,
+);
 router.post(
   '/admin/solicitudes/:id',
   requireSuperAdmin,
