@@ -66,6 +66,10 @@ const RE_ECOMMERCE =
   /\b(?:dropi|imporchat|campan\w*|anuncio\w*|publicidad|meta ads|facebook ads|business manager|pixel|shopify|landing|dropkiller|tienda (?:online|virtual|web)|pagina web|imporshop|primera venta|dropshipping|bot)\b/;
 const RE_LOGISTICA =
   /\b(?:carga|mercaderia|mercancia|contenedor|bodega|marca de envio|shipping mark|guia|tracking|retir(?:o|ar|arla|arlo)|entreg\w*|despach\w*|domicilio|chofer|transporte|fletera|aduana|llega\w*)\b/;
+// «¿Llegó mi mercadería?» con la captura de la guía es logística aunque la IA o
+// la foto digan pago (26-oct, ****4820 fue a Johan).
+const RE_PREGUNTA_LLEGADA =
+  /\b(?:lleg\w*|donde (?:esta|va|anda)|ya (?:salio|esta en))\b.*\b(?:carga|mercaderia|mercancia|cajas?|contenedor)\b|\b(?:carga|mercaderia|mercancia|cajas?|contenedor)\b.*\blleg\w*/;
 
 /**
  * ¿De qué área es el caso? El motivo de la herramienta pasar_a_humano manda;
@@ -81,6 +85,7 @@ function areaDelCaso({ motivo = null, mensaje = '', hechos = {}, columna = null 
   const fichas = hechos.fichas || [];
   if (RE_REEMBOLSO.test(t) || FICHAS_REEMBOLSO.includes(fichas[0])) return 'reembolso';
   if (hechos.reclamo || hechos.reclamoPorDemora || motivo === 'reclamo') return 'reclamo';
+  if (RE_PREGUNTA_LLEGADA.test(t) && !RE_PAGO.test(t) && !RE_FACTURA.test(t) && !RE_ECOMMERCE.test(t)) return 'logistica';
   if (motivo === 'pago') return RE_FACTURA.test(t) ? 'factura' : 'pago';
   if (motivo === 'cotizacion') return 'cotizacion';
   if (RE_FACTURA.test(t)) return 'factura';

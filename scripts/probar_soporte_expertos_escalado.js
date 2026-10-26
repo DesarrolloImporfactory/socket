@@ -64,6 +64,11 @@ function base(chat) {
     [{ mensaje: 'ya pagué y no me han enviado nada', hechos: { reclamo: true } }, 'reclamo'],
     [{ mensaje: '', hechos: { adjuntos: [{ clase: 'comprobante_pago' }] } }, 'pago'],
     [{ mensaje: '', hechos: { adjuntos: [{ clase: 'cotizacion_proveedor' }] } }, 'cotizacion'],
+    // 26-oct: «¿llegó la mercadería?» + captura de la guía iba a pago
+    [{ motivo: 'pago', mensaje: 'Buenas, ¿ya llegó la mercadería?', hechos: { adjuntos: [{ clase: 'comprobante_pago' }] } }, 'logistica'],
+    [{ mensaje: 'las cajas ya llegaron a la bodega?' }, 'logistica'],
+    [{ motivo: 'pago', mensaje: 'ya pagué, ¿cuándo llega la carga?' }, 'pago'],
+    [{ mensaje: '¿llegó mi pedido de Dropi?' }, 'ecommerce'],
   ];
   for (const [p, area] of casos) {
     const a = areaDelCaso(p);
