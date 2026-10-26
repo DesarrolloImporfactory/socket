@@ -98,6 +98,9 @@ exports.protect = catchAsync(async (req, res, next) => {
     // Las rutas de Team miran esto, no el rol: un sub-usuario de prueba
     // (ROL_EQUIPO_PRUEBA_SUBS) entra con su rol de siempre.
     req.sesionTeam = true;
+    // «Ver como» de gerencia: la sesión no sirve para enviar.
+    req.sesionTeamSoloLectura = decoded.solo_lectura === true;
+    req.sesionTeamUsuario = String(decoded.team_usuario || '').slice(0, 80);
   }
 
   req.sessionUser = user;

@@ -23,6 +23,7 @@ router.get('/yo', ctrl.yo);
 router.get('/conexiones', ctrl.conexiones);
 router.get('/chats', ctrl.chats);
 router.get('/chats/:id_cliente/mensajes', ctrl.mensajes);
+router.post('/chats/:id_cliente/mensajes', ctrl.enviarMensaje);
 router.get('/chats/:id_cliente/carga', ctrl.carga);
 router.get('/agenda', ctrl.agenda);
 

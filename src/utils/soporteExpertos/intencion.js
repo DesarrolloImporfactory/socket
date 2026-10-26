@@ -263,13 +263,17 @@ const SOY_DEL_EQUIPO = /\bsoy (asesor|asesora|del equipo|de logistica|de soporte
  * ¿Pide datos de una carga que no es la del número que escribe?
  * @returns {{pide:boolean, motivo:string|null}}
  */
-function pideDatosDeOtro(texto, telefonoRemitente) {
+function pideDatosDeOtro(texto, telefonoRemitente, textoCliente = null) {
   const t = sinTildes(texto);
+  /* «Sin nombre de cliente visible» lo escribe la lectura de la foto, no el
+     cliente: el parentesco («de mi socio», «del cliente») se busca solo en lo
+     que escribió él (25-oct, una cotización propia quedó como ajena). */
+  const dichoPorEl = textoCliente == null ? t : sinTildes(textoCliente);
   // Todo lo que dispara la consulta de la carga pasa también por esta revisión.
   const deCarga = COSA.test(t) || PEDIDO.test(t) || /cotizacion|estado|llega|donde/.test(t) || hablaDeCarga(texto);
   if (!deCarga) return { pide: false, motivo: null };
 
-  if (TERCERO.test(t)) return { pide: true, motivo: 'la carga de otra persona' };
+  if (TERCERO.test(dichoPorEl)) return { pide: true, motivo: 'la carga de otra persona' };
   if (SOY_DEL_EQUIPO.test(t)) return { pide: true, motivo: 'dice ser del equipo' };
 
   // Un teléfono escrito en el mensaje que no es el del remitente.
@@ -279,7 +283,11 @@ function pideDatosDeOtro(texto, telefonoRemitente) {
   const ajeno = escritos.find(
     (d) => !mismoTelefono(telefonoRemitente, d) && soloDigitos(telefonoRemitente).slice(-9) !== d.slice(-9),
   );
-  const loSenala = HABLA_DE_NUMERO.test(t) || /\b(del|al|con el|para el)\s+\+?\d/.test(t);
+  /* Quien señala el número tiene que ser el cliente: la lectura de una captura
+     del pedido en Alibaba trae «Teléfono: +86…» del proveedor o de la bodega, y
+     eso solo no es pedir la carga de otro (25-oct, «y mandé esto 👇» con 3
+     capturas recibió «por seguridad solo puedo informar…»). */
+  const loSenala = HABLA_DE_NUMERO.test(dichoPorEl) || /\b(del|al|con el|para el)\s+\+?\d/.test(dichoPorEl);
   // «Me registré en IMPORCHAT con el 0987…»: es el dato que pide el diagnóstico
   // de la cuenta (que tiene sus propios candados), no la carga de otro.
   const deRegistro = (hablaDeImporchat(texto) || /registr/.test(t)) && !hablaDeCarga(texto);

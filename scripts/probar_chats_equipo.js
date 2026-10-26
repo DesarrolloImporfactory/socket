@@ -22,6 +22,7 @@ const falsa = () => new Sequelize('mysql://x:y@127.0.0.1:9/z', { logging: false 
 const db = falsa();
 const db_2 = falsa();
 let consultas = [];
+let ventanaAbierta = true; // ¿el cliente escribió en las últimas 24 h?
 function responder(sql, opts) {
   const r = opts?.replacements;
   if (/FROM configuraciones\s+WHERE id = \? AND id_usuario = \?/.test(sql)) {
@@ -36,7 +37,11 @@ function responder(sql, opts) {
   if (/FROM clientes_chat_center\s+WHERE id = \?/.test(sql)) {
     if (Number(r[0]) === 11) return [{ id: 11, celular_cliente: CEL }];
     if (Number(r[0]) === 13) return [{ id: 13, celular_cliente: CEL_US }];
+    if (Number(r[0]) === 14) return [{ id: 14, celular_cliente: CEL, source: 'ig' }];
     return [];
+  }
+  if (/MAX\(created_at\) AS ult/.test(sql)) {
+    return [{ ult: ventanaAbierta ? '2026-10-25 10:00:00' : null }];
   }
   if (/FROM mensajes_clientes/.test(sql)) {
     // Como la base: del más nuevo al más viejo.
@@ -61,6 +66,7 @@ require.cache[dbf] = { id: dbf, filename: dbf, loaded: true, exports: { db, db_2
 const SUBS = {
   1: { id_sub_usuario: 1, id_usuario: 9, rol: 'administrador', suspendido: 0 },
   3: { id_sub_usuario: 3, id_usuario: 254, rol: 'equipo', suspendido: 0, nombre_encargado: 'E' },
+  4: { id_sub_usuario: 4, id_usuario: 254, rol: 'equipo', suspendido: 0, nombre_encargado: 'F' },
 };
 const sv = require.resolve(path.join(SRC, 'utils/sesionVigente'));
 require.cache[sv] = {
@@ -111,6 +117,18 @@ cargaCliente.cargasDelTelefono = async (tel, o) => {
 };
 
 const ChatService = require(path.join(SRC, 'services/chat.service'));
+// El envío nunca sale de aquí: se anota lo que se habría mandado a Meta.
+let enviados = [];
+let metaFalla = false;
+ChatService.prototype.getDataAdmin = async (id) => ({ id, id_telefono: '777', token: 'llave' });
+ChatService.prototype.sendMessage = async (d) => {
+  if (metaFalla) throw new Error('(#131030) Recipient 593991234567 not in allowed list');
+  enviados.push(d);
+  return {
+    messages: [{ id: 'wamid.HBgMNTkzOTkxMjM0NTY3' }],
+    mensajeNuevo: { id: 900 + enviados.length, texto_mensaje: d.mensaje, responsable: d.nombre_encargado, id_wamid_mensaje: 'wamid.HBgMNTkzOTkxMjM0NTY3', uid_whatsapp: d.to, created_at: '2026-10-25 11:00:00' },
+  };
+};
 const rutas = require(path.join(SRC, 'middlewares/rutasSinSesion'));
 const equipoRouter = require(path.join(SRC, 'routes/equipo.routes'));
 const errorHandler = require(path.join(SRC, 'controllers/error.controller'));
@@ -118,9 +136,12 @@ const errorHandler = require(path.join(SRC, 'controllers/error.controller'));
 const firmar = (p) => jwt.sign(p, process.env.SECRET_JWT_SEED, { expiresIn: '1h' });
 const TEAM = jwt.sign({ id_sub_usuario: 3, rol: 'equipo', origen: 'team' }, process.env.SECRET_JWT_SEED, { expiresIn: '1h', issuer: 'chatcenter', audience: 'team' });
 const ADMIN = firmar({ id_sub_usuario: 1, rol: 'administrador' });
+const teamDe = (id, extra = {}) =>
+  jwt.sign({ id_sub_usuario: id, rol: 'equipo', origen: 'team', ...extra }, process.env.SECRET_JWT_SEED, { expiresIn: '1h', issuer: 'chatcenter', audience: 'team' });
 
 function app() {
   const a = express();
+  a.use(express.json());
   a.use(rutas.vigilar);
   a.use('/api/v1/equipo', equipoRouter);
   a.use(errorHandler);
@@ -128,10 +149,12 @@ function app() {
     const s = a.listen(0, () => ok(s));
   });
 }
-function pedir(s, ruta, token) {
+function pedir(s, ruta, token, cuerpo) {
   return new Promise((ok, mal) => {
+    const headers = token ? { authorization: 'Bearer ' + token } : {};
+    if (cuerpo !== undefined) headers['content-type'] = 'application/json';
     const req = http.request(
-      { host: '127.0.0.1', port: s.address().port, method: 'GET', path: ruta, headers: token ? { authorization: 'Bearer ' + token } : {} },
+      { host: '127.0.0.1', port: s.address().port, method: cuerpo === undefined ? 'GET' : 'POST', path: ruta, headers },
       (res) => {
         let b = '';
         res.on('data', (c) => (b += c));
@@ -145,7 +168,7 @@ function pedir(s, ruta, token) {
       },
     );
     req.on('error', mal);
-    req.end();
+    req.end(cuerpo === undefined ? undefined : JSON.stringify(cuerpo));
   });
 }
 const sqlChats = () => consultas.filter((c) => /FROM vista_chats/.test(c.sql)).pop();
@@ -273,6 +296,98 @@ async function caso(nombre, fn) {
   });
   await caso('mensajes con la conexión de otra cuenta → 404', async () => {
     assert.equal((await pedir(s, '/api/v1/equipo/chats/11/mensajes?id_configuracion=999', TEAM)).status, 404);
+  });
+
+  console.log('Responder desde Team');
+  const ENVIAR = '/api/v1/equipo/chats/11/mensajes';
+  await caso('contesta al chat visible: el número lo pone el servidor y no vuelve', async () => {
+    enviados = [];
+    const r = await pedir(s, ENVIAR, TEAM, { id_configuracion: 265, texto: '  Hola Ana, ya revisé tu carga  ' });
+    assert.equal(r.status, 200, r.texto);
+    assert.equal(enviados.length, 1);
+    assert.equal(enviados[0].to, CEL);
+    assert.equal(enviados[0].mensaje, 'Hola Ana, ya revisé tu carga');
+    assert.equal(enviados[0].tipo_mensaje, 'text');
+    assert.equal(enviados[0].id_configuracion, 265);
+    assert.equal(enviados[0].nombre_encargado, 'E');
+    assert.equal(r.body.data.rol_mensaje, 1);
+    assert.equal(r.body.data.texto_mensaje, 'Hola Ana, ya revisé tu carga');
+    assert.equal(r.body.data.responsable, 'E');
+    assert.ok(!r.texto.includes(CEL) && !r.texto.includes('wamid') && !r.texto.includes('llave'), r.texto);
+  });
+  await caso('lo que mande Team como número se ignora', async () => {
+    enviados = [];
+    const r = await pedir(s, ENVIAR, TEAM, { id_configuracion: 265, texto: 'hola', to: '593000000001', celular_cliente: '593000000001' });
+    assert.equal(r.status, 200);
+    assert.equal(enviados[0].to, CEL);
+  });
+  await caso('el número del cliente escrito en el mensaje vuelve tapado a Team', async () => {
+    const r = await pedir(s, ENVIAR, TEAM, { id_configuracion: 265, texto: 'te llamo al 0991234567' });
+    assert.equal(r.status, 200);
+    assert.ok(!r.texto.includes('0991234567'), r.texto);
+  });
+  await caso('la ventana se mira en la base: mensajes del cliente de ese chat, 24 h', async () => {
+    await pedir(s, ENVIAR, TEAM, { id_configuracion: 265, texto: 'hola' });
+    const q = consultas.find((c) => /MAX\(created_at\) AS ult/.test(c.sql));
+    assert.ok(q.sql.includes('rol_mensaje = 0') && q.sql.includes('INTERVAL 24 HOUR'), q.sql);
+    assert.deepEqual(q.opts.replacements, ['11', 265]);
+  });
+  await caso('sin texto, con espacios o muy largo → 400 y no envía', async () => {
+    enviados = [];
+    for (const cuerpo of [{ id_configuracion: 265 }, { id_configuracion: 265, texto: '   \n ' }, { id_configuracion: 265, texto: 'x'.repeat(4097) }, { id_configuracion: 265, texto: ['hola'] }]) {
+      assert.equal((await pedir(s, ENVIAR, TEAM, cuerpo)).status, 400, JSON.stringify(cuerpo).slice(0, 40));
+    }
+    assert.equal(enviados.length, 0);
+  });
+  await caso('chat que no es suyo o de otra cuenta → 404 y no envía', async () => {
+    enviados = [];
+    assert.equal((await pedir(s, '/api/v1/equipo/chats/12/mensajes', TEAM, { id_configuracion: 265, texto: 'hola' })).status, 404);
+    assert.equal((await pedir(s, ENVIAR, TEAM, { id_configuracion: 999, texto: 'hola' })).status, 404);
+    assert.equal((await pedir(s, '/api/v1/equipo/chats/abc/mensajes', TEAM, { id_configuracion: 265, texto: 'hola' })).status, 400);
+    assert.equal(enviados.length, 0);
+  });
+  await caso('chat de Instagram o Messenger → 422 (por ahora solo WhatsApp)', async () => {
+    enviados = [];
+    assert.equal((await pedir(s, '/api/v1/equipo/chats/14/mensajes', TEAM, { id_configuracion: 265, texto: 'hola' })).status, 422);
+    assert.equal(enviados.length, 0);
+  });
+  await caso('cliente sin escribir en 24 h → 422 con el aviso de plantilla, no envía', async () => {
+    enviados = [];
+    ventanaAbierta = false;
+    const r = await pedir(s, ENVIAR, TEAM, { id_configuracion: 265, texto: 'hola' });
+    ventanaAbierta = true;
+    assert.equal(r.status, 422);
+    assert.ok(/24 horas/.test(r.body.message), r.texto);
+    assert.equal(enviados.length, 0);
+  });
+  await caso('«Ver como» (sesión de solo lectura) → 403 y no envía', async () => {
+    enviados = [];
+    const r = await pedir(s, ENVIAR, teamDe(3, { solo_lectura: true }), { id_configuracion: 265, texto: 'hola' });
+    assert.equal(r.status, 403);
+    assert.equal(enviados.length, 0);
+    assert.ok(!consultas.some((c) => /FROM clientes_chat_center/.test(c.sql)), 'ni siquiera busca el chat');
+  });
+  await caso('un administrador con su token de login no contesta por aquí', async () => {
+    enviados = [];
+    assert.equal((await pedir(s, ENVIAR, ADMIN, { id_configuracion: 265, texto: 'hola' })).status, 403);
+    assert.equal(enviados.length, 0);
+  });
+  await caso('Meta rechaza → 502 sin el detalle (traía el número)', async () => {
+    metaFalla = true;
+    const r = await pedir(s, ENVIAR, TEAM, { id_configuracion: 265, texto: 'hola' });
+    metaFalla = false;
+    assert.equal(r.status, 502);
+    assert.ok(!r.texto.includes(CEL) && !r.texto.includes('131030'), r.texto);
+  });
+  await caso('tope: 20 envíos por minuto por asesor; el 21 → 429', async () => {
+    enviados = [];
+    const T4 = teamDe(4);
+    for (let i = 0; i < 20; i += 1) assert.equal((await pedir(s, ENVIAR, T4, { id_configuracion: 265, texto: 'n' + i })).status, 200);
+    const r = await pedir(s, ENVIAR, T4, { id_configuracion: 265, texto: 'uno más' });
+    assert.equal(r.status, 429);
+    assert.equal(enviados.length, 20);
+    // El tope es por asesor: el 3 sigue pudiendo.
+    assert.equal((await pedir(s, ENVIAR, TEAM, { id_configuracion: 265, texto: 'hola' })).status, 200);
   });
 
   console.log('Barra lateral de Team');

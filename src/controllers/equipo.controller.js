@@ -18,6 +18,9 @@ const DURACION_SESION = '8h';
 exports.sesion = catchAsync(async (req, res, next) => {
   const id_sub_usuario = Number(req.body?.id_sub_usuario);
   const team_usuario = String(req.body?.team_usuario || '').slice(0, 80);
+  // Gerencia mirando la silla con «Ver como»: la sesión sirve para leer y no
+  // para enviar (POST …/mensajes responde 403), aunque Team se equivoque.
+  const solo_lectura = req.body?.solo_lectura === true;
   if (!Number.isInteger(id_sub_usuario) || id_sub_usuario <= 0) {
     return next(new AppError('id_sub_usuario es requerido', 400));
   }
@@ -35,7 +38,7 @@ exports.sesion = catchAsync(async (req, res, next) => {
 
   console.log(
     '[EQUIPO_SESION]',
-    JSON.stringify({ id_sub_usuario, team_usuario, ok: !motivo, motivo, prueba: !!sub && !esEquipo(sub) && enPruebaDeTeam(sub) }),
+    JSON.stringify({ id_sub_usuario, team_usuario, solo_lectura, ok: !motivo, motivo, prueba: !!sub && !esEquipo(sub) && enPruebaDeTeam(sub) }),
   );
   if (motivo) {
     // Un solo mensaje para todos los casos: no dice qué sub-usuarios existen.
@@ -52,6 +55,7 @@ exports.sesion = catchAsync(async (req, res, next) => {
       // Quién de Team está detrás, por si varias personas usan el mismo
       // sub-usuario.
       team_usuario,
+      ...(solo_lectura ? { solo_lectura: true } : {}),
     },
     process.env.SECRET_JWT_SEED,
     // Sello propio: protect exige este emisor y destino a toda sesión de Team,
@@ -76,13 +80,12 @@ exports.yo = catchAsync(async (req, res) => {
   });
 });
 
-/* ───────── Chat de Team: solo lectura ─────────
+/* ───────── Chat de Team ─────────
  *
  *  Lo mismo que ve un asesor de ventas en la pantalla vieja (sus chats y los
  *  en espera de sus canales), pero por REST y con sesión: el chat viejo pide
  *  la lista por el socket sin sesión. Los teléfonos salen tapados por protect.
- *  Responder (manda WhatsApp a clientes) va aparte, cuando se pueda probar con
- *  un número de prueba.
+ *  Responder: POST …/mensajes, más abajo, solo texto por WhatsApp.
  */
 
 const { db } = require('../database/config');
@@ -157,7 +160,7 @@ exports.chats = catchAsync(async (req, res, next) => {
 async function chatVisible(id_cliente, cfg, u) {
   const filtroCanal = sqlFiltroCanales(await canalesDeUsuarioEnConfig(u.id_sub_usuario, cfg.id));
   const [fila] = await db.query(
-    `SELECT id, celular_cliente FROM clientes_chat_center
+    `SELECT id, celular_cliente, source FROM clientes_chat_center
       WHERE id = ? AND id_configuracion = ? AND propietario != 1
         AND (id_encargado = ? OR (id_encargado IS NULL${filtroCanal ? ` AND ${filtroCanal}` : ''}))
       LIMIT 1`,
@@ -190,6 +193,106 @@ exports.mensajes = catchAsync(async (req, res, next) => {
   );
   const data = [{ id: id_cliente, mensajes: filas.reverse() }];
   res.json({ status: 'success', data: taparTelefonos(data, { telefonosConocidos: [chat.celular_cliente] }) });
+});
+
+/* ───────── Responder desde Team ───────── */
+
+const MAX_TEXTO = 4096; // lo que acepta WhatsApp en un mensaje de texto
+const VENTANA_HORAS = 24;
+const TOPE_ENVIOS = 20; // por asesor, por minuto
+const enviosRecientes = new Map(); // id_sub_usuario → horas de sus últimos envíos
+
+function pasaElTope(id_sub_usuario, ahora = Date.now()) {
+  const recientes = (enviosRecientes.get(id_sub_usuario) || []).filter((t) => ahora - t < 60 * 1000);
+  if (recientes.length >= TOPE_ENVIOS) {
+    enviosRecientes.set(id_sub_usuario, recientes);
+    return false;
+  }
+  recientes.push(ahora);
+  enviosRecientes.set(id_sub_usuario, recientes);
+  return true;
+}
+
+/*  POST /api/v1/equipo/chats/:id_cliente/mensajes  { id_configuracion, texto }
+ *  Le contesta al cliente con un texto por la línea oficial: el mismo envío
+ *  que la pantalla vieja (ChatService.sendMessage, que también lo guarda en
+ *  mensajes_clientes con el nombre del asesor). El número lo pone el servidor
+ *  a partir del chat; Team no lo manda ni lo recibe.
+ *  Solo chats de WhatsApp que el asesor ve (los suyos y los en espera de sus
+ *  canales) y solo dentro de las 24 h desde el último mensaje del cliente:
+ *  fuera de esa ventana WhatsApp solo deja mandar plantillas, y Meta aceptaría
+ *  el envío para descartarlo después sin que el asesor se entere. */
+exports.enviarMensaje = catchAsync(async (req, res, next) => {
+  const u = req.sessionUser;
+  if (req.sesionTeamSoloLectura) {
+    return next(new AppError('Estás en «Ver como»: el chat es de solo lectura.', 403));
+  }
+  const id_cliente = Number(req.params.id_cliente);
+  if (!Number.isInteger(id_cliente) || id_cliente <= 0) return next(new AppError('Chat no válido', 400));
+  const texto = typeof req.body?.texto === 'string' ? req.body.texto.replace(/\r\n?/g, '\n').trim() : '';
+  if (!texto) return next(new AppError('Escribe el mensaje.', 400));
+  if (texto.length > MAX_TEXTO) return next(new AppError(`El mensaje es muy largo (máximo ${MAX_TEXTO} caracteres).`, 400));
+
+  const cfg = await conexionDeLaCuenta(req.body?.id_configuracion, u.id_usuario);
+  const chat = cfg && (await chatVisible(id_cliente, cfg, u));
+  if (!chat) return next(new AppError('Chat no encontrado', 404));
+  if (String(chat.source || 'wa').toLowerCase() !== 'wa') {
+    return next(new AppError('Desde Team por ahora solo se contesta por WhatsApp.', 422));
+  }
+  const [ultimo] = await db.query(
+    `SELECT MAX(created_at) AS ult FROM mensajes_clientes
+      WHERE celular_recibe = ? AND id_configuracion = ? AND rol_mensaje = 0 AND deleted_at IS NULL
+        AND created_at > NOW() - INTERVAL ${VENTANA_HORAS} HOUR`,
+    { replacements: [String(id_cliente), cfg.id], type: db.QueryTypes.SELECT },
+  );
+  if (!ultimo?.ult) {
+    return next(
+      new AppError(
+        'El cliente no escribe desde hace más de 24 horas: WhatsApp no deja mandarle un mensaje libre. Usa una plantilla desde ImporChat.',
+        422,
+      ),
+    );
+  }
+  if (!pasaElTope(Number(u.id_sub_usuario))) {
+    return next(new AppError('Vas muy rápido: espera un minuto y vuelve a enviar.', 429));
+  }
+
+  const chatService = new ChatService();
+  const dataAdmin = await chatService.getDataAdmin(cfg.id);
+  if (!dataAdmin?.id_telefono || !dataAdmin?.token) {
+    return next(new AppError('La línea no está lista para enviar.', 503));
+  }
+  const registro = { id_sub_usuario: u.id_sub_usuario, id_configuracion: cfg.id, id_cliente, team_usuario: req.sesionTeamUsuario || '' };
+  let resp;
+  try {
+    resp = await chatService.sendMessage({
+      mensaje: texto,
+      to: String(chat.celular_cliente || '').replace(/\s+/g, '').replace(/^\+/, ''),
+      dataAdmin,
+      tipo_mensaje: 'text',
+      id_configuracion: cfg.id,
+      nombre_encargado: u.nombre_encargado,
+    });
+  } catch (e) {
+    console.log('[EQUIPO_ENVIO]', JSON.stringify({ ...registro, ok: false }));
+    return next(new AppError('WhatsApp no aceptó el mensaje. Vuelve a intentar en un momento.', 502));
+  }
+  const m = resp?.mensajeNuevo;
+  console.log('[EQUIPO_ENVIO]', JSON.stringify({ ...registro, ok: true, id_mensaje: m?.id || null }));
+  // Lo mismo que Team pinta de un mensaje; sin el wamid (lleva el número).
+  res.json({
+    status: 'success',
+    data: {
+      id: m?.id || null,
+      rol_mensaje: 1,
+      tipo_mensaje: 'text',
+      texto_mensaje: m?.texto_mensaje ?? texto,
+      ruta_archivo: null,
+      responsable: m?.responsable ?? u.nombre_encargado ?? null,
+      created_at: m?.created_at || new Date(),
+      eliminado_at: null,
+    },
+  });
 });
 
 /* ───────── Barra lateral de Team: solo lectura ───────── */
