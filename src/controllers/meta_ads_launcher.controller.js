@@ -642,6 +642,16 @@ exports.lanzar = async (req, res) => {
       ? req.body.estado
       : plantilla.estado_inicial;
 
+    // Traza de entrada: sin esto un lanzamiento no deja NINGÚN rastro en el
+    // log y solo se puede reconstruir consultando la tabla a posteriori.
+    logger.info(
+      `[ADS_LANZAR] inicio · cfg=${id_configuracion} ` +
+        `plantilla=${id_plantilla} "${plantilla.nombre}" · ` +
+        `cuenta=${conn.ad_account_id} · app=${conn.fb_app_id || '-'} · ` +
+        `pagina=${plantilla.page_id} · wa=${whatsapp.numero} · ` +
+        `estado=${estado_inicial}`,
+    );
+
     // Alcance: geo_json (modo país completo o provincias/ciudades). Las
     // plantillas anteriores a la columna caen al CSV de países.
     let geoPlantilla = null;
@@ -725,13 +735,27 @@ exports.lanzar = async (req, res) => {
         numero: whatsapp?.numero,
         pagina: plantilla.page_name || plantilla.page_id,
       });
-      // Queda en el log del servidor: es el único rastro en vivo que tiene el
-      // lanzador, y sin esto un fallo solo se ve consultando la tabla.
+      // Dos líneas a propósito: la primera se lee de un vistazo filtrando por
+      // ADS_LANZAR, la segunda trae la respuesta de Meta ENTERA (fbtrace_id
+      // incluido, que es lo que piden si hay que abrir un caso con ellos).
       logger.warn(
-        `[ADS_LANZAR] cfg=${id_configuracion} plantilla=${id_plantilla} ` +
-          `paso="${err.paso || '?'}" codigo=${motivo.codigo || '-'} ` +
-          `culpa=${motivo.culpa} · ${motivo.titulo}`,
+        `[ADS_LANZAR] FALLO · cfg=${id_configuracion} ` +
+          `plantilla=${id_plantilla} paso="${err.paso || '?'}" ` +
+          `codigo=${motivo.codigo || '-'} culpa=${motivo.culpa} · ` +
+          motivo.titulo,
       );
+      logger.warn(
+        `[ADS_LANZAR] respuesta de Meta · ` +
+          JSON.stringify(err.meta_error || err.message),
+      );
+      // Y lo que le mandamos nosotros, para poder leer petición y respuesta
+      // juntas sin tener que adivinar qué iba en el cuerpo.
+      if (err.meta_request) {
+        logger.warn(
+          `[ADS_LANZAR] lo que enviamos · ${err.meta_request.metodo} ` +
+            `${err.meta_request.url} · ${err.meta_request.cuerpo}`,
+        );
+      }
       return res.json({
         success: false,
         // `message` se mantiene porque hay avisos del front que solo leen eso.
@@ -763,6 +787,12 @@ exports.lanzar = async (req, res) => {
         ],
         type: db.QueryTypes.INSERT,
       },
+    );
+
+    logger.info(
+      `[ADS_LANZAR] OK · cfg=${id_configuracion} plantilla=${id_plantilla} · ` +
+        `campaign=${paquete.campaign_id} adset=${paquete.adset_id} ` +
+        `anuncios=${(paquete.ads || []).length || 1}`,
     );
 
     await db.query(
