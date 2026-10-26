@@ -748,6 +748,14 @@ exports.lanzar = async (req, res) => {
         `[ADS_LANZAR] respuesta de Meta · ` +
           JSON.stringify(err.meta_error || err.message),
       );
+      // Y lo que le mandamos nosotros, para poder leer petición y respuesta
+      // juntas sin tener que adivinar qué iba en el cuerpo.
+      if (err.meta_request) {
+        logger.warn(
+          `[ADS_LANZAR] lo que enviamos · ${err.meta_request.metodo} ` +
+            `${err.meta_request.url} · ${err.meta_request.cuerpo}`,
+        );
+      }
       return res.json({
         success: false,
         // `message` se mantiene porque hay avisos del front que solo leen eso.

@@ -39,6 +39,14 @@ function assertMeta(resp, label) {
   err.meta_status = resp.status;
   err.meta_error = resp.data?.error || resp.data;
   err.paso = label;
+  // Lo que le mandamos a Meta, para poder comparar petición y respuesta.
+  // Solo método, URL y cuerpo: las cabeceras llevan el token y no se tocan.
+  // El cuerpo se recorta: el de /adimages es la imagen entera en base64.
+  err.meta_request = {
+    metodo: String(resp.config?.method || '').toUpperCase(),
+    url: resp.config?.url || null,
+    cuerpo: String(resp.config?.data || '').slice(0, 1500),
+  };
   throw err;
 }
 
