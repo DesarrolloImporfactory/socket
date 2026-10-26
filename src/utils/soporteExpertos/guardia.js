@@ -472,6 +472,11 @@ function completarPase(texto, fichasConPase, { dioCantidad = false } = {}) {
  *   - saludoSinContestar  es el primer saludo de la conversación: no se calla
  * @returns {{texto:string, cambiada:boolean, corregida:boolean, motivos:string[]}}
  */
+/* «…dejo anotado el pago y tu pedido de factura para cobranza» a quien solo
+   mandó el comprobante (sábado 24-oct): no se le atribuye un pedido que no
+   hizo. Vale solo si en lo que escribió no aparece «factura». */
+const RE_PEDIDO_INVENTADO = /\b(?:tu|su) (?:pedido|solicitud) de factura\b|\bla factura que (?:pides|pediste|solicitas|solicitaste)\b/;
+
 function revisarRespuesta(respuesta, hechos = {}) {
   const h = hechos || {};
   const original = String(respuesta ?? '');
@@ -521,6 +526,7 @@ function revisarRespuesta(respuesta, hechos = {}) {
     if (ofrece) falla = `ofrecía hacer algo que el bot no puede («${ofrece}»)`;
     else if ((h.reclamo || h.reclamoPorDemora) && RE_A_COBRANZA.test(visible)) falla = 'mandaba un reclamo a cobranza o le pedía un comprobante';
     else if (h.reclamoPorDemora && RE_ESTADO_CARGA.test(plano(visible))) falla = 'le repetía el estado de la carga a quien reclama por la demora';
+    else if (RE_PEDIDO_INVENTADO.test(plano(visible)) && !/\bfactur/.test(plano(eco).toLowerCase())) falla = 'le atribuía un pedido de factura que el cliente no hizo';
   }
 
   if (falla) {

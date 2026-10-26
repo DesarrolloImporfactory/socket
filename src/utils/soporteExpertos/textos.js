@@ -209,6 +209,35 @@ const PLANTILLA_SEGUIMIENTO_PROPUESTA = Object.freeze({
   cuerpo: 'Hola {{1}}, seguimos con tu consulta en IMPORFACTORY. Respóndenos por aquí y tu asesor continúa contigo.',
 });
 
+/* ── «Consentidos»: el equipo escribe primero en los momentos que importan
+   (consentidos.js). BORRADORES PENDIENTES DE APROBACIÓN DE DANIEL. El tramo 1
+   es solo ensayo: el script no tiene código de envío y estos textos solo se
+   muestran en el resumen diario que le llega a Daniel. Tuteo ecuatoriano, sin
+   voseo. Ninguno promete hora ni día ni inventa una fecha: {fecha} sale del
+   contenedor o se cambia por «apenas tengamos la fecha». */
+const CONSENTIDOS_APROBADO = false;
+const CONSENTIDOS = Object.freeze({
+  recibido_china: 'Hola {nombre} 👋 Buenas noticias: tu mercadería {marca} ya llegó a nuestra bodega en China{cajas}. Te aviso apenas suba al contenedor.',
+  en_contenedor: '{nombre}, tu carga ya está asignada al contenedor {contenedor} 📦. Te escribo cuando zarpe.',
+  contenedor_cerrado: '{nombre}, el contenedor {contenedor} con tu carga ya se cerró ✅. Lo que sigue es el zarpe y te aviso cuando salga.',
+  zarpo: '🚢 {nombre}, tu carga ya va en camino en el contenedor {contenedor}. {fecha} Te voy contando cada paso.',
+  puerto: '⚓ {nombre}, tu carga ya llegó al puerto de destino y entra al proceso de aduana. Te aviso cuando esté en nuestra bodega.',
+  bodega_destino: '🎉 {nombre}, tu carga ya está en nuestra bodega{ciudad}. El equipo de logística te escribe por aquí para coordinar la entrega.',
+  entregada: '✅ {nombre}, tu carga figura como entregada. ¿Llegó todo bien? Si algo no cuadra, respóndeme aquí.',
+  novedad: '{nombre}, hay una novedad de tu contenedor {contenedor}: «{nota}»',
+  sigue_en_camino: 'Hola {nombre}, paso a contarte: tu carga sigue en camino en el contenedor {contenedor}, sin novedades. {fecha}',
+  sigue_en_camino_nota: 'Hola {nombre}, paso a contarte cómo va tu carga en el contenedor {contenedor}: «{nota}». {fecha}',
+  pago_recibido: '✅ {nombre}, recibimos tu pago de {monto}. ¡Gracias por tu confianza!',
+  logro: '👏 {nombre}, terminaste los módulos 1 y 2. Ya puedes agendar tu sesión de implementación aquí: {enlace}',
+  post_reunion: '{nombre}, gracias por tu tiempo en la reunión del {dia}. ¿Te quedó alguna duda de lo que vimos? Respóndeme aquí y te ayudo.',
+  primera_clase: 'Hola {nombre} 👋 ¿Ya pudiste entrar a tu primera clase? Este es el enlace directo para empezar: {enlace}. Si algo no te deja entrar, escríbeme aquí y lo resolvemos.',
+  te_guarde: '{nombre}, te guardé el lugar 😉 Te quedaste en «{leccion}». Sigue justo desde ahí: {enlace}',
+});
+const CONSENTIDOS_FECHA = Object.freeze({
+  con: 'La llegada estimada es el {fecha}.',
+  sin: 'Apenas tengamos la fecha de llegada, te la paso.',
+});
+
 module.exports = {
   LINKS,
   ...TODOS,
@@ -223,4 +252,7 @@ module.exports = {
   MENSAJE_SEGUIMIENTO,
   QUIEN_SEGUIMIENTO,
   PLANTILLA_SEGUIMIENTO_PROPUESTA,
+  CONSENTIDOS_APROBADO,
+  CONSENTIDOS,
+  CONSENTIDOS_FECHA,
 };

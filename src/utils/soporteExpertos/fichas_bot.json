@@ -277,6 +277,8 @@
    "do you have a forwarder que le respondo",
    "necesito las instrucciones de carga",
    "direccion de yiwu porfa",
+   "me puedes enviar la direccion de las bodegas en yiwu",
+   "pasame la direccion de la bodega de china",
    "le digo al proveedor que se contacte con el agente en china",
    "el proveedor tiene que hablar con su agente en china",
    "debo decirle al proveedor que se contacte con el agente en china",
@@ -408,7 +410,7 @@
   ],
   "respuesta_base": "Es pagar tu compra por dentro de Alibaba con el enlace que te envía el proveedor: la plataforma retiene el dinero hasta que confirmas que recibiste lo pactado y, si no, puedes abrir una disputa. La orden tiene que aparecer en tu cuenta, en tus órdenes: si no aparece ahí, no está protegida. Antes de pagar revisa que la cantidad, el precio y las especificaciones sean lo negociado, porque ese enlace funciona como el contrato.",
   "pasos": [],
-  "enlace": "",
+  "enlace": "https://imporfactory.app/cursos/30?contenido=385",
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
@@ -416,7 +418,8 @@
   ],
   "fuentes": [
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `trade-assurance`",
-   "ENTRENAMIENTO_FRONT/decisiones.json · punto 7"
+   "ENTRENAMIENTO_FRONT/decisiones.json · punto 7",
+   "Curso 30 · lección 385 «VERIFICACION TRADE ASSURANCE» (automejora 25-oct)"
   ]
  },
  {
@@ -1886,15 +1889,18 @@
    "cuando puedo ir a retirar",
    "envian a provincia",
    "donde queda la bodega en mexico",
-   "cuanto cuesta el envio a cuenca"
+   "cuanto cuesta el envio a cuenca",
+   "a que hora puedo retirar mi carga",
+   "atienden el sabado en la bodega",
+   "cual es el horario de la bodega"
   ],
-  "respuesta_base": "Cuando tu carga llega a la bodega de destino se coordina la entrega. Si estás en una ciudad principal (Quito, Guayaquil o Ciudad de México) no hay flete interno; si es otra ciudad, se cotiza el envío o puedes retirar en la bodega.",
+  "respuesta_base": "Cuando tu carga llega a la bodega de destino se coordina la entrega. Si estás en una ciudad principal (Quito, Guayaquil o Ciudad de México) no hay flete interno; si es otra ciudad, se cotiza el envío o puedes retirar en la bodega. Los retiros en bodega son de lunes a viernes, de 8:00 a 17:00.",
   "pasos": [],
   "enlace": "",
   "pasar_a": "logística",
   "pedir": "marca de envío o número de cotización, y la ciudad donde quieres recibir",
   "no_decir": [
-   "No dar dirección ni horario de la bodega: el dato oficial está pendiente.",
+   "No dar la dirección de la bodega: el dato oficial está pendiente.",
    "No dar el costo del envío a otra ciudad.",
    "No decir que la carga ya está lista para retirar."
   ],
@@ -1902,7 +1908,8 @@
    "PORTAL_PUESTOS/plantillas/propuestas/p06.json (aprobada)",
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `pasos-de-la-carga`",
    "PORTAL_PUESTOS/plantillas/propuestas/p23.json (pendiente: falta dirección y horario)",
-   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo M09 y M12 (avisos)"
+   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo M09 y M12 (avisos)",
+   "Daniel, 25-oct: «los retiros de bodega son de lunes a viernes de 8am a 5pm»"
   ]
  },
  {
@@ -3042,7 +3049,10 @@
    "quiero cancelar el cobro mensual",
    "me cobran 39 dolares y no uso nada",
    "como cancelo la suscripcion del club",
-   "me empezaron a cobrar despues de los meses gratis"
+   "me empezaron a cobrar despues de los meses gratis",
+   "quiero pausar el servicio",
+   "quiero congelar mi plan",
+   "quiero suspender mi membresia por un tiempo"
   ],
   "respuesta_base": "Entiendo tu pedido. Tu caso pasa a la persona responsable.",
   "pasos": [],
@@ -3057,7 +3067,8 @@
   "fuentes": [
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `reclamos-y-garantias`",
    "AGENTE_24_7/prompt_agente_expertos_v1.txt · tabla del bloque D",
-   "ENTRENAMIENTO_FRONT/banco.json · B77"
+   "ENTRENAMIENTO_FRONT/banco.json · B77",
+   "Daniel, 25-oct: reembolso o pausar el servicio → «crear caso de escala»"
   ]
  },
  {
@@ -3310,6 +3321,30 @@
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m1_ecosistema.json · m1_03 «CREA LA CUENTA PUBLICITARIA EN META»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m1_ecosistema.md · §3, §5 (orden invertido) y §7"
+  ]
+ },
+ {
+  "id": "ia-conectar-cuenta-publicitaria",
+  "tema": "ecommerce-agente-ia",
+  "pais": "todos",
+  "preguntas": [
+   "como conecto imporchat con mi cuenta publicitaria",
+   "como vinculo mi cuenta de anuncios con imporchat",
+   "imporchat no ve mi cuenta publicitaria",
+   "como conecto meta ads con imporchat",
+   "como enlazo mis anuncios de meta con imporchat"
+  ],
+  "respuesta_base": "Para conectarla, primero tienen que existir tu portafolio comercial y tu cuenta publicitaria en Meta. En este video está el paso a paso para conectarla con IMPORCHAT:",
+  "pasos": [],
+  "enlace": "https://imporfactory.app/cursos/32?contenido=660",
+  "pasar_a": "",
+  "pedir": "",
+  "no_decir": [
+   "No pedir claves ni accesos de su cuenta de Meta.",
+   "Si las pantallas de Meta no se parecen a las del video, pasa al equipo de ecommerce: no inventes los menús."
+  ],
+  "fuentes": [
+   "Curso 32 · lección 660 «CONECTA IMPORCHAT CON TU CUENTA PUBLICITARIA» (automejora 25-oct; 40 chats en 30 días)"
   ]
  },
  {
@@ -6966,5 +7001,129 @@
    "imporfactory.app/ideas-productos (18-oct-2026)"
   ],
   "id": "me-interesa-producto-de-ideas"
+ },
+ {
+  "id": "estoy-en-la-bodega",
+  "tema": "carga",
+  "pais": "todos",
+  "preguntas": [
+   "estoy en la bodega",
+   "ya llegue a la bodega y esta cerrado",
+   "estoy afuera de la bodega para retirar",
+   "vine a retirar mi carga y no hay nadie",
+   "puedo ir hoy sabado a retirar",
+   "estoy en la bodega y no me atienden"
+  ],
+  "respuesta_base": "Los retiros en bodega son de lunes a viernes, de 8:00 a 17:00.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "logística",
+  "pedir": "marca de envío o número de cotización",
+  "no_decir": [
+   "No decir que alguien va a salir a atenderlo.",
+   "No dar la dirección de la bodega."
+  ],
+  "fuentes": [
+   "Daniel, 25-oct: «los retiros de bodega son de lunes a viernes de 8am a 5pm»",
+   "Revisión del sábado 24-oct: cliente en la bodega sin respuesta"
+  ]
+ },
+ {
+  "id": "eco-catalogo-y-paso-a-paso",
+  "tema": "ecommerce-tienda",
+  "pais": "todos",
+  "preguntas": [
+   "quiero empezar a vender en ecommerce",
+   "quiero informacion de ecommerce",
+   "como empiezo con dropi y ustedes",
+   "quiero vender sus productos",
+   "me pasan el catalogo",
+   "que productos tienen para vender",
+   "quiero hacer dropshipping con ustedes",
+   "como funciona el ecommerce con imporshop"
+  ],
+  "respuesta_base": "Este es el catálogo de IMPORSHOP: https://chatcenter.imporfactory.app/catalogo/catalogo-imporshop-comunidad\nY este es el paso a paso para armar tu tienda, desde la primera lección: https://imporfactory.app/cursos/32?contenido=646",
+  "pasos": [],
+  "enlace": "https://chatcenter.imporfactory.app/catalogo/catalogo-imporshop-comunidad",
+  "pasar_a": "ecommerce",
+  "pedir": "",
+  "no_decir": [
+   "Nunca afirmar que hay o no hay stock.",
+   "No prometer en cuánto tiempo vende.",
+   "No dar precios preferenciales."
+  ],
+  "fuentes": [
+   "Daniel, 25-oct: «pasarle el catalogo de imporshop y darles el paso a paso. ademas de asignarle a un asesor de ecommerce»",
+   "Chats de ecommerce de la 265 (10 al 24-oct): enlace del catálogo que manda el equipo"
+  ]
+ },
+ {
+  "id": "ia-tip-bot-cotiza-solo",
+  "tema": "ecommerce-imporchat",
+  "pais": "todos",
+  "preguntas": [
+   "quiero el tip",
+   "si muestrame el tip",
+   "mandame el tip",
+   "como hago que el bot cotice solo",
+   "como activo las respuestas automaticas con mi catalogo"
+  ],
+  "respuesta_base": "Aquí tienes el video del tip, cómo lanzar tu campaña: https://imporfactory.app/cursos/32?contenido=737",
+  "pasos": [],
+  "enlace": "https://imporfactory.app/cursos/32?contenido=737",
+  "pasar_a": "ecommerce",
+  "pedir": "",
+  "no_decir": [
+   "No prometer que el bot vende solo.",
+   "No dar precios de los planes de IMPORCHAT."
+  ],
+  "fuentes": [
+   "Plantilla recup_nutri_1 «Tip de la semana» (recuperacion_textos.js)",
+   "Daniel, 25-oct: «el de como lanzar campaña creo que seria el video ideal» → lección 737 «COMO CREAR LA PRIMERA CAMPAÑA»"
+  ]
+ },
+ {
+  "id": "ia-tip-seguimientos",
+  "tema": "ecommerce-imporchat",
+  "pais": "todos",
+  "preguntas": [
+   "quiero activar los seguimientos",
+   "como activo los seguimientos automaticos",
+   "como hago el remarketing en imporchat"
+  ],
+  "respuesta_base": "Así activas los seguimientos automáticos (remarketing) en IMPORCHAT: https://imporfactory.app/cursos/32?contenido=659",
+  "pasos": [],
+  "enlace": "https://imporfactory.app/cursos/32?contenido=659",
+  "pasar_a": "ecommerce",
+  "pedir": "",
+  "no_decir": [
+   "No prometer cuántas ventas recupera."
+  ],
+  "fuentes": [
+   "Plantilla recup_nutri_2 (recuperacion_textos.js)",
+   "Lección 659 «PERSONALIZA TU BOT Y CREA MENSAJES DE REMARKETING»"
+  ]
+ },
+ {
+  "id": "ia-tip-anuncios",
+  "tema": "ecommerce-imporchat",
+  "pais": "todos",
+  "preguntas": [
+   "quiero conectar mis anuncios",
+   "como conecto mis anuncios de meta a imporchat",
+   "configuren mis anuncios con imporchat"
+  ],
+  "respuesta_base": "Así vinculas tus anuncios de Meta a tus productos para que el bot sepa qué vio cada cliente: https://imporfactory.app/cursos/32?contenido=900",
+  "pasos": [],
+  "enlace": "https://imporfactory.app/cursos/32?contenido=900",
+  "pasar_a": "ecommerce",
+  "pedir": "",
+  "no_decir": [
+   "No prometer que se lo configuran hoy."
+  ],
+  "fuentes": [
+   "Plantilla recup_nutri_3 (recuperacion_textos.js)",
+   "Lección 900 «VINCULA TUS ANUNCIOS DE META A TUS PRODUCTOS…»"
+  ]
  }
 ]

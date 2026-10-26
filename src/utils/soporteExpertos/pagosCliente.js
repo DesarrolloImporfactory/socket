@@ -344,10 +344,17 @@ const RE_AVISA_PAGO = /\b(?:ya (?:pague|transferi|deposite|cancele|realice el pa
 const RE_PIDE_FACTURA = /\bfactur\w*/;
 const RE_PIDE_SALDO =
   /\b(?:cuanto (?:debo|me falta|me queda|tengo que pagar|es mi cuota|pago)|mi saldo|el saldo|saldo pendiente|estado de cuenta|(?:mi |la )?proxima cuota|mis cuotas|cuando (?:tengo que|me toca|debo) pagar|fecha (?:de pago|limite)|se registro mi pago|registraron mi pago|les llego mi pago|ya les llego (?:el|mi) pago)\b/;
+/* «Las cotizaciones de los 2 últimos pagos», «los recibos de mis pagos» (24-oct,
+   el del retén): pide los documentos de lo que pagó, como una factura. «Mis
+   pagos», «mis últimos pagos» solos: que se le digan sus pagos. */
+const RE_PIDE_DOCS_DE_PAGOS =
+  /\b(?:cotizaciones|documentos|recibos?|detalle|soportes?) de (?:mis|los|las|esos|estos) (?:\d+ |dos |tres )?(?:ultim[oa]s )?(?:\d+ |dos |tres )?pagos\b/;
+const RE_PIDE_MIS_PAGOS = /\b(?:mis|los) (?:\d+ |dos |tres )?(?:ultimos )?(?:\d+ |dos |tres )?pagos (?:que (?:hice|he hecho|realice)|registrados)\b|\b(?:cuales|que) pagos (?:tengo|hice|me registraron)\b/;
 function pidePagos(texto) {
   const t = sinTildes(texto);
   if (RE_AVISA_PAGO.test(t) && !/\bse registro|registraron|les llego\b/.test(t)) return null;
-  if (RE_PIDE_FACTURA.test(t)) return 'factura';
+  if (RE_PIDE_FACTURA.test(t) || RE_PIDE_DOCS_DE_PAGOS.test(t)) return 'factura';
+  if (RE_PIDE_MIS_PAGOS.test(t)) return 'saldo';
   if (RE_PIDE_SALDO.test(t)) return 'saldo';
   return null;
 }

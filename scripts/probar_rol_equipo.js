@@ -332,6 +332,19 @@ async function caso(nombre, fn) {
     assert.equal((await pedir(s, 'GET', '/api/v1/equipo/yo', { token: r.body.token })).status, 200);
     assert.equal((await pedir(s, 'GET', '/api/v1/chats', { token: r.body.token })).status, 403);
   });
+  await caso('«Ver como» pide sesión de solo lectura: el token lo lleva; sin pedirlo, no', async () => {
+    const r = await pedir(s, 'POST', '/api/v1/equipo/sesion', {
+      cabeceras: { 'x-team-token': SECRETO },
+      cuerpo: { id_sub_usuario: 3, team_usuario: 'silla 1 (ver como 2)', solo_lectura: true },
+    });
+    assert.equal(r.status, 200);
+    assert.equal(jwt.decode(r.body.token).solo_lectura, true);
+    const r2 = await pedir(s, 'POST', '/api/v1/equipo/sesion', {
+      cabeceras: { 'x-team-token': SECRETO },
+      cuerpo: { id_sub_usuario: 3, solo_lectura: 'true' }, // solo el booleano cuenta
+    });
+    assert.equal(jwt.decode(r2.body.token).solo_lectura, undefined);
+  });
 
   console.log('Prueba sin cambiar el rol (ROL_EQUIPO_PRUEBA_SUBS)');
   const sesionDe = (id) =>

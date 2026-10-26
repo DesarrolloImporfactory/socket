@@ -66,6 +66,18 @@ const COTIZADOR_CONFIG = {
   BASE_URL: 'https://new.imporsuitpro.com/cotizadorpro',
 };
 
+// Sufijo firmado de los enlaces del cliente: «<id>-<firma>». Imporsuit ya no
+// abre ni acepta una cotización por el número solo (auditoría 25-oct-2026).
+// Misma firma que Cotizadorpro::firmaCotizacion (JWT_SECRET allá = SECRET_JWT_SEED acá).
+const sufijoCotizacion = (idCotizacion) => {
+  const firma = require('crypto')
+    .createHmac('sha256', String(process.env.SECRET_JWT_SEED || ''))
+    .update(`cotizacion|${parseInt(idCotizacion, 10)}`)
+    .digest('hex')
+    .slice(0, 16);
+  return `${parseInt(idCotizacion, 10)}-${firma}`;
+};
+
 // Helper: Crear plantilla de WhatsApp
 // headerMedia: { type: 'video'|'image'|'audio'|'document', link?: string, id?: string } | null
 const crearPlantillaWhatsApp = (
@@ -107,7 +119,7 @@ const crearPlantillaWhatsApp = (
     });
   }
 
-  // Botón URL con id_cotizacion
+  // Botón URL con el sufijo firmado
   components.push({
     type: 'button',
     sub_type: 'url',
@@ -115,7 +127,7 @@ const crearPlantillaWhatsApp = (
     parameters: [
       {
         type: 'text',
-        text: idCotizacion,
+        text: sufijoCotizacion(idCotizacion),
       },
     ],
   });
@@ -327,22 +339,23 @@ const generarDatosMensaje = (
   idCotizacion,
   headerMedia = null,
 ) => {
+  const sufijo = sufijoCotizacion(idCotizacion);
   const templates = {
     cotizacion_carga_enviadav2: {
       texto: `Hola Importador {{1}}, con gusto le envío la cotización que nos solicitó. 😊\nPor favor recuerde que, en la parte superior, encontrará los gastos referentes a su compra y, en la parte inferior, el detalle del precio al que llegarán sus productos al destino.`,
-      url: `${COTIZADOR_CONFIG.BASE_URL}/visualizarCotizacion/${idCotizacion}`,
+      url: `${COTIZADOR_CONFIG.BASE_URL}/visualizarCotizacion/${sufijo}`,
     },
     confirmacion_cotizacionv2: {
       texto: `Hola Importador {{1}}.\nPara continuar, por favor confirme la cotización haciendo clic en el botón ACEPTAR COTIZACIÓN.\n\nSi tiene algunas dudas estoy aqui para resolverlas. 😊`,
-      url: `${COTIZADOR_CONFIG.BASE_URL}/aceptarCotizacion/${idCotizacion}`,
+      url: `${COTIZADOR_CONFIG.BASE_URL}/aceptarCotizacion/${sufijo}`,
     },
     cotizacion_carga_enviada_pro: {
       texto: `🎉 ¡Hola {{1}}! Te comparto la cotización que nos solicitaste. 😊\nPor favor recuerda que, en la parte superior, encontrarás los gastos referentes a tu compra y en la parte inferior, el detalle del precio al que llegarán tus productos al destino.`,
-      url: `${COTIZADOR_CONFIG.BASE_URL}/visualizarCotizacion/${idCotizacion}`,
+      url: `${COTIZADOR_CONFIG.BASE_URL}/visualizarCotizacion/${sufijo}`,
     },
     confirmacion_cotizacion_pro: {
       texto: `👉 Para continuar, por favor confirma la aceptación de la cotización haciendo clic en el siguiente enlace.\n\nSi tienes alguna duda estoy aquí para ayudarte. 😊`,
-      url: `${COTIZADOR_CONFIG.BASE_URL}/aceptarCotizacion/${idCotizacion}`,
+      url: `${COTIZADOR_CONFIG.BASE_URL}/aceptarCotizacion/${sufijo}`,
     },
   };
 
@@ -350,8 +363,8 @@ const generarDatosMensaje = (
 
   // placeholders: confirmacion_cotizacion_pro no lleva nombre (sin body con {{1}})
   const placeholders = nombreCliente
-    ? { 1: nombreCliente, url_0_1: idCotizacion, url_full_0_1: template.url }
-    : { url_0_1: idCotizacion, url_full_0_1: template.url };
+    ? { 1: nombreCliente, url_0_1: sufijo, url_full_0_1: template.url }
+    : { url_0_1: sufijo, url_full_0_1: template.url };
 
   const rutaArchivo = JSON.stringify({
     placeholders,

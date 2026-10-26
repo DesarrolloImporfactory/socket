@@ -143,6 +143,13 @@ const RE_BOT_DE_TIENDA = new RegExp(
     '\\bguarda nuestro numero\\b',
     '\\bquieres que (?:lo|te) pase (?:a|con) un asesor\\b',
     '\\b1 por \\d+\\b.*\\b2 por \\d+\\b',
+    // Sábado 24-oct, después de publicar: dos bots que se escaparon.
+    '\\bquieres que te avisemos por este mismo numero\\b',
+    '\\bnecesitamos tu confirmacion del\\b',
+    '\\b(?:a )?domicilio o retiro en (?:agencia|oficina)\\b',
+    // Domingo 25-oct: un bot de IA que le devolvió a nuestro bot su propia
+    // pregunta («dime exactamente qué quieres que anote para el asesor…»).
+    '\\bque quieres que (?:le )?anote para (?:el|tu|su) asesor\\b',
   ].join('|'),
 );
 /* Respuesta automática del negocio del alumno (fuera de su horario) y el «ya te
@@ -161,6 +168,8 @@ const RE_AUTORESPUESTA = new RegExp(
       '\\bun asesor (?:te|le) (?:contactara|escribira|atendera) (?:en breve|pronto|a la brevedad|lo antes posible)\\b',
       '\\bte paso con (?!el\\b|ella\\b|usted\\b|ellos\\b)[a-zñ]+ ahora mismo\\b',
       '\\bpaso tu caso (?:a|con) un asesor\\b',
+      // Domingo 25-oct: el saludo automático de una tienda contestó a nuestra plantilla.
+      '\\bgracias por (?:comunicarte|contactarte|escribirnos) con nosotros en que (?:te )?(?:podemos|puedo) ayudar(?:te)?\\b',
     ].join('|') +
     ')',
 );
