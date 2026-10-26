@@ -381,6 +381,11 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
     prueba('foto «sin nombre de cliente visible» + pregunta propia: NO es datos de otro', !pideDatosDeOtro(foto.textoParaBuscar, W, foto.textoCliente).pide);
     const ajena = leerAdjuntos('[IMAGEN: documento] Cotización de importación en USD.\nCliente: esta es la cotización de mi socio, cuanto le sale', 'image');
     prueba('foto + «la cotización de mi socio»: sigue siendo datos de otro', pideDatosDeOtro(ajena.textoParaBuscar, W, ajena.textoCliente).pide);
+    // 25-oct (automejora): el teléfono del proveedor sale en la captura del pedido; el cliente no lo señala.
+    const pedido = leerAdjuntos('[IMAGEN: captura_plataforma] Pantalla «Detalle del pedido» de Alibaba. Envío a Yiwu, teléfono +86 135 1234 5678. Total: USD 565.00\nCliente: y mandé esto, dónde está mi pedido', 'image');
+    prueba('captura del pedido con el teléfono del proveedor: NO es datos de otro', !pideDatosDeOtro(pedido.textoParaBuscar, W, pedido.textoCliente).pide);
+    const conNumero = leerAdjuntos('[IMAGEN: captura_plataforma] Pantalla de la carga EC-2609209, celular 0912345678.\nCliente: revisen la carga de este celular por favor', 'image');
+    prueba('captura con otro celular + «la carga de este celular»: sigue siendo datos de otro', pideDatosDeOtro(conNumero.textoParaBuscar, W, conNumero.textoCliente).pide);
   }
 
   /* ───────────────────────────────────────────────────────────────────── */

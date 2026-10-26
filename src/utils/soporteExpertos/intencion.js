@@ -283,7 +283,11 @@ function pideDatosDeOtro(texto, telefonoRemitente, textoCliente = null) {
   const ajeno = escritos.find(
     (d) => !mismoTelefono(telefonoRemitente, d) && soloDigitos(telefonoRemitente).slice(-9) !== d.slice(-9),
   );
-  const loSenala = HABLA_DE_NUMERO.test(t) || /\b(del|al|con el|para el)\s+\+?\d/.test(t);
+  /* Quien señala el número tiene que ser el cliente: la lectura de una captura
+     del pedido en Alibaba trae «Teléfono: +86…» del proveedor o de la bodega, y
+     eso solo no es pedir la carga de otro (25-oct, «y mandé esto 👇» con 3
+     capturas recibió «por seguridad solo puedo informar…»). */
+  const loSenala = HABLA_DE_NUMERO.test(dichoPorEl) || /\b(del|al|con el|para el)\s+\+?\d/.test(dichoPorEl);
   // «Me registré en IMPORCHAT con el 0987…»: es el dato que pide el diagnóstico
   // de la cuenta (que tiene sus propios candados), no la carga de otro.
   const deRegistro = (hablaDeImporchat(texto) || /registr/.test(t)) && !hablaDeCarga(texto);
