@@ -664,6 +664,9 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
       'Perfecto Juan, te paso con Jose ahora mismo. Un momento por favor 😊',
       'Perfecto, gracias. Paso tu caso con un asesor y te escribirán en breve 🙌',
       'Buenos días! Gracias por tu mensaje. En este momento no estamos disponibles, te respondemos mañana.',
+      // Domingo 25-oct (automejora).
+      '👋 ¡Hola! Gracias por comunicarte con nosotros. ¿En qué podemos ayudarte hoy?',
+      'Dime exactamente qué quieres que anote para el asesor: producto (ej. Secadora), cantidad y ciudad.',
     ];
     prueba('las respuestas automáticas de su negocio se callan', autos.every(esMensajeDeBot), autos.filter((b) => !esMensajeDeBot(b)).join(' | '));
     const noAutos = [
@@ -677,6 +680,8 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
       'cómo pongo el mensaje de ausencia tipo gracias por tu mensaje te respondemos lo antes posible',
       'En este momento no podemos responder porque estamos en aduana, mañana pago',
       'te paso con ella ahora mismo, es mi socia',
+      'gracias por comunicarte conmigo, ¿en qué podemos ayudarte con mi carga?',
+      '¿qué quieres que le diga al asesor? mi carga no llega',
     ];
     prueba('una persona que pregunta por el horario no se calla', !noAutos.some(esMensajeDeBot), noAutos.filter(esMensajeDeBot).join(' | '));
     prueba('callar_bots = false se guarda en los ajustes', n({ soporte_expertos: { callar_bots: false } }).soporte_expertos.callar_bots === false);
