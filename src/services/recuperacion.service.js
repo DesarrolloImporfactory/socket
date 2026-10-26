@@ -1423,4 +1423,5 @@ module.exports = {
   quitarAsesor,
   asignables,
   fichaCliente,
+  telefonoDe,
 };

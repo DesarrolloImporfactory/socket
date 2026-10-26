@@ -281,3 +281,92 @@ exports.quitarAsesor = catchAsync(async (req, res, next) => {
   await svc.quitarAsesor({ id_sub_usuario: id });
   res.json({ status: 'success' });
 });
+
+// ── Pagos manuales (transferencia / efectivo) — solo super admin ─────────
+// El dinero entra fuera de Stripe; aquí se deja constancia con comprobante y,
+// si corresponde, se salda la factura abierta en Stripe para que deje de
+// reintentar la tarjeta. Ver services/pagos_manuales.service.js.
+const pagosSvc = require('../services/pagos_manuales.service');
+const { subirComprobante } = require('../utils/subirComprobante');
+
+const soloSuper = (req, next) => {
+  if (!req.recuperacion?.es_super) {
+    next(new AppError('Solo el super administrador registra pagos manuales', 403));
+    return false;
+  }
+  return true;
+};
+
+/** GET /recuperacion/pagos-manuales — últimos pagos registrados en todas las cuentas. */
+exports.listarPagosManuales = catchAsync(async (req, res, next) => {
+  if (!soloSuper(req, next)) return;
+  res.json({ status: 'success', data: await pagosSvc.listarRecientes({ limit: req.query.limit }) });
+});
+
+/** GET /recuperacion/pagos-manuales/rebotados[?fresh=1] — a quién le rebotó el cobro en Stripe (en vivo). */
+exports.cobrosRebotados = catchAsync(async (req, res, next) => {
+  if (!soloSuper(req, next)) return;
+  try {
+    const data = await pagosSvc.cobrosRebotados({ fresh: req.query.fresh === '1' });
+    res.json({ status: 'success', data });
+  } catch (e) {
+    return next(new AppError(`Stripe no respondió: ${e.message}`, 502));
+  }
+});
+
+/** GET /recuperacion/cliente/:id_usuario/pagos-manuales — suscripción, facturas saldables y pagos del cliente. */
+exports.panelPagosManuales = catchAsync(async (req, res, next) => {
+  if (!soloSuper(req, next)) return;
+  const id_usuario = Number(req.params.id_usuario);
+  if (!id_usuario) return next(new AppError('id_usuario requerido', 400));
+  const data = await pagosSvc.panelCliente(id_usuario);
+  if (!data) return next(new AppError('Cliente no encontrado', 404));
+  res.json({ status: 'success', data });
+});
+
+/**
+ * POST /recuperacion/cliente/:id_usuario/pagos-manuales  (multipart, `comprobante` opcional)
+ * body: monto, moneda?, metodo?, referencia?, fecha_pago?, nota?,
+ *       stripe_invoice_id? (factura a saldar fuera de banda),
+ *       anular_invoice_ids? ("in_a,in_b": otras facturas abiertas que se anulan),
+ *       acceso_hasta? (fecha hasta la que queda el acceso cuando no hay factura)
+ */
+exports.registrarPagoManual = catchAsync(async (req, res, next) => {
+  if (!soloSuper(req, next)) return;
+  const id_usuario = Number(req.params.id_usuario);
+  if (!id_usuario) return next(new AppError('id_usuario requerido', 400));
+  const b = req.body || {};
+
+  const comprobante_url = await subirComprobante(req.file, 'pagos_manuales/comprobantes');
+
+  try {
+    const r = await pagosSvc.registrar({
+      id_usuario,
+      monto: b.monto,
+      moneda: b.moneda || 'usd',
+      metodo: b.metodo || 'transferencia',
+      referencia: b.referencia || null,
+      fecha_pago: b.fecha_pago || null,
+      nota: b.nota || null,
+      comprobante_url,
+      stripe_invoice_id: b.stripe_invoice_id || null,
+      // multipart: llega como "in_a,in_b"
+      anular_invoice_ids: String(b.anular_invoice_ids || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+      acceso_hasta: b.acceso_hasta || null,
+      admin: { id_sub_usuario: req.sessionUser.id_sub_usuario, nombre: nombreDe(req) },
+    });
+    /* `comprobante_subido` en false con archivo adjunto = el uploader falló:
+       el pago quedó registrado igual y el front avisa. */
+    res.json({
+      status: 'success',
+      data: r,
+      comprobante_subido: Boolean(comprobante_url),
+      comprobante_url,
+    });
+  } catch (e) {
+    return next(new AppError(e.message, e.status || 500));
+  }
+});
