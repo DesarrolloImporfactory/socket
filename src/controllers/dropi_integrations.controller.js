@@ -21,7 +21,10 @@ const { matchEnLista } = require('../services/dropiAutoOrder.service');
    estados que nadie sincroniza divergen solas: la del notifier se quedó sin
    "EN TRANSITO", "EN BODEGA" ni "GUÍA GENERADA" con tilde y esos avisos nunca
    salían. Una sola función, un solo vocabulario. */
-const { classifyDropiStatus } = require('../services/dropi_notifier.service');
+const {
+  classifyDropiStatus,
+  marcarGemelasReemplazadas,
+} = require('../services/dropi_notifier.service');
 
 /* =========================
    Helpers
@@ -1493,6 +1496,230 @@ exports.solucionarNovedad = catchAsync(async (req, res, next) => {
 });
 
 /* ═══════════════════════════════════════════════════════════
+   Aviso de pedido duplicado (vista Pedidos)
+   Antes de confirmar, se avisa si el mismo teléfono ya tiene otra
+   orden "viva" reciente: creada en los últimos DUPLICADO_VENTANA_DIAS
+   días y que no está ni cancelada ni entregada (pendiente, con guía,
+   en reparto, con novedad, en devolución…). Una orden vieja ya
+   entregada no cuenta: es un cliente que vuelve a comprar. Una
+   orden recién creada y sin entregar sí: casi siempre es el mismo
+   pedido metido dos veces (bot + manual, Shopify + WhatsApp, dos
+   asesores). El teléfono se compara por sus últimos 9 dígitos, el
+   mismo criterio del dedupe de plantillas en dropi_notifier.
+   ═══════════════════════════════════════════════════════════ */
+const DUPLICADO_VENTANA_DIAS = 60;
+
+function ultimos9Digitos(phone) {
+  const d = String(phone || '').replace(/\D/g, '');
+  return d.length >= 7 ? d.slice(-9) : '';
+}
+
+function esOrdenViva(status, classified) {
+  const st = String(status || '')
+    .toUpperCase()
+    .replace(/_/g, ' ');
+  const cl = String(classified || '').toLowerCase();
+  if (cl === 'cancelada' || cl === 'entregada') return false;
+  if (/CANCELAD|ANULAD|RECHAZAD|REEMPLAZ|ENTREGAD/.test(st)) return false;
+  return true;
+}
+
+/**
+ * Devuelve Map<ultimos9, [orden viva...]> para los teléfonos dados, dentro
+ * del alcance del cache (cacheWhere). Quien llama excluye la orden propia.
+ */
+async function otrasOrdenesVivasPorTelefono({ cacheWhere, phones }) {
+  const claves = [...new Set((phones || []).map(ultimos9Digitos).filter(Boolean))];
+  const porClave = new Map();
+  if (!claves.length) return porClave;
+
+  const rows = await DropiOrdersCache.findAll({
+    where: {
+      ...cacheWhere,
+      order_created_at: {
+        [Op.gte]: literal(`NOW() - INTERVAL ${DUPLICADO_VENTANA_DIAS} DAY`),
+      },
+      [Op.or]: claves.map((c) => ({ phone: { [Op.like]: `%${c}` } })),
+    },
+    attributes: [
+      'dropi_order_id',
+      'status',
+      'classified_status',
+      'order_created_at',
+      'total_order',
+      'product_names',
+      'shipping_guide',
+      'phone',
+    ],
+    order: [['order_created_at', 'DESC']],
+    raw: true,
+  });
+
+  for (const r of rows) {
+    if (!esOrdenViva(r.status, r.classified_status)) continue;
+    const k = ultimos9Digitos(r.phone);
+    if (!k) continue;
+    let names = [];
+    try {
+      names = JSON.parse(r.product_names || '[]');
+    } catch (_) {}
+    if (!porClave.has(k)) porClave.set(k, []);
+    porClave.get(k).push({
+      id: Number(r.dropi_order_id),
+      status: r.status || '',
+      order_created_at: r.order_created_at,
+      total_order: Number(r.total_order || 0),
+      productos: Array.isArray(names) ? names.filter(Boolean) : [],
+      shipping_guide: r.shipping_guide || '',
+    });
+  }
+  return porClave;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   setOrderStatusFromPedidos
+   Vista Pedidos: confirmar o cancelar una orden en PENDIENTE
+   CONFIRMACION sin tener que entrar al chat exacto. Es el mismo
+   cambio de estado que hace el panel del chat (socket
+   DROPI_UPDATE_ORDER / DROPI_SET_ORDER_STATUS), pero por HTTP
+   porque /pedidos no tiene socket abierto. Cambia el estado
+   DIRECTO en Dropi:
+     confirmar → PENDIENTE (el proveedor la ve y la despacha)
+     cancelar  → CANCELADO (queda cancelada también en Dropi)
+   Mismas reglas que el panel del chat (utils/orderHelper del
+   front): confirmar solo en PENDIENTE CONFIRMACION; cancelar en
+   PENDIENTE CONFIRMACION o PENDIENTE (Dropi solo deja cancelar en
+   esos dos). Se valida contra el cache de ESTA cuenta: cualquier
+   otro estado (con guía, en reparto…) se rechaza para no pisar lo
+   que ya hizo el proveedor o la transportadora.
+   ═══════════════════════════════════════════════════════════ */
+
+exports.setOrderStatusFromPedidos = catchAsync(async (req, res, next) => {
+  const id_configuracion = toInt(req.body?.id_configuracion);
+  const dropi_order_id = toInt(req.body?.dropi_order_id);
+  const accion = String(req.body?.accion || '')
+    .trim()
+    .toLowerCase();
+
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+  if (!dropi_order_id)
+    return next(new AppError('dropi_order_id es requerido', 400));
+
+  const ACCIONES = {
+    confirmar: {
+      nuevo: 'PENDIENTE',
+      desde: ['PENDIENTE CONFIRMACION'],
+    },
+    cancelar: {
+      nuevo: 'CANCELADO',
+      desde: ['PENDIENTE CONFIRMACION', 'PENDIENTE'],
+    },
+  };
+  const regla = ACCIONES[accion];
+  if (!regla)
+    return next(
+      new AppError('accion inválida: debe ser "confirmar" o "cancelar"', 400),
+    );
+  const nuevoStatus = regla.nuevo;
+
+  // La orden tiene que ser de esta cuenta y seguir pendiente de confirmar.
+  const fila = await DropiOrdersCache.findOne({
+    where: { id_configuracion, dropi_order_id },
+    attributes: ['id', 'status', 'phone'],
+    raw: true,
+  });
+  if (!fila)
+    return next(new AppError('La orden no existe en esta cuenta', 404));
+
+  const statusActual = String(fila.status || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, ' ')
+    .replace(/_/g, ' ');
+  if (!regla.desde.includes(statusActual))
+    return next(
+      new AppError(
+        accion === 'confirmar'
+          ? `La orden #${dropi_order_id} ya no está en Pendiente confirmación (estado actual: ${
+              statusActual || 'desconocido'
+            }). Actualiza la lista para ver su estado real.`
+          : `La orden #${dropi_order_id} ya no se puede cancelar desde aquí (estado actual: ${
+              statusActual || 'desconocido'
+            }). Dropi solo permite cancelar en Pendiente confirmación o Pendiente; gestiónala como novedad o devolución.`,
+        409,
+      ),
+    );
+
+  // Red de seguridad contra duplicados: si el listado del front estaba viejo
+  // y no mostró el aviso, acá se frena con 409 ORDEN_DUPLICADA y la lista de
+  // órdenes vivas. El front muestra el aviso y reintenta con forzar: true.
+  if (accion === 'confirmar' && req.body?.forzar !== true) {
+    try {
+      const mapa = await otrasOrdenesVivasPorTelefono({
+        cacheWhere: { id_configuracion, id_usuario: 0 },
+        phones: [fila.phone],
+      });
+      const duplicadas = (mapa.get(ultimos9Digitos(fila.phone)) || []).filter(
+        (d) => d.id !== dropi_order_id,
+      );
+      if (duplicadas.length) {
+        return res.status(409).json({
+          isSuccess: false,
+          code: 'ORDEN_DUPLICADA',
+          message: `Este teléfono ya tiene ${duplicadas.length} orden(es) activa(s): ${duplicadas
+            .map((d) => `#${d.id}`)
+            .join(', ')}.`,
+          duplicadas,
+        });
+      }
+    } catch (e) {
+      // Si la verificación falla no se bloquea la confirmación: el aviso es
+      // una ayuda, no un candado.
+      console.error('[pedidos-cache] duplicados set-status:', e?.message);
+    }
+  }
+
+  // Cambio real en Dropi (mismo camino que el chat).
+  const data = await dropiOrdersService.updateOrderForClient({
+    id_configuracion,
+    orderId: dropi_order_id,
+    body: { status: nuevoStatus },
+  });
+
+  // Reflejar en el cache para que la vista lo muestre al instante, sin
+  // esperar al webhook ni al cron de sincronización.
+  try {
+    await db.query(
+      `UPDATE dropi_orders_cache
+          SET status = ?, classified_status = ?, updated_at = NOW()
+        WHERE id_configuracion = ? AND dropi_order_id = ?`,
+      {
+        replacements: [
+          nuevoStatus,
+          classifyDropiStatus(nuevoStatus),
+          id_configuracion,
+          dropi_order_id,
+        ],
+      },
+    );
+  } catch (e) {
+    console.error('[pedidos-cache] set-status cache:', e?.message);
+  }
+
+  return res.json({
+    ok: true,
+    data: {
+      dropi_order_id,
+      accion,
+      status: nuevoStatus,
+      estado_pedido: 'confirmado',
+      dropi: data || null,
+    },
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════
    listOrdersFromCache
    Vista Pedidos: lee dropi_orders_cache (NO golpea la API de
    Dropi en cada búsqueda/página). Enriquece con chat/agente,
@@ -1992,6 +2219,34 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
     for (const o of parsed) if (o.es_shopify == null) o.es_shopify = false;
   }
 
+  // ── Aviso de duplicado: otras órdenes vivas del mismo teléfono ──
+  // Solo para las que aún se pueden confirmar (PENDIENTE CONFIRMACION): el
+  // front lo muestra en la fila y dentro del diálogo de confirmar. Se busca
+  // con el número sugerido cuando el de la orden viene incompleto.
+  for (const o of parsed) o.otras_ordenes_activas = [];
+  const pendientesConf = parsed.filter(
+    (o) =>
+      String(o.status || '')
+        .toUpperCase()
+        .replace(/_/g, ' ') === 'PENDIENTE CONFIRMACION',
+  );
+  if (pendientesConf.length) {
+    try {
+      const mapa = await otrasOrdenesVivasPorTelefono({
+        cacheWhere,
+        phones: pendientesConf.map((o) => o.telefono_sugerido || o.phone),
+      });
+      for (const o of pendientesConf) {
+        const k = ultimos9Digitos(o.telefono_sugerido || o.phone);
+        o.otras_ordenes_activas = (mapa.get(k) || []).filter(
+          (d) => d.id !== o.id,
+        );
+      }
+    } catch (e) {
+      console.error('[pedidos-cache] duplicados:', e?.message);
+    }
+  }
+
   // ── Chat + agente (mismo enricher del listado en vivo) ──
   // Para el match usamos el número sugerido cuando el de la orden está
   // incompleto: así la orden truncada recupera su conversación/agente en vez
@@ -2414,6 +2669,22 @@ async function upsertOrdersToCache(cacheCtx, orders) {
   console.log(
     `[cache] Upserted ${bulkData.length} orders for ${buildCacheKey(cacheCtx)}`,
   );
+
+  // Gemela vieja → REEMPLAZADA (mismo criterio que upsertOrders del notifier:
+  // Dropi no avisa cuando reemplaza una orden al confirmarla con cambios).
+  try {
+    const n = await marcarGemelasReemplazadas({
+      id_configuracion: insertFields.id_configuracion,
+      id_usuario: insertFields.id_usuario,
+      orderIds: orders.map((o) => o?.id),
+    });
+    if (n)
+      console.log(
+        `[cache] ${buildCacheKey(cacheCtx)}: ${n} gemela(s) marcadas REEMPLAZADA`,
+      );
+  } catch (e) {
+    console.error('[cache] gemelas reemplazadas:', e?.message);
+  }
 }
 
 /* ═══════════════════════════════════════════════════════════

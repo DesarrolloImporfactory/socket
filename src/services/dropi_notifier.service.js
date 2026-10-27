@@ -612,6 +612,56 @@ function buildTemplateComponents(parametrosJson, order) {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   Gemelas REEMPLAZADAS que Dropi nunca avisa
+   Dropi no edita una orden en sitio: al confirmarla con un cambio
+   (transportadora, datos) crea una orden NUEVA que hereda el
+   order_created_at exacto y marca la vieja como REEMPLAZADA. Pero
+   el listado /orders/myorders por "fecha de cambio de estatus" ya
+   no devuelve la vieja, y el webhook tampoco la manda, así que el
+   cache la dejaba congelada en PENDIENTE CONFIRMACION para siempre.
+   Caso real: cfg 277 con 1.460 de 1.499 "pendientes" que eran
+   fantasmas (27-10-2026). Cada vez que entra una orden al cache,
+   se busca su gemela más vieja (misma cuenta, mismo teléfono por
+   los últimos 9 dígitos, misma fecha de creación, id menor) que
+   siga en PENDIENTE CONFIRMACION y se marca REEMPLAZADA, que es lo
+   que Dropi ya hizo de su lado.
+   ═══════════════════════════════════════════════════════════ */
+async function marcarGemelasReemplazadas({
+  id_configuracion = 0,
+  id_usuario = 0,
+  orderIds = [],
+}) {
+  const ids = [...new Set((orderIds || []).map(Number).filter(Boolean))];
+  if (!ids.length) return 0;
+  const [, meta] = await db.query(
+    `UPDATE dropi_orders_cache vieja
+       JOIN dropi_orders_cache nueva
+         ON nueva.id_configuracion = vieja.id_configuracion
+        AND nueva.id_usuario = vieja.id_usuario
+        AND nueva.order_created_at = vieja.order_created_at
+        AND nueva.dropi_order_id > vieja.dropi_order_id
+        AND RIGHT(nueva.phone, 9) = RIGHT(vieja.phone, 9)
+        SET vieja.status = 'REEMPLAZADA',
+            vieja.classified_status = :cl,
+            vieja.updated_at = NOW()
+      WHERE vieja.id_configuracion = :cfg AND vieja.id_usuario = :usr
+        AND UPPER(vieja.status) = 'PENDIENTE CONFIRMACION'
+        AND nueva.dropi_order_id IN (:ids)
+        AND nueva.phone IS NOT NULL AND nueva.phone <> ''`,
+    {
+      replacements: {
+        cfg: Number(id_configuracion) || 0,
+        usr: Number(id_usuario) || 0,
+        ids,
+        cl: classifyDropiStatus('REEMPLAZADA'),
+      },
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+  return Number(meta?.affectedRows ?? meta ?? 0) || 0;
+}
+
+/* ═══════════════════════════════════════════════════════════
    Upsert órdenes al cache
    ═══════════════════════════════════════════════════════════ */
 
@@ -668,6 +718,22 @@ async function upsertOrders(cacheInsertFields, orders) {
         'shop_name',
       ],
     });
+  }
+
+  /* Gemela vieja → REEMPLAZADA (ver marcarGemelasReemplazadas). Best-effort:
+     no rompe el upsert. */
+  try {
+    const n = await marcarGemelasReemplazadas({
+      id_configuracion: cacheInsertFields.id_configuracion ?? 0,
+      id_usuario: cacheInsertFields.id_usuario ?? 0,
+      orderIds: orders.map((o) => o?.id),
+    });
+    if (n)
+      console.log(
+        `[dropi-cache] cfg ${cacheInsertFields.id_configuracion ?? 0}: ${n} gemela(s) marcadas REEMPLAZADA`,
+      );
+  } catch (e) {
+    console.error('[dropi-cache] gemelas reemplazadas:', e?.message);
   }
 
   /* Fecha real de entrega: primera vez que ESTA corrida ve la orden en
@@ -2041,6 +2107,7 @@ module.exports = {
   renotificarSiCambioGuia,
   // persistencia / envío
   upsertOrders,
+  marcarGemelasReemplazadas,
   getPlantillasActivas,
   procesarTemplates,
 };
