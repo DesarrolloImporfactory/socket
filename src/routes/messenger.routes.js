@@ -7,7 +7,7 @@ const verifyFBSignature = require('../middlewares/verifyFacebookSignature.middle
 const conversationsController = require('../controllers/messenger_conversations.controller');
 const messengerProfiles = require('../controllers/messenger_profiles.controller');
 const messengerPagesController = require('../controllers/messenger_pages.controller');
-const { protect } = require('../middlewares/auth.middleware');
+const { protect, protectConfigOwner } = require('../middlewares/auth.middleware');
 
 //No colocamos authMiddleware: Facebook no enviara el JWT.
 
@@ -28,6 +28,15 @@ router.get('/facebook/pages', oauthController.listUserPages);
 
 // 4. Conectar página a id_configuracion (suscribe + guarda token en DB)
 router.post('/facebook/connect', oauthController.connectPage);
+
+// 5. Desconectar el inbox (sesión + la conexión debe ser de la cuenta, como
+//    /meta_ads/desconectar). Los chats no se borran.
+router.post(
+  '/facebook/disconnect',
+  protect,
+  protectConfigOwner,
+  oauthController.disconnectPage,
+);
 
 // Listar conversaciones por id_configuracion
 router.get('/conversations', conversationsController.listConversations);

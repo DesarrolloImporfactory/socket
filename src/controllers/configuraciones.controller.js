@@ -325,6 +325,23 @@ exports.listarConexionesSubUser = catchAsync(async (req, res) => {
           AND ip.status = 'active'
       ) AS instagram_conectado,
 
+      /* ¿Hubo chats por ese canal antes? Para avisar al (re)conectar un
+         inbox que los chats anteriores siguen en /chat: si conecta la
+         misma página continúan, si conecta otra quedan como historial. */
+      EXISTS (
+        SELECT 1 FROM clientes_chat_center cc
+        WHERE cc.id_configuracion = c.id
+          AND cc.source = 'ms'
+          AND cc.deleted_at IS NULL
+      ) AS messenger_tiene_chats,
+
+      EXISTS (
+        SELECT 1 FROM clientes_chat_center cc
+        WHERE cc.id_configuracion = c.id
+          AND cc.source = 'ig'
+          AND cc.deleted_at IS NULL
+      ) AS instagram_tiene_chats,
+
       EXISTS (
         SELECT 1
         FROM meta_ad_connections mac

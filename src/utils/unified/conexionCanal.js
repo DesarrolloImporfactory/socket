@@ -134,28 +134,115 @@ async function verificarCuentaInstagramDisponible({
  */
 async function liberarConexionesDeConfiguracion(id_configuracion) {
   if (!id_configuracion) return;
-  for (const tabla of ['messenger_pages', 'instagram_pages']) {
-    await db
-      .query(
-        `UPDATE ${tabla}
-            SET status = 'inactive'
-          WHERE id_configuracion = ? AND status = 'active'`,
-        {
-          replacements: [Number(id_configuracion)],
-          type: db.QueryTypes.UPDATE,
-        },
-      )
-      .catch((e) =>
+  /* Hasta el 2026-10-27 esto hacía `SET status = 'inactive'`, pero `status`
+     es un ENUM('active','revoked'): con STRICT_TRANS_TABLES MySQL rechazaba
+     el UPDATE ("Data truncated") y el catch lo tragaba, así que suspender
+     nunca liberó una página. Ahora se usa la misma desconexión del botón de
+     /conexiones: se borra la fila (los chats quedan) y se des-suscribe en
+     Meta solo si ningún otro canal activo usa la página. */
+  for (const canal of ['ms', 'ig']) {
+    await desconectarCanalDeConfiguracion({ canal, id_configuracion }).catch(
+      (e) =>
         console.log(
-          `[conexionCanal] no se pudo liberar ${tabla} de cfg ${id_configuracion}:`,
+          `[conexionCanal] no se pudo liberar ${canal} de cfg ${id_configuracion}:`,
           e?.message,
         ),
-      );
+    );
   }
+}
+
+/**
+ * Desconecta el inbox de Messenger o de Instagram de una conexión, a pedido
+ * del cliente desde /conexiones (mismo botón que ya tenía Meta Ads).
+ *
+ * Qué hace y por qué así:
+ *   - BORRA las filas de la tabla del canal para esa configuración. `status`
+ *     es un ENUM('active','revoked'): no hay valor "desconectada" y 'revoked'
+ *     no sirve porque el chequeo de salud revive una página 'revoked' cuyo
+ *     token siga vivo (messenger_pages_health.service) → se reconectaría sola.
+ *     Sin fila, el webhook ya no enruta esa página/cuenta a la conexión
+ *     (getConfigIdByPageId / getPageRowByIgId devuelven null) y el envío no
+ *     encuentra token: la conexión queda exactamente como antes de conectar.
+ *   - Los CHATS no se tocan: clientes_chat_center y mensajes_clientes siguen
+ *     ahí y se ven en /chat (solo lectura hasta volver a conectar). Si vuelve
+ *     a conectar la MISMA página, los PSID/IGSID son los mismos y los chats
+ *     continúan; si conecta OTRA página, los nuevos chats llegan aparte y los
+ *     viejos quedan como historial.
+ *   - En Meta se des-suscribe la app de la página (DELETE subscribed_apps)
+ *     SOLO si ninguna otra fila activa sigue usando esa página: Messenger e
+ *     Instagram comparten page_id (la cuenta IG cuelga de la página) y la
+ *     suscripción es una sola por página; des-suscribir al quitar Instagram
+ *     dejaría mudo al Messenger de la misma página. Es best-effort: si Meta
+ *     falla, igual se borra la fila (el enrutado ya la ignora).
+ *
+ * @returns {{ paginas: Array<{page_id, page_name, meta_desuscrita}> }}
+ */
+async function desconectarCanalDeConfiguracion({ canal, id_configuracion }) {
+  const tabla =
+    canal === 'ig'
+      ? 'instagram_pages'
+      : canal === 'ms'
+        ? 'messenger_pages'
+        : null;
+  if (!tabla || !id_configuracion) return { paginas: [] };
+  const otraTabla = canal === 'ig' ? 'messenger_pages' : 'instagram_pages';
+
+  const filas = await db.query(
+    `SELECT page_id, page_name, page_access_token, status
+       FROM ${tabla}
+      WHERE id_configuracion = ?`,
+    { replacements: [Number(id_configuracion)], type: db.QueryTypes.SELECT },
+  );
+
+  const paginas = [];
+  for (const f of filas) {
+    let meta_desuscrita = false;
+    if (f.status === 'active' && f.page_access_token) {
+      const [compartida] = await db.query(
+        `SELECT 1 AS x FROM ${otraTabla}
+          WHERE page_id = ? AND status = 'active'
+          LIMIT 1`,
+        { replacements: [String(f.page_id)], type: db.QueryTypes.SELECT },
+      );
+      if (!compartida) {
+        try {
+          const axios = require('axios');
+          await axios.delete(
+            `https://graph.facebook.com/v22.0/${f.page_id}/subscribed_apps`,
+            { params: { access_token: f.page_access_token }, timeout: 8000 },
+          );
+          meta_desuscrita = true;
+        } catch (e) {
+          console.warn(
+            `[conexionCanal] no se pudo des-suscribir la página ${f.page_id} (${canal}) en Meta:`,
+            e?.response?.data?.error?.message || e?.message,
+          );
+        }
+      } else {
+        console.log(
+          `[conexionCanal] página ${f.page_id} sigue en uso por ${otraTabla}: no se des-suscribe en Meta`,
+        );
+      }
+    }
+    paginas.push({ page_id: f.page_id, page_name: f.page_name, meta_desuscrita });
+  }
+
+  await db.query(`DELETE FROM ${tabla} WHERE id_configuracion = ?`, {
+    replacements: [Number(id_configuracion)],
+    type: db.QueryTypes.DELETE,
+  });
+
+  console.log(
+    `[conexionCanal] ${canal} desconectado de cfg=${id_configuracion}: ` +
+      (paginas.map((p) => `${p.page_name} (${p.page_id})`).join(', ') ||
+        'sin páginas'),
+  );
+  return { paginas };
 }
 
 module.exports = {
   verificarPaginaMessengerDisponible,
   verificarCuentaInstagramDisponible,
   liberarConexionesDeConfiguracion,
+  desconectarCanalDeConfiguracion,
 };
