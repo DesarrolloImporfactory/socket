@@ -15,12 +15,13 @@
  * que paga y la que cobra.
  */
 
-const axios = require('axios');
-const FormData = require('form-data');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const referidosService = require('../services/referidos.service');
 const { PAGO_PREFS } = require('../config/referidos.config');
+const {
+  subirComprobante: subirComprobanteAlUploader,
+} = require('../utils/subirComprobante');
 
 const cuentaDe = (req) => {
   const id = Number(req.sessionUser?.id_usuario);
@@ -129,48 +130,27 @@ exports.guardarPreferencia = catchAsync(async (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 
 /**
- * Sube el comprobante al uploader compartido —el mismo de los adjuntos del
- * chat— y devuelve su URL.
- *
- * Devuelve null si falla, y el caller decide: perder el archivo es molesto,
- * pero bloquear el registro del pago porque el uploader está caído sería peor.
- * El dinero ya salió del banco para cuando alguien pulsa este botón.
+ * El comprobante va al uploader compartido (utils/subirComprobante): devuelve
+ * null si falla y el pago se registra igual, el front avisa para reintentar.
  */
-const subirComprobante = async (file) => {
-  if (!file?.buffer?.length) return null;
-  try {
-    const nombre = String(file.originalname || 'comprobante').replace(
-      /[^\w.\-() ]+/g,
-      '_',
-    );
-    const form = new FormData();
-    form.append('file', file.buffer, {
-      filename: `referidos/comprobantes/${Date.now()}-${nombre}`,
-      contentType: file.mimetype || 'application/octet-stream',
-    });
-
-    const resp = await axios.post(
-      'https://uploader.imporfactory.app/api/files/upload',
-      form,
-      { headers: form.getHeaders(), timeout: 30000, validateStatus: () => true },
-    );
-
-    if (resp.status >= 200 && resp.status < 300 && resp.data?.data?.url) {
-      return resp.data.data.url;
-    }
-    console.log('[referidos] uploader rechazó el comprobante:', resp.status);
-    return null;
-  } catch (e) {
-    console.log('[referidos] subirComprobante falló:', e?.message);
-    return null;
-  }
-};
+const subirComprobante = (file) =>
+  subirComprobanteAlUploader(file, 'referidos/comprobantes');
 
 /** GET /api/v1/referidos/admin/solicitudes?estado= */
 exports.listarSolicitudes = catchAsync(async (req, res) => {
   const data = await referidosService.listarSolicitudes(
     req.query?.estado || null,
   );
+  return res.status(200).json({ status: 'success', data });
+});
+
+/**
+ * GET /api/v1/referidos/admin/saldos
+ * Saldo acumulado por referidor (disponible, pendiente, reservado, pagado) y
+ * totales: cuánto hay que tener en reserva aunque nadie lo haya pedido aún.
+ */
+exports.saldosReferidores = catchAsync(async (req, res) => {
+  const data = await referidosService.saldosReferidores();
   return res.status(200).json({ status: 'success', data });
 });
 

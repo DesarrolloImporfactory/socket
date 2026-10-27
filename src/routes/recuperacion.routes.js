@@ -1,6 +1,14 @@
 const express = require('express');
+const multer = require('multer');
 const router = express.Router();
 const { protect } = require('../middlewares/auth.middleware');
+
+// En memoria: el comprobante del pago manual se reenvía al uploader y nunca
+// toca el disco de este servidor. 10 MB alcanza para una captura o un PDF.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
 const requireRecuperacion = require('../middlewares/requireRecuperacion.middleware');
 const ctrl = require('../controllers/recuperacion.controller');
 
@@ -14,6 +22,15 @@ router.use(requireRecuperacion);
 router.get('/embudo', ctrl.embudo);
 router.get('/resultados', ctrl.resultados);
 router.get('/cliente/:id_usuario', ctrl.cliente);
+// Pagos fuera de Stripe (transferencia/efectivo): solo super admin (lo valida el controlador).
+router.get('/pagos-manuales', ctrl.listarPagosManuales);
+router.get('/pagos-manuales/rebotados', ctrl.cobrosRebotados);
+router.get('/cliente/:id_usuario/pagos-manuales', ctrl.panelPagosManuales);
+router.post(
+  '/cliente/:id_usuario/pagos-manuales',
+  upload.single('comprobante'),
+  ctrl.registrarPagoManual,
+);
 // Antes de las rutas con :id_usuario: busca clientes con su último caso (abierto o cerrado).
 router.get('/casos/buscar', ctrl.buscar);
 router.post('/casos/:id_usuario/asignar', ctrl.asignar);
