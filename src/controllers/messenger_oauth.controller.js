@@ -140,3 +140,20 @@ exports.connectPage = catchAsync(async (req, res, next) => {
   );
   res.json({ ok: true, ...result });
 });
+
+// 5. Desconectar el inbox de Messenger de la configuración (botón de
+//    /conexiones, mismo patrón que Meta Ads). Los chats quedan como historial.
+exports.disconnectPage = catchAsync(async (req, res, next) => {
+  const { id_configuracion } = req.body;
+  if (!id_configuracion)
+    return next(new AppError('id_configuracion es requerido', 400));
+
+  const {
+    desconectarCanalDeConfiguracion,
+  } = require('../utils/unified/conexionCanal');
+  const result = await desconectarCanalDeConfiguracion({
+    canal: 'ms',
+    id_configuracion,
+  });
+  res.json({ ok: true, ...result });
+});

@@ -5,6 +5,7 @@ const igController = require('../controllers/instagram.controller');
 const igOauthController = require('../controllers/instagram_oauth.controller');
 const verifyFBSignature = require('../middlewares/verifyFacebookSignature.middleware');
 const igConversations = require('../controllers/instagram_conversations.controller');
+const { protect, protectConfigOwner } = require('../middlewares/auth.middleware');
 
 /* =============================
    Helpers de gate / debug
@@ -127,6 +128,14 @@ router.get('/facebook/login-url', igOauthController.getLoginUrl);
 router.post('/facebook/oauth/exchange', igOauthController.exchangeCode);
 router.get('/facebook/pages', igOauthController.listUserPages);
 router.post('/facebook/connect', igOauthController.connectPage);
+// Desconectar (sesión + la conexión debe ser de la cuenta, como
+// /meta_ads/desconectar). Los chats no se borran.
+router.post(
+  '/facebook/disconnect',
+  protect,
+  protectConfigOwner,
+  igOauthController.disconnectPage,
+);
 
 // Lecturas IG
 router.get('/conversations', igConversations.listConversations);
