@@ -24,13 +24,15 @@ const { db } = require('../database/config');
 const DropiOrdersCache = require('../models/dropi_orders_cache.model');
 // Normalización de teléfonos con libphonenumber (multipaís).
 // toWhatsapp(phone, country_code) → internacional en dígitos, sin "+".
-const { toWhatsapp, isValidPhone, toDropiLocal } = require('../utils/phoneFactor');
+const {
+  toWhatsapp,
+  isValidPhone,
+  toDropiLocal,
+} = require('../utils/phoneFactor');
 const {
   moverContactoOrigenPorOrden,
 } = require('./contactoOrigenEnlace.service');
-const {
-  obtenerOCrearContactoWa,
-} = require('../utils/unified/dedupeContacto');
+const { obtenerOCrearContactoWa } = require('../utils/unified/dedupeContacto');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 const {
   registrarDesdeOrdenes: registrarNovedadesDesdeOrdenes,
@@ -621,11 +623,31 @@ function buildTemplateComponents(parametrosJson, order) {
    cache la dejaba congelada en PENDIENTE CONFIRMACION para siempre.
    Caso real: cfg 277 con 1.460 de 1.499 "pendientes" que eran
    fantasmas (27-10-2026). Cada vez que entra una orden al cache,
-   se busca su gemela más vieja (misma cuenta, mismo teléfono por
-   los últimos 9 dígitos, misma fecha de creación, id menor) que
-   siga en PENDIENTE CONFIRMACION y se marca REEMPLAZADA, que es lo
-   que Dropi ya hizo de su lado.
+   se busca su gemela más vieja (misma cuenta, misma fecha de
+   creación, id menor) que siga en PENDIENTE CONFIRMACION o en
+   PENDIENTE y se marca REEMPLAZADA, que es lo que Dropi ya hizo de
+   su lado. La gemela se reconoce por el teléfono (últimos 9
+   dígitos) o, si la edición cambió justo el teléfono, por nombre +
+   apellido + total iguales (casos 7580140→7585293 y
+   7632250→7658726 de la 277, un dígito corregido). También aplica
+   a PENDIENTE: Dropi deja editar una orden ya confirmada y la
+   reemplaza igual (381 fantasmas en 33 cuentas en 90 días).
    ═══════════════════════════════════════════════════════════ */
+const SQL_GEMELA_JOIN = `
+       JOIN dropi_orders_cache nueva
+         ON nueva.id_configuracion = vieja.id_configuracion
+        AND nueva.id_usuario = vieja.id_usuario
+        AND nueva.order_created_at = vieja.order_created_at
+        AND nueva.dropi_order_id > vieja.dropi_order_id
+        AND (
+          (nueva.phone IS NOT NULL AND nueva.phone <> ''
+           AND RIGHT(nueva.phone, 9) = RIGHT(vieja.phone, 9))
+          OR (nueva.name IS NOT NULL AND nueva.name <> ''
+           AND nueva.name = vieja.name
+           AND IFNULL(nueva.surname, '') = IFNULL(vieja.surname, '')
+           AND nueva.total_order = vieja.total_order)
+        )`;
+const SQL_GEMELA_ESTADOS = `UPPER(vieja.status) IN ('PENDIENTE CONFIRMACION', 'PENDIENTE')`;
 async function marcarGemelasReemplazadas({
   id_configuracion = 0,
   id_usuario = 0,
@@ -635,19 +657,13 @@ async function marcarGemelasReemplazadas({
   if (!ids.length) return 0;
   const [, meta] = await db.query(
     `UPDATE dropi_orders_cache vieja
-       JOIN dropi_orders_cache nueva
-         ON nueva.id_configuracion = vieja.id_configuracion
-        AND nueva.id_usuario = vieja.id_usuario
-        AND nueva.order_created_at = vieja.order_created_at
-        AND nueva.dropi_order_id > vieja.dropi_order_id
-        AND RIGHT(nueva.phone, 9) = RIGHT(vieja.phone, 9)
+       ${SQL_GEMELA_JOIN}
         SET vieja.status = 'REEMPLAZADA',
             vieja.classified_status = :cl,
             vieja.updated_at = NOW()
       WHERE vieja.id_configuracion = :cfg AND vieja.id_usuario = :usr
-        AND UPPER(vieja.status) = 'PENDIENTE CONFIRMACION'
-        AND nueva.dropi_order_id IN (:ids)
-        AND nueva.phone IS NOT NULL AND nueva.phone <> ''`,
+        AND ${SQL_GEMELA_ESTADOS}
+        AND nueva.dropi_order_id IN (:ids)`,
     {
       replacements: {
         cfg: Number(id_configuracion) || 0,
@@ -1975,7 +1991,10 @@ async function procesarTemplates({
               order: orderParaMsg,
             }),
           });
-        } else if (estadoConfig === 'PENDIENTE CONFIRMACION' && columnaDestino) {
+        } else if (
+          estadoConfig === 'PENDIENTE CONFIRMACION' &&
+          columnaDestino
+        ) {
           /* La otra columna donde la orden se muere en silencio. El comprador
              (casi siempre entra por Shopify) muchas veces NUNCA ha escrito,
              así que el bot jamás agenda su seguimiento: las secuencias

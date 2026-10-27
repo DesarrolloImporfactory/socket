@@ -115,6 +115,42 @@ function dropiDateToLocal(value, country_code) {
   return d.toISOString().slice(0, 19).replace('T', ' ');
 }
 
+/**
+ * País del evento → código de integración (EC/MX/CO/GT).
+ *
+ * Dropi manda el nombre ('ECUADOR', 'MEXICO', 'COLOMBIA') y a veces el
+ * código ('EC'). Los dropi_order_id se REPITEN entre países: la 6310143 de
+ * Ecuador y la 6310143 de México son órdenes distintas. Sin este filtro, un
+ * evento de México entraba a la cuenta ecuatoriana que tenía ese id en cache
+ * y le pisaba estado, cliente, teléfono y productos (90 filas en 25 cuentas
+ * EC al 27-10-2026; la cfg 277 vio una orden de julio convertida en una
+ * mexicana). Si el evento no trae país reconocible, no se filtra.
+ */
+const CODIGO_PAIS = {
+  ECUADOR: 'EC',
+  EC: 'EC',
+  MEXICO: 'MX',
+  MX: 'MX',
+  COLOMBIA: 'CO',
+  CO: 'CO',
+  GUATEMALA: 'GT',
+  GT: 'GT',
+};
+function codigoPaisDelEvento(payload) {
+  const raw = String(payload?.country || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase();
+  return CODIGO_PAIS[raw] || null;
+}
+
+/** Clave de entidad (config o usuario suelto) de una integración o fila. */
+function claveEntidad(r) {
+  const idConfig = Number(r?.id_configuracion || 0);
+  return idConfig ? `c${idConfig}` : `u${Number(r?.id_usuario || 0)}`;
+}
+
 /** ¿La plantilla activa de este estado usa la variable indicada? */
 function plantillaUsaVariable(plantilla, varName) {
   const config = safeJsonParse(plantilla?.parametros_json, null);
@@ -157,9 +193,7 @@ async function resolverIntegraciones(payload, cacheRows) {
     repl.push(uid);
   }
   if (cfgIds.length) {
-    conds.push(
-      `di.id_configuracion IN (${cfgIds.map(() => '?').join(',')})`,
-    );
+    conds.push(`di.id_configuracion IN (${cfgIds.map(() => '?').join(',')})`);
     repl.push(...cfgIds);
   }
   if (usrIds.length) {
@@ -189,13 +223,19 @@ async function resolverIntegraciones(payload, cacheRows) {
     { replacements: repl, type: db.QueryTypes.SELECT },
   );
 
+  // Solo integraciones del país del evento: el mismo dropi_order_id existe
+  // en Ecuador y en México como órdenes distintas (ver codigoPaisDelEvento).
+  const pais = codigoPaisDelEvento(payload);
+  const delPais = pais
+    ? rows.filter((r) => String(r.country_code || 'EC').toUpperCase() === pais)
+    : rows;
+
   // Una config puede tener varias tiendas Dropi (varias keys): dedupe por
   // entidad, prefiriendo la integración cuya cuenta Dropi es la dueña de la
   // orden (dropi_user_id = shop.user_id) para que getOrderDetail funcione.
   const porEntidad = new Map();
-  for (const r of rows) {
-    const idConfig = Number(r.id_configuracion || 0);
-    const key = idConfig ? `c${idConfig}` : `u${Number(r.id_usuario || 0)}`;
+  for (const r of delPais) {
+    const key = claveEntidad(r);
     const actual = porEntidad.get(key);
     if (!actual || (uid > 0 && Number(r.dropi_user_id) === uid)) {
       porEntidad.set(key, r);
@@ -355,9 +395,15 @@ async function processOne(payload) {
     return;
   }
 
-  // 3) Base: el order_data más rico del cache (preferir uno con productos)
+  // 3) Base: el order_data más rico del cache (preferir uno con productos).
+  //    Solo filas de las entidades elegibles: la fila del mismo id en otro
+  //    país no debe servir de base ni mezclar sus productos.
+  const entidades = new Set(integraciones.map(claveEntidad));
+  const cacheRowsPropias = cacheRows.filter((r) =>
+    entidades.has(claveEntidad(r)),
+  );
   let base = null;
-  for (const row of cacheRows) {
+  for (const row of cacheRowsPropias) {
     const parsed = safeJsonParse(row.order_data, null);
     if (!parsed) continue;
     if (!base) base = parsed;
