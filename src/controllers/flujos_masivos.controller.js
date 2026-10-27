@@ -152,6 +152,41 @@ exports.previewAudiencia = async (req, res) => {
        ningún mensaje DEL cliente (rol_mensaje = 0, celular_recibe = id del
        contacto) en las últimas N horas — con N = 0, en toda la ventana. */
     const repl = { cfg: id_configuracion, estados, dias, limite };
+
+    /* Multi-tablero: estado_db es único por cuenta, así que cada estado
+       elegido dice solo en qué tablero vive. Los del tablero PRINCIPAL se
+       buscan en clientes_chat_center.estado_contacto; los de tableros
+       SECUNDARIOS en clientes_estados_tablero. Un mismo contacto puede estar
+       en dos o tres tableros a la vez: la consulta devuelve una fila por
+       contacto (c.id), así que entra UNA sola vez al lote aunque cumpla por
+       varias columnas. Un estado que no sea columna de ningún tablero se
+       trata como del principal (comportamiento histórico). */
+    const columnasSel = await db.query(
+      `SELECT estado_db, id_tablero FROM kanban_columnas
+        WHERE id_configuracion = :cfg AND estado_db IN (:estados)`,
+      { replacements: { cfg: id_configuracion, estados }, type: db.QueryTypes.SELECT },
+    );
+    const estadosSecundarios = columnasSel
+      .filter((k) => k.id_tablero != null)
+      .map((k) => k.estado_db);
+    const estadosPrincipal = estados.filter(
+      (e) => !estadosSecundarios.includes(e),
+    );
+    const condEstado = [];
+    if (estadosPrincipal.length) {
+      repl.estPrincipal = estadosPrincipal;
+      condEstado.push(`c.estado_contacto IN (:estPrincipal)`);
+    }
+    if (estadosSecundarios.length) {
+      repl.estSecundarios = estadosSecundarios;
+      condEstado.push(`EXISTS (
+            SELECT 1 FROM clientes_estados_tablero cet
+             WHERE cet.id_cliente = c.id
+               AND cet.id_configuracion = :cfg
+               AND cet.estado_db IN (:estSecundarios))`);
+    }
+    const sqlEstado = `AND (${condEstado.join(' OR ')})`;
+
     let sqlSinResp = '';
     if (soloSinRespuesta) {
       if (horas > 0) repl.horas = horas;
@@ -170,7 +205,7 @@ exports.previewAudiencia = async (req, res) => {
          FROM clientes_chat_center c
         WHERE c.id_configuracion = :cfg
           AND c.deleted_at IS NULL
-          AND c.estado_contacto IN (:estados)
+          ${sqlEstado}
           AND COALESCE(c.ultimo_mensaje_at, c.created_at) > NOW() - INTERVAL :dias DAY
           ${sqlSinResp}
         ORDER BY COALESCE(c.ultimo_mensaje_at, c.created_at) DESC

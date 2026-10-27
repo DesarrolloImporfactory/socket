@@ -8,6 +8,7 @@ const {
 } = require('../services/whatsapp.service');
 const { emitirProgramadoEstado } = require('../utils/programadosRealtime');
 const { estaBloqueado } = require('../utils/contactosBloqueados');
+const { moverContactoAColumna } = require('../utils/kanbanMoverColumna');
 
 async function withLock(lockName, fn) {
   const conn = await db.connectionManager.getConnection({ type: 'read' });
@@ -345,21 +346,14 @@ cron.schedule('* * * * *', async () => {
               const metaLote = parseJsonSafe(item.meta_json, null);
               const destino = String(metaLote?.estado_destino || '').trim();
               if (destino && item.id_cliente_chat_center) {
-                await db.query(
-                  `UPDATE clientes_chat_center
-                      SET estado_contacto = ?
-                    WHERE id = ?
-                      AND id_configuracion = ?
-                      AND deleted_at IS NULL`,
-                  {
-                    replacements: [
-                      destino,
-                      item.id_cliente_chat_center,
-                      item.id_configuracion,
-                    ],
-                    type: db.QueryTypes.UPDATE,
-                  },
-                );
+                /* La columna destino puede ser de un tablero secundario:
+                   ahí se escribe clientes_estados_tablero y no
+                   estado_contacto (utils/kanbanMoverColumna). */
+                await moverContactoAColumna({
+                  id_configuracion: item.id_configuracion,
+                  id_cliente: item.id_cliente_chat_center,
+                  estado_db: destino,
+                });
               }
             } catch (eMove) {
               console.warn(
