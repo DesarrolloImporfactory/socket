@@ -103,6 +103,14 @@ router.post(
   ctrl.listOrdersFromCache,
 );
 
+// Vista Pedidos: confirmar o cancelar una orden en PENDIENTE CONFIRMACION
+// directo en Dropi, sin entrar al chat (body: dropi_order_id + accion).
+router.post(
+  '/orders/cache/set-status',
+  auth.protectConfigOwner,
+  ctrl.setOrderStatusFromPedidos,
+);
+
 // Novedades pendientes por solucionar (consulta en vivo a Dropi) y detalle
 // de la gestión de una novedad (history_new_orders).
 router.post(
