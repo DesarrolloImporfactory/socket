@@ -17,9 +17,12 @@
  * Desde el fix, upsertOrders (cron + webhook) y upsertOrdersToCache (listado)
  * marcan la gemela al momento. Este script repara el acumulado.
  *
- * Criterio de gemela (el mismo del listado y del notifier): misma cuenta,
- * mismo teléfono por los últimos 9 dígitos, mismo order_created_at exacto,
- * y la vieja tiene dropi_order_id menor y sigue en PENDIENTE CONFIRMACION.
+ * Criterio de gemela (el mismo de marcarGemelasReemplazadas en el notifier):
+ * misma cuenta, mismo order_created_at exacto, la vieja tiene dropi_order_id
+ * menor y sigue en PENDIENTE CONFIRMACION o PENDIENTE (Dropi también deja
+ * editar una orden ya confirmada), y coinciden por teléfono (últimos 9
+ * dígitos) o, si la edición cambió justo el teléfono, por nombre + apellido
+ * + total (casos 7580140→7585293 y 7632250→7658726 de la 277, 27-10-2026).
  *
  * Uso:
  *   node scripts/repararGemelasReemplazadas.js                 (dry-run, todas)
@@ -39,23 +42,33 @@ const CFG = Number(
 );
 const APPLY = args.includes('--apply');
 
-const JOIN = `
-  FROM dropi_orders_cache vieja
+const GEMELA = `
   JOIN dropi_orders_cache nueva
     ON nueva.id_configuracion = vieja.id_configuracion
    AND nueva.id_usuario = vieja.id_usuario
    AND nueva.order_created_at = vieja.order_created_at
    AND nueva.dropi_order_id > vieja.dropi_order_id
-   AND RIGHT(nueva.phone, 9) = RIGHT(vieja.phone, 9)
- WHERE UPPER(vieja.status) = 'PENDIENTE CONFIRMACION'
-   AND nueva.phone IS NOT NULL AND nueva.phone <> ''
+   AND (
+     (nueva.phone IS NOT NULL AND nueva.phone <> ''
+      AND RIGHT(nueva.phone, 9) = RIGHT(vieja.phone, 9))
+     OR (nueva.name IS NOT NULL AND nueva.name <> ''
+      AND nueva.name = vieja.name
+      AND IFNULL(nueva.surname, '') = IFNULL(vieja.surname, '')
+      AND nueva.total_order = vieja.total_order)
+   )
+ WHERE UPPER(vieja.status) IN ('PENDIENTE CONFIRMACION', 'PENDIENTE')
    ${CFG ? 'AND vieja.id_configuracion = :cfg' : ''}`;
+const JOIN = `
+  FROM dropi_orders_cache vieja
+  ${GEMELA}`;
 
 (async () => {
   const repl = CFG ? { cfg: CFG } : {};
 
   const resumen = await db.query(
     `SELECT vieja.id_configuracion, vieja.id_usuario,
+            SUM(UPPER(vieja.status) = 'PENDIENTE') ya_confirmadas,
+            SUM(RIGHT(nueva.phone, 9) <> RIGHT(vieja.phone, 9)) tel_cambiado,
             COUNT(DISTINCT vieja.dropi_order_id) fantasmas,
             MIN(vieja.order_created_at) desde, MAX(vieja.order_created_at) hasta
        ${JOIN}
@@ -64,7 +77,9 @@ const JOIN = `
     { replacements: repl, type: db.QueryTypes.SELECT },
   );
   const total = resumen.reduce((s, r) => s + Number(r.fantasmas), 0);
-  console.log(`\n${APPLY ? 'APLICANDO' : 'DRY-RUN'} — ${total} gemela(s) en ${resumen.length} cuenta(s)`);
+  console.log(
+    `\n${APPLY ? 'APLICANDO' : 'DRY-RUN'} — ${total} gemela(s) en ${resumen.length} cuenta(s)`,
+  );
   console.table(resumen);
 
   const ejemplos = await db.query(
@@ -87,18 +102,7 @@ const JOIN = `
 
   const [, meta] = await db.query(
     `UPDATE dropi_orders_cache vieja
-       JOIN dropi_orders_cache nueva
-         ON nueva.id_configuracion = vieja.id_configuracion
-        AND nueva.id_usuario = vieja.id_usuario
-        AND nueva.order_created_at = vieja.order_created_at
-        AND nueva.dropi_order_id > vieja.dropi_order_id
-        AND RIGHT(nueva.phone, 9) = RIGHT(vieja.phone, 9)
-        SET vieja.status = 'REEMPLAZADA',
-            vieja.classified_status = :cl,
-            vieja.updated_at = NOW()
-      WHERE UPPER(vieja.status) = 'PENDIENTE CONFIRMACION'
-        AND nueva.phone IS NOT NULL AND nueva.phone <> ''
-        ${CFG ? 'AND vieja.id_configuracion = :cfg' : ''}`,
+       ${GEMELA.replace(' WHERE ', " SET vieja.status = 'REEMPLAZADA', vieja.classified_status = :cl, vieja.updated_at = NOW() WHERE ")}`,
     {
       replacements: { ...repl, cl: classifyDropiStatus('REEMPLAZADA') },
       type: db.QueryTypes.UPDATE,
