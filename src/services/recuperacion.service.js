@@ -378,7 +378,7 @@ async function ultimasAutomatizaciones(ids) {
   try {
     rows = await db.query(
       `SELECT e.id_usuario, e.estado, e.orden, a.nombre AS secuencia, p.titulo,
-              COALESCE(e.enviado_en, e.created_at) AS fecha, e.respondio_en
+              COALESCE(e.enviado_en, e.created_at) AS fecha, e.respondio_en, e.id_cliente_chat
          FROM recuperacion_automatizacion_envios e
          JOIN recuperacion_automatizaciones a ON a.id = e.id_automatizacion
          LEFT JOIN recuperacion_automatizacion_pasos p ON p.id = e.id_paso
@@ -390,9 +390,11 @@ async function ultimasAutomatizaciones(ids) {
     if (e?.original?.code === 'ER_NO_SUCH_TABLE') return new Map();
     throw e;
   }
+  const textos = await textosDeRespuesta(rows);
   const map = new Map();
   for (const r of rows) {
     const prev = map.get(r.id_usuario);
+    const respondio_en = r.respondio_en || prev?.respondio_en || null;
     map.set(r.id_usuario, {
       secuencia: r.secuencia,
       paso: r.orden,
@@ -400,11 +402,229 @@ async function ultimasAutomatizaciones(ids) {
       estado: r.estado,
       fecha: r.fecha,
       // Si respondió a cualquiera de los mensajes, queda marcado.
-      respondio_en: r.respondio_en || prev?.respondio_en || null,
+      respondio_en,
+      // Qué contestó (primer mensaje entrante tras el envío): el asesor que
+      // no tiene el chat igual sabe si dijo «ya pagué» o «no me interesa».
+      respuesta_texto: (r.respondio_en && textos.get(`${r.id_cliente_chat}|${new Date(r.respondio_en).getTime()}`)) || prev?.respuesta_texto || null,
       total: (prev?.total || 0) + 1,
     });
   }
   return map;
+}
+
+/**
+ * Texto del mensaje con el que el cliente respondió a cada envío: el primer
+ * entrante en Expertos desde respondio_en. Map "<id_cliente_chat>|<ms>" →
+ * texto corto. Una sola consulta para todos (los chats de soporte pueden
+ * tener cientos de mensajes, por eso se acota a los que respondieron).
+ */
+async function textosDeRespuesta(envios) {
+  const con = envios.filter((e) => e.respondio_en && e.id_cliente_chat);
+  const out = new Map();
+  if (!con.length) return out;
+  // respondio_en es exactamente el created_at del primer entrante (lo fija el
+  // motor), así que se busca por igualdad al segundo. Se arranca desde los
+  // envíos (pocos) y se entra a mensajes por índice (celular_recibe): un
+  // IN(...) con rango de fecha sobre la tabla completa tardaba 27 s.
+  const rows = await db.query(
+    `SELECT e.id_cliente_chat, e.respondio_en, m.texto_mensaje, m.tipo_mensaje
+       FROM recuperacion_automatizacion_envios e
+       JOIN mensajes_clientes m
+         ON m.celular_recibe = e.id_cliente_chat
+        AND m.created_at >= e.respondio_en AND m.created_at < e.respondio_en + INTERVAL 1 SECOND
+        AND m.rol_mensaje = 0 AND m.id_configuracion = :cfg AND m.deleted_at IS NULL
+      WHERE e.id_usuario IN (:ids) AND e.respondio_en IS NOT NULL AND e.id_cliente_chat IS NOT NULL
+      ORDER BY m.id`,
+    {
+      replacements: { cfg: ID_CONEXION_EXPERTOS, ids: [...new Set(con.map((e) => e.id_usuario))] },
+      type: db.QueryTypes.SELECT,
+    },
+  );
+  for (const m of rows) {
+    const k = `${m.id_cliente_chat}|${new Date(m.respondio_en).getTime()}`;
+    if (!out.has(k)) out.set(k, resumenMensaje(m));
+  }
+  return out;
+}
+
+const resumenMensaje = (m, max = 160) => {
+  const texto = String(m.texto_mensaje || '').replace(/\s+/g, ' ').trim();
+  if (texto) return texto.length > max ? `${texto.slice(0, max - 1)}…` : texto;
+  const tipo = String(m.tipo_mensaje || '').toLowerCase();
+  return tipo && tipo !== 'text' ? `[${tipo}]` : '[sin texto]';
+};
+
+/**
+ * Conversación del cliente en la conexión de Expertos, solo lectura: quién
+ * atiende el chat y los últimos mensajes, con los envíos de automatización
+ * marcados. Sirve para que el asesor del caso tenga contexto aunque el chat
+ * lo tenga soporte de Expertos (no se le quita un chat en curso).
+ */
+const DIAS_CONVERSACION_VIVA = 7;
+// Lo que el cliente escribe hasta 3 días después del envío se muestra como
+// respuesta a ese mensaje; más tarde ya es otra conversación.
+const HORAS_RESPUESTA_AUTOMATIZACION = 72;
+// Los mensajes salientes guardan la plantilla con {{1}}: se rellena con los
+// parámetros que el motor resolvió al encolar (array o {"1": "..."}).
+const rellenarPlantilla = (texto, parametros) => {
+  if (!texto) return texto;
+  let p = parametros;
+  if (typeof p === 'string') {
+    try { p = JSON.parse(p); } catch (_) { p = null; }
+  }
+  if (!p) return texto;
+  const valor = (n) => (Array.isArray(p) ? p[n - 1] : p[n] ?? p[String(n)]);
+  return String(texto).replace(/\{\{\s*(\d+)\s*\}\}/g, (todo, n) => {
+    const v = valor(Number(n));
+    return v == null ? todo : String(typeof v === 'object' ? v.text ?? v.value ?? JSON.stringify(v) : v);
+  });
+};
+const mensajeCorto = (m) => ({
+  id: m.id,
+  entrante: Number(m.rol_mensaje) === 0,
+  tipo: m.tipo_mensaje || null,
+  texto: resumenMensaje(m, 1000),
+  archivo: m.ruta_archivo || null,
+  responsable: m.responsable || null,
+  fecha: m.created_at,
+});
+async function conversacionExpertos(digits, { id_sub_usuario = null, limite = 40 } = {}) {
+  if (!digits) return null;
+  const chat = chatDe(await chatsExpertos([digits]), digits);
+  if (!chat) return null;
+  const cfg = ID_CONEXION_EXPERTOS;
+  const id = String(chat.id_cliente);
+  const [mensajes, [actividad]] = await Promise.all([
+    db.query(
+      `SELECT id, rol_mensaje, tipo_mensaje, texto_mensaje, ruta_archivo, responsable, created_at
+         FROM mensajes_clientes
+        WHERE id_configuracion = :cfg AND celular_recibe = :id AND deleted_at IS NULL
+        ORDER BY created_at DESC, id DESC
+        LIMIT :limite`,
+      { replacements: { cfg, id, limite }, type: db.QueryTypes.SELECT },
+    ),
+    db.query(
+      `SELECT MAX(IF(rol_mensaje = 0, created_at, NULL)) AS ultimo_entrante_at,
+              MAX(IF(rol_mensaje <> 0, created_at, NULL)) AS ultimo_saliente_at,
+              TIMESTAMPDIFF(HOUR, MAX(IF(rol_mensaje = 0, created_at, NULL)), NOW()) AS horas_sin_escribir
+         FROM mensajes_clientes
+        WHERE id_configuracion = :cfg AND celular_recibe = :id AND deleted_at IS NULL`,
+      { replacements: { cfg, id }, type: db.QueryTypes.SELECT },
+    ),
+  ]);
+
+  // Cada envío de automatización con el texto que salió y lo que el cliente
+  // contestó después (hasta el siguiente envío). El emparejamiento se hace en
+  // SQL por fecha: el front no compara horas (formatos distintos por navegador).
+  let envios = [];
+  let respuestas = [];
+  let salientes = [];
+  try {
+    envios = await db.query(
+      `SELECT e.id, e.orden AS paso, a.nombre AS secuencia, p.titulo, p.texto_sugerido, e.parametros_resueltos,
+              COALESCE(e.enviado_en, e.created_at) AS fecha, e.respondio_en
+         FROM recuperacion_automatizacion_envios e
+         JOIN recuperacion_automatizaciones a ON a.id = e.id_automatizacion
+         LEFT JOIN recuperacion_automatizacion_pasos p ON p.id = e.id_paso
+        WHERE e.id_cliente_chat = :id AND e.estado = 'enviado'
+        ORDER BY e.id`,
+      { replacements: { id }, type: db.QueryTypes.SELECT },
+    );
+    if (envios.length) {
+      [respuestas, salientes] = await Promise.all([
+        db.query(
+          `SELECT e.id AS id_envio, m.id, m.rol_mensaje, m.tipo_mensaje, m.texto_mensaje, m.ruta_archivo, m.responsable, m.created_at
+             FROM recuperacion_automatizacion_envios e
+             JOIN mensajes_clientes m
+               ON m.celular_recibe = e.id_cliente_chat AND m.id_configuracion = :cfg
+              AND m.rol_mensaje = 0 AND m.deleted_at IS NULL
+              AND m.created_at >= COALESCE(e.enviado_en, e.created_at)
+              AND m.created_at < LEAST(
+                    COALESCE(e.enviado_en, e.created_at) + INTERVAL :horasRespuesta HOUR,
+                    COALESCE(
+                      (SELECT MIN(COALESCE(e2.enviado_en, e2.created_at)) FROM recuperacion_automatizacion_envios e2
+                        WHERE e2.id_cliente_chat = e.id_cliente_chat AND e2.estado = 'enviado' AND e2.id > e.id),
+                      NOW()))
+            WHERE e.id_cliente_chat = :id AND e.estado = 'enviado'
+            ORDER BY e.id, m.created_at, m.id`,
+          { replacements: { cfg, id, horasRespuesta: HORAS_RESPUESTA_AUTOMATIZACION }, type: db.QueryTypes.SELECT },
+        ),
+        db.query(
+          `SELECT e.id AS id_envio, m.id, m.rol_mensaje, m.tipo_mensaje, m.texto_mensaje, m.ruta_archivo, m.responsable, m.created_at
+             FROM recuperacion_automatizacion_envios e
+             JOIN mensajes_clientes m
+               ON m.celular_recibe = e.id_cliente_chat AND m.id_configuracion = :cfg
+              AND m.rol_mensaje <> 0 AND m.deleted_at IS NULL
+              AND m.created_at >= COALESCE(e.enviado_en, e.created_at) - INTERVAL 2 MINUTE
+              AND m.created_at <= COALESCE(e.enviado_en, e.created_at) + INTERVAL 3 MINUTE
+            WHERE e.id_cliente_chat = :id AND e.estado = 'enviado'
+            ORDER BY e.id, m.created_at, m.id`,
+          { replacements: { cfg, id }, type: db.QueryTypes.SELECT },
+        ),
+      ]);
+    }
+  } catch (e) {
+    if (e?.original?.code !== 'ER_NO_SUCH_TABLE') throw e;
+  }
+  const MAX_RESPUESTAS = 6;
+  const porEnvio = new Map();
+  for (const r of respuestas) {
+    if (!porEnvio.has(r.id_envio)) porEnvio.set(r.id_envio, []);
+    const lista = porEnvio.get(r.id_envio);
+    if (lista.length < MAX_RESPUESTAS) lista.push(mensajeCorto(r));
+  }
+  const enviadoDe = new Map();
+  for (const s of salientes) if (!enviadoDe.has(s.id_envio)) enviadoDe.set(s.id_envio, mensajeCorto(s));
+  const automatizaciones = envios.map((e) => {
+    const enviado = enviadoDe.get(e.id) || null;
+    return {
+      id: e.id,
+      secuencia: e.secuencia,
+      paso: e.paso,
+      titulo: e.titulo,
+      fecha: e.fecha,
+      respondio_en: e.respondio_en,
+      id_mensaje_enviado: enviado?.id || null,
+      texto_enviado: rellenarPlantilla(enviado?.texto || (e.texto_sugerido ? String(e.texto_sugerido).trim() : null), e.parametros_resueltos),
+      respuestas: porEnvio.get(e.id) || [],
+    };
+  });
+  const idsRespuesta = new Set(automatizaciones.flatMap((a) => a.respuestas.map((r) => r.id)));
+  const idsEnviados = new Set(automatizaciones.map((a) => a.id_mensaje_enviado).filter(Boolean));
+
+  // ¿Se puede pedir el chat? Si el cliente no escribe hace DIAS_CONVERSACION_VIVA
+  // días no hay nada en curso; si lo tiene el propio asesor o nadie, es suyo.
+  const horas = actividad?.horas_sin_escribir == null ? null : Number(actividad.horas_sin_escribir);
+  const esMio = id_sub_usuario && chat.encargado_id === Number(id_sub_usuario);
+  let transferible = true;
+  let motivo = 'Chat sin encargado: lo puedes abrir directo.';
+  if (esMio) motivo = 'El chat ya es tuyo.';
+  else if (chat.encargado_id && horas == null) motivo = `Lo tiene ${chat.encargado_nombre}, pero el cliente nunca ha escrito: pídeselo sin problema.`;
+  else if (chat.encargado_id && horas < DIAS_CONVERSACION_VIVA * 24) {
+    transferible = false;
+    motivo = `Conversación en curso con ${chat.encargado_nombre}: el cliente escribió hace ${horas < 1 ? 'menos de una hora' : horas < 48 ? `${horas} h` : `${Math.floor(horas / 24)} días`}. No le quites el chat; coordina con esa persona o llama al cliente.`;
+  } else if (chat.encargado_id) {
+    motivo = `Lo tiene ${chat.encargado_nombre}, pero el cliente no escribe hace ${Math.floor(horas / 24)} días: no hay nada en curso, pídeselo.`;
+  }
+
+  return {
+    id_cliente: chat.id_cliente,
+    encargado_id: chat.encargado_id,
+    encargado_nombre: chat.encargado_nombre,
+    es_mio: !!esMio,
+    ultimo_mensaje_at: chat.ultimo_mensaje_at,
+    ultimo_entrante_at: actividad?.ultimo_entrante_at || null,
+    ultimo_saliente_at: actividad?.ultimo_saliente_at || null,
+    horas_sin_escribir: horas,
+    transferible,
+    motivo_transferible: motivo,
+    mensajes: mensajes.reverse().map((m) => ({
+      ...mensajeCorto(m),
+      respuesta_automatizacion: idsRespuesta.has(m.id),
+      automatizacion: idsEnviados.has(m.id),
+    })),
+    automatizaciones,
+  };
 }
 
 async function ultimosSeguimientos(ids) {
@@ -1299,7 +1519,7 @@ async function asignables() {
 
 // Ficha del cliente para el drawer (sin pasar por admin_usuarios, que exige
 // gestor_clientes).
-async function fichaCliente(id_usuario) {
+async function fichaCliente(id_usuario, { id_sub_usuario = null } = {}) {
   const rows = await db.query(
     `SELECT u.id_usuario, u.nombre AS empresa, u.email_propietario AS email,
             u.whatsapp_lead, u.whatsapp_lead_pais, u.id_plan, p.nombre_plan, p.precio_plan,
@@ -1320,6 +1540,7 @@ async function fichaCliente(id_usuario) {
   if (!u) return null;
   const casos = await historialCasos(id_usuario);
   const tel = telefonoDe(u);
+  const conversacion_expertos = await conversacionExpertos(tel.digits, { id_sub_usuario });
   return {
     ...u,
     precio_plan: u.precio_plan != null ? Number(u.precio_plan) : null,
@@ -1329,6 +1550,7 @@ async function fichaCliente(id_usuario) {
     telefono_fuente: tel.fuente,
     conexion_nombre: tel.conexion_nombre,
     casos,
+    conversacion_expertos,
   };
 }
 

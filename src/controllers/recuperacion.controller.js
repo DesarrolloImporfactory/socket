@@ -46,7 +46,7 @@ exports.embudo = catchAsync(async (req, res) => {
 exports.cliente = catchAsync(async (req, res, next) => {
   const id_usuario = Number(req.params.id_usuario);
   if (!id_usuario) return next(new AppError('id_usuario requerido', 400));
-  const ficha = await svc.fichaCliente(id_usuario);
+  const ficha = await svc.fichaCliente(id_usuario, { id_sub_usuario: req.sessionUser?.id_sub_usuario || null });
   if (!ficha) return next(new AppError('Cliente no encontrado', 404));
   res.json({ status: 'success', data: ficha });
 });
