@@ -151,12 +151,8 @@ const SQL_COHORTES = `
            u.stripe_subscription_id, u.cancel_at_period_end, u.cancel_at,
            u.fecha_renovacion, u.trial_end, u.canceled_at,
            u.created_at AS registrado_en,
-           (SELECT c.telefono FROM configuraciones c
-             WHERE c.id_usuario = u.id_usuario AND c.suspendido = 0
-             ORDER BY c.id LIMIT 1) AS telefono_conexion,
-           (SELECT c.nombre_configuracion FROM configuraciones c
-             WHERE c.id_usuario = u.id_usuario AND c.suspendido = 0
-             ORDER BY c.id LIMIT 1) AS nombre_conexion,
+           cx.telefono AS telefono_conexion,
+           cx.nombre_configuracion AS nombre_conexion,
            CASE
              WHEN u.estado = 'suspendido'
                OR (COALESCE(u.stripe_subscription_id, '') <> ''
@@ -179,6 +175,14 @@ const SQL_COHORTES = `
            END AS cohorte
       FROM usuarios_chat_center u
       LEFT JOIN planes_chat_center p ON p.id_plan = u.id_plan
+      -- Primera conexión activa de cada cuenta. Dos subconsultas
+      -- correlacionadas por fila costaban ~550 ms de los ~700 del embudo.
+      LEFT JOIN (
+        SELECT c1.id_usuario, c1.telefono, c1.nombre_configuracion
+          FROM configuraciones c1
+          JOIN (SELECT id_usuario, MIN(id) AS id FROM configuraciones WHERE suspendido = 0 GROUP BY id_usuario) m
+            ON m.id = c1.id
+      ) cx ON cx.id_usuario = u.id_usuario
      WHERE COALESCE(u.permanente, 0) = 0
        AND COALESCE(p.nombre_plan, '') NOT LIKE '%TEST%'
   ) t
@@ -287,25 +291,71 @@ async function conexionExpertos(id_usuario_asesor) {
  * Chat de cada número en la conexión de Expertos: quién lo atiende y cuándo
  * fue el último mensaje. Map por últimos 9 dígitos (0969… = 593969…).
  */
+// Formas en que el mismo número puede estar guardado en clientes_chat_center
+// (celular_cliente / telefono_limpio): con o sin país, con el 0 local, con el
+// "1" de México o el "9" de Argentina. Se buscan todas por índice; antes se
+// recorrían los 77.000 chats de Expertos con REGEXP_REPLACE (~800 ms por
+// carga, también al abrir cada ficha).
+// Pocas variantes a propósito: con 60 por número el IN(...) llegaba a 40.000
+// constantes y tardaba más que el REGEXP. Ecuador y México son el 95 % de la
+// cartera; el resto se cubre con el número tal cual y sus formas locales.
+const PAISES_COMUNES = ['593', '52', '521', '57'];
+function variantesNumero(d) {
+  const s = String(d || '').replace(/\D/g, '');
+  if (!s) return [];
+  const l9 = s.slice(-9);
+  const l10 = s.length >= 10 ? s.slice(-10) : null;
+  const v = new Set([s, l9, `0${l9}`]);
+  if (l10) v.add(l10).add(`0${l10}`);
+  for (const cc of PAISES_COMUNES) {
+    v.add(`${cc}${l9}`).add(`${cc}0${l9}`);
+    if (l10) v.add(`${cc}${l10}`);
+  }
+  return [...v];
+}
+// Hasta este tamaño se busca por índice con las variantes; con la lista del
+// embudo entero (1.000+ números) el IN(...) de 10.000 constantes tarda más
+// que recorrer los chats una vez con REGEXP, así que ahí se recorre.
+const MAX_NUMEROS_POR_INDICE = 60;
 async function chatsExpertos(digitsList) {
-  const claves = [...new Set((digitsList || []).filter(Boolean).map((d) => String(d).slice(-9)))];
+  const numeros = [...new Set((digitsList || []).filter(Boolean).map((d) => String(d).replace(/\D/g, '')).filter(Boolean))];
+  const claves = [...new Set(numeros.map((d) => d.slice(-9)))];
   if (!claves.length) return new Map();
-  const rows = await db.query(
-    `SELECT x.* FROM (
-       SELECT RIGHT(REGEXP_REPLACE(cc.celular_cliente, '[^0-9]', ''), 9) AS clave,
-              cc.id AS id_cliente, cc.id_encargado, cc.ultimo_mensaje_at,
-              s.nombre_encargado, s.usuario
-         FROM clientes_chat_center cc
-         LEFT JOIN sub_usuarios_chat_center s ON s.id_sub_usuario = cc.id_encargado
-        WHERE cc.id_configuracion = :cfg AND cc.deleted_at IS NULL AND cc.propietario != 1
-     ) x WHERE x.clave IN (:claves)
-     ORDER BY x.ultimo_mensaje_at DESC`,
-    { replacements: { cfg: ID_CONEXION_EXPERTOS, claves }, type: db.QueryTypes.SELECT },
-  );
+  const cfg = ID_CONEXION_EXPERTOS;
+  const rows =
+    numeros.length <= MAX_NUMEROS_POR_INDICE
+      ? await db.query(
+          `SELECT RIGHT(REGEXP_REPLACE(cc.celular_cliente, '[^0-9]', ''), 9) AS clave,
+                  cc.id AS id_cliente, cc.id_encargado, cc.ultimo_mensaje_at,
+                  s.nombre_encargado, s.usuario
+             FROM (
+               SELECT id FROM clientes_chat_center WHERE id_configuracion = :cfg AND telefono_limpio IN (:lista)
+               UNION
+               SELECT id FROM clientes_chat_center WHERE id_configuracion = :cfg AND celular_cliente IN (:lista)
+             ) ids
+             JOIN clientes_chat_center cc ON cc.id = ids.id
+             LEFT JOIN sub_usuarios_chat_center s ON s.id_sub_usuario = cc.id_encargado
+            WHERE cc.deleted_at IS NULL AND cc.propietario != 1
+            ORDER BY cc.ultimo_mensaje_at DESC`,
+          { replacements: { cfg, lista: [...new Set(numeros.flatMap(variantesNumero))] }, type: db.QueryTypes.SELECT },
+        )
+      : await db.query(
+          `SELECT x.* FROM (
+             SELECT RIGHT(REGEXP_REPLACE(cc.celular_cliente, '[^0-9]', ''), 9) AS clave,
+                    cc.id AS id_cliente, cc.id_encargado, cc.ultimo_mensaje_at,
+                    s.nombre_encargado, s.usuario
+               FROM clientes_chat_center cc
+               LEFT JOIN sub_usuarios_chat_center s ON s.id_sub_usuario = cc.id_encargado
+              WHERE cc.id_configuracion = :cfg AND cc.deleted_at IS NULL AND cc.propietario != 1
+           ) x WHERE x.clave IN (:claves)
+           ORDER BY x.ultimo_mensaje_at DESC`,
+          { replacements: { cfg, claves }, type: db.QueryTypes.SELECT },
+        );
+  const buscadas = new Set(claves);
   const map = new Map();
   // Si hay duplicados del mismo número, manda el chat con actividad más reciente.
   for (const r of rows) {
-    if (map.has(r.clave)) continue;
+    if (!buscadas.has(r.clave) || map.has(r.clave)) continue;
     map.set(r.clave, {
       id_cliente: r.id_cliente,
       encargado_id: r.id_encargado ? Number(r.id_encargado) : null,
@@ -494,24 +544,36 @@ async function conversacionExpertos(digits, { id_sub_usuario = null, limite = 40
   if (!chat) return null;
   const cfg = ID_CONEXION_EXPERTOS;
   const id = String(chat.id_cliente);
-  const [mensajes, [actividad]] = await Promise.all([
+  // Un chat de soporte puede tener miles de mensajes: se entra siempre por el
+  // índice (celular_recibe, id_configuracion, created_at) y se leen primero
+  // solo los ids; sin el FORCE el optimizador mezclaba índices y ordenaba
+  // en memoria con los textos (2 s en el chat de Cristian Calle).
+  const ultimo = (condicionRol) =>
     db.query(
-      `SELECT id, rol_mensaje, tipo_mensaje, texto_mensaje, ruta_archivo, responsable, created_at
-         FROM mensajes_clientes
-        WHERE id_configuracion = :cfg AND celular_recibe = :id AND deleted_at IS NULL
-        ORDER BY created_at DESC, id DESC
-        LIMIT :limite`,
+      `SELECT created_at, TIMESTAMPDIFF(HOUR, created_at, NOW()) AS horas
+         FROM mensajes_clientes FORCE INDEX (idx_msg_cel_config_fecha)
+        WHERE celular_recibe = :id AND id_configuracion = :cfg AND ${condicionRol} AND deleted_at IS NULL
+        ORDER BY created_at DESC LIMIT 1`,
+      { replacements: { cfg, id }, type: db.QueryTypes.SELECT },
+    );
+  const [mensajes, [entrante], [saliente]] = await Promise.all([
+    db.query(
+      `SELECT m.id, m.rol_mensaje, m.tipo_mensaje, m.texto_mensaje, m.ruta_archivo, m.responsable, m.created_at
+         FROM mensajes_clientes m
+         JOIN (SELECT id FROM mensajes_clientes FORCE INDEX (idx_msg_cel_config_fecha)
+                WHERE celular_recibe = :id AND id_configuracion = :cfg AND deleted_at IS NULL
+                ORDER BY created_at DESC, id DESC LIMIT :limite) x ON x.id = m.id
+        ORDER BY m.created_at DESC, m.id DESC`,
       { replacements: { cfg, id, limite }, type: db.QueryTypes.SELECT },
     ),
-    db.query(
-      `SELECT MAX(IF(rol_mensaje = 0, created_at, NULL)) AS ultimo_entrante_at,
-              MAX(IF(rol_mensaje <> 0, created_at, NULL)) AS ultimo_saliente_at,
-              TIMESTAMPDIFF(HOUR, MAX(IF(rol_mensaje = 0, created_at, NULL)), NOW()) AS horas_sin_escribir
-         FROM mensajes_clientes
-        WHERE id_configuracion = :cfg AND celular_recibe = :id AND deleted_at IS NULL`,
-      { replacements: { cfg, id }, type: db.QueryTypes.SELECT },
-    ),
+    ultimo('rol_mensaje = 0'),
+    ultimo('rol_mensaje <> 0'),
   ]);
+  const actividad = {
+    ultimo_entrante_at: entrante?.created_at || null,
+    ultimo_saliente_at: saliente?.created_at || null,
+    horas_sin_escribir: entrante ? entrante.horas : null,
+  };
 
   // Cada envío de automatización con el texto que salió y lo que el cliente
   // contestó después (hasta el siguiente envío). El emparejamiento se hace en
@@ -863,19 +925,79 @@ async function situacionDeUsuario(id_usuario) {
   };
 }
 
+/**
+ * Caché corta en memoria para lo pesado del embudo que cambia despacio
+ * (cohortes desde Stripe, recorrido de los 77.000 chats de Expertos, cuentas
+ * activas, envíos de automatización). Lo que el asesor acaba de tocar
+ * (seguimientos, casos, actividad) se consulta siempre fresco, así al
+ * registrar algo y recargar lo ve al instante. Se comparte entre todos los
+ * asesores: cuatro personas recargando no multiplican el costo. Guarda la
+ * promesa para que dos cargas simultáneas no disparen la misma consulta.
+ */
+const CACHE_EMBUDO_MS = 45 * 1000;
+// Vencida pero con menos de esto, se entrega la copia vieja y se refresca
+// por detrás: nadie espera el recorrido de chats salvo en el primer arranque.
+const CACHE_EMBUDO_MAX_VIEJA_MS = 10 * 60 * 1000;
+const cacheEmbudo = new Map();
+function conCache(clave, fn) {
+  const hit = cacheEmbudo.get(clave);
+  const edad = hit ? Date.now() - hit.en : Infinity;
+  if (hit && edad < CACHE_EMBUDO_MS) return hit.p;
+  const refrescar = () => {
+    const p = fn().catch((e) => {
+      cacheEmbudo.delete(clave);
+      throw e;
+    });
+    cacheEmbudo.set(clave, { en: Date.now(), p });
+    return p;
+  };
+  if (hit && edad < CACHE_EMBUDO_MAX_VIEJA_MS) {
+    const vieja = hit.p;
+    refrescar().catch(() => {});
+    return vieja;
+  }
+  return refrescar();
+}
+const invalidarCacheEmbudo = (clave = null) => (clave ? cacheEmbudo.delete(clave) : cacheEmbudo.clear());
+
+// Mientras alguien tenga el embudo en uso (últimos 15 min), las dos
+// consultas pesadas se refrescan solas por detrás: así ni la primera carga
+// tras los 45 s espera el recorrido de chats. Sin uso, no se gasta nada.
+const MANTENER_CALIENTE_MS = 15 * 60 * 1000;
+let ultimoUsoEmbudo = 0;
+let calentador = null;
+function mantenerCaliente() {
+  if (calentador) return;
+  calentador = setInterval(() => {
+    if (Date.now() - ultimoUsoEmbudo > MANTENER_CALIENTE_MS) return;
+    conCache('cohortes', () => db.query(SQL_COHORTES, { type: db.QueryTypes.SELECT }))
+      .then((base) => conCache('chats', () => chatsExpertos(base.map((r) => telefonoDe(r).digits))))
+      .catch((e) => console.warn('recuperacion: no se pudo refrescar el caché del embudo —', e.message));
+  }, CACHE_EMBUDO_MS - 5000);
+  calentador.unref?.();
+}
+
 async function embudo({ id_sub_usuario, id_usuario, rol = null }) {
   await ensureTablas();
-  const expertos = await conexionExpertos(id_usuario);
-  const base = await db.query(SQL_COHORTES, { type: db.QueryTypes.SELECT });
+  ultimoUsoEmbudo = Date.now();
+  mantenerCaliente();
+  // Todo lo que no depende entre sí va en paralelo: en serie eran ~10
+  // consultas una tras otra (2-3 s); así la carga dura lo que la más lenta.
+  const [expertos, base, abiertosAntes, activas] = await Promise.all([
+    conexionExpertos(id_usuario),
+    conCache('cohortes', () => db.query(SQL_COHORTES, { type: db.QueryTypes.SELECT })),
+    casosAbiertos(),
+    conCache('activas', cuentasActivasPorNumero),
+  ]);
   const ids = base.map((r) => r.id_usuario);
-
-  let abiertos = await casosAbiertos();
-  abiertos = await sincronizarCasos(base, abiertos);
-  const ultimos = await ultimosSeguimientos(ids);
-  const autos = await ultimasAutomatizaciones(ids);
-  const chats = await chatsExpertos(base.map((r) => telefonoDe(r).digits));
+  const [[abiertos, actividad], ultimos, autos, chats] = await Promise.all([
+    // La actividad por asesor cuenta casos abiertos: va después de sincronizar.
+    sincronizarCasos(base, abiertosAntes).then(async (a) => [a, await actividadAsesores()]),
+    ultimosSeguimientos(ids),
+    conCache('autos', () => ultimasAutomatizaciones(ids)),
+    conCache('chats', () => chatsExpertos(base.map((r) => telefonoDe(r).digits))),
+  ]);
   const veTodo = ROLES_VEN_TODO.includes(rol);
-  const activas = await cuentasActivasPorNumero();
   const enEmbudo = new Map();
   for (const r of base) {
     const k = claveNum(telefonoDe(r).digits);
@@ -987,7 +1109,6 @@ async function embudo({ id_sub_usuario, id_usuario, rol = null }) {
   }
 
   const r2 = (n) => Math.round(n * 100) / 100;
-  const actividad = await actividadAsesores();
   return {
     generado: new Date().toISOString(),
     actividad,
@@ -1538,9 +1659,11 @@ async function fichaCliente(id_usuario, { id_sub_usuario = null } = {}) {
   );
   const u = rows[0];
   if (!u) return null;
-  const casos = await historialCasos(id_usuario);
   const tel = telefonoDe(u);
-  const conversacion_expertos = await conversacionExpertos(tel.digits, { id_sub_usuario });
+  const [casos, conversacion_expertos] = await Promise.all([
+    historialCasos(id_usuario),
+    conversacionExpertos(tel.digits, { id_sub_usuario }),
+  ]);
   return {
     ...u,
     precio_plan: u.precio_plan != null ? Number(u.precio_plan) : null,
@@ -1607,6 +1730,8 @@ async function abrirChatExpertos({ id_usuario, sessionUser }) {
       { replacements: [sessionUser.id_sub_usuario, cliente.id], type: db.QueryTypes.UPDATE },
     );
   }
+  // El embudo cachea quién tiene cada chat: que al volver ya lo vea como suyo.
+  invalidarCacheEmbudo('chats');
   // El front deja estos datos en localStorage antes de abrir /chat/<id>: el
   // chat lee la conexión de ahí (id, tipo, plataforma) y la cabecera muestra
   // nombre_configuracion (sin él cae en un nombre de relleno).
@@ -1630,6 +1755,7 @@ module.exports = {
   sincronizarCasosGlobal,
   situacionDeUsuario,
   abrirChatExpertos,
+  invalidarCacheEmbudo,
   conexionExpertos,
   chatsExpertos,
   cuentasActivasPorNumero,
