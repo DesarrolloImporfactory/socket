@@ -146,6 +146,7 @@ const webhookTriveRouter = require('./routes/webhook_trive.routes');
 const adminDashboardRouter = require('./routes/admin_dashboard.routes');
 const adminBotSaludRouter = require('./routes/admin_bot_salud.routes');
 const adminAvisosRouter = require('./routes/admin_avisos.routes');
+const mobileAppRouter = require('./routes/mobile_app.routes');
 
 const seguimientosRouter = require('./routes/seguimientos.routes');
 const recuperacionRouter = require('./routes/recuperacion.routes');
@@ -371,6 +372,7 @@ app.use('/api/v1', limiter);
 app.use(require('./middlewares/rutasSinSesion').vigilar);
 // routes
 app.use('/api/v1/auth', authRouter);
+app.use('/api/v1/mobile', mobileAppRouter);
 app.use('/api/v1/users', userRouter);
 app.use('/api/v1/whatsapp', webhookRouter);
 app.use('/api/v1/whatsapp_managment', whatsappRouter);
