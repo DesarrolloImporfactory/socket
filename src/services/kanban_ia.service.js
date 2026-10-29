@@ -1073,8 +1073,22 @@ async function enviarRespaldoAlCliente({
   id_configuracion,
   id_cliente,
 }) {
-  const texto = ajustesIA?.mensaje_fallback;
+  let texto = ajustesIA?.mensaje_fallback;
   if (!texto || !canal?.enviarTexto) return false;
+  /* «apenas abramos» del respaldo, ajustado a la hora como los textos del
+     bot (solo en la cuenta que declara soporte_expertos.horario_equipo). */
+  const horarioSE = ajustesIA?.soporte_expertos?.horario_equipo;
+  if (horarioSE) {
+    try {
+      const H = require('../utils/soporteExpertos/horario');
+      const atendiendo = H.equipoAtendiendo(undefined, horarioSE);
+      const apertura =
+        ajustesIA.soporte_expertos.decir_apertura && !atendiendo
+          ? H.proximaApertura(undefined, horarioSE)
+          : null;
+      texto = H.textoAlHorario(texto, atendiendo, apertura);
+    } catch (_) {}
+  }
   try {
     const [reciente] = await db.query(
       `SELECT id FROM mensajes_clientes
@@ -1380,7 +1394,9 @@ async function procesarMensajeKanban(params) {
   ) {
     try {
       const recientes = await db.query(
-        `SELECT responsable FROM mensajes_clientes
+        `SELECT responsable, texto_mensaje,
+                TIMESTAMPDIFF(SECOND, created_at, NOW()) AS seg
+           FROM mensajes_clientes
           WHERE celular_recibe = ? AND id_configuracion = ?
             AND rol_mensaje = 1 AND deleted_at IS NULL
             AND created_at >= NOW() - INTERVAL ? MINUTE
@@ -1394,7 +1410,32 @@ async function procesarMensajeKanban(params) {
           type: db.QueryTypes.SELECT,
         },
       );
-      const humano = recientes.find((m) => esResponsableHumano(m.responsable));
+      /* En la cuenta de Expertos un aviso masivo o un mensaje mandado fuera
+         de oficina no pausa al bot (E1, Daniel 27-oct). Ver
+         utils/soporteExpertos/pausaYAcuse.js. Las demás cuentas, como antes. */
+      let humano;
+      if (ajustesIA.soporte_expertos) {
+        const PA = require('../utils/soporteExpertos/pausaYAcuse');
+        humano = await PA.humanoQuePausa(recientes, {
+          horarioEquipo: ajustesIA.soporte_expertos.horario_equipo || null,
+          destinosDe: async (texto, seg) => {
+            const [r] = await db.query(PA.SQL_DESTINOS, {
+              replacements: [id_configuracion, seg, seg, texto],
+              type: db.QueryTypes.SELECT,
+            });
+            return Number(r?.n || 0);
+          },
+        });
+        const saltado = recientes.find((m) => esResponsableHumano(m.responsable));
+        if (saltado && !humano) {
+          await log(
+            `🔔 Columna "${columna.nombre}": lo último de ${saltado.responsable} fue un aviso masivo o ` +
+              `fuera de oficina; no pausa al bot (cliente=${id_cliente})`,
+          );
+        }
+      } else {
+        humano = recientes.find((m) => esResponsableHumano(m.responsable));
+      }
       if (humano) {
         await log(
           `🤫 Columna "${columna.nombre}": ${humano.responsable} escribió hace menos de ` +
@@ -1405,6 +1446,96 @@ async function procesarMensajeKanban(params) {
       }
     } catch (ePausa) {
       await log(`⚠️ pausa_humano: ${ePausa.message}`);
+    }
+  }
+
+  /* ── 1.2 Una persona ya contesta este chat (pedido de Johan, 28-oct) ──
+     Con soporte_expertos.pausa_persona: si alguien del equipo escribió en las
+     últimas `horas` (con las reglas de E1: sin avisos masivos ni mensajes de
+     fuera de oficina), en oficina el bot no se mete. Si el cliente lleva
+     `minutos` de oficina sin respuesta, un solo T8 («Tu caso sigue con
+     {nombre}…») con una nota 🔔, y vuelve a callar. Fuera de oficina, como
+     antes. Ver utils/soporteExpertos/pausaYAcuse.js. */
+  const pausaPersona = ajustesIA.soporte_expertos?.pausa_persona;
+  if (pausaPersona && !params.es_prueba) {
+    try {
+      const PA = require('../utils/soporteExpertos/pausaYAcuse');
+      const horarioSE = ajustesIA.soporte_expertos.horario_equipo || null;
+      const filas = await db.query(
+        `SELECT rol_mensaje AS rol, responsable AS resp, tipo_mensaje AS tm, texto_mensaje AS tx,
+                TIMESTAMPDIFF(SECOND, created_at, NOW()) AS seg
+           FROM mensajes_clientes
+          WHERE celular_recibe = ? AND id_configuracion = ?
+            AND rol_mensaje IN (0, 1) AND deleted_at IS NULL
+            AND created_at >= NOW() - INTERVAL ? HOUR
+          ORDER BY id DESC LIMIT 300`,
+        {
+          replacements: [String(id_cliente), id_configuracion, pausaPersona.horas],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      const ahora = Date.now();
+      const humano = await PA.humanoQuePausa(
+        filas
+          .filter((f) => Number(f.rol) === 1 && f.tm !== 'revoke' && PA.cuentaComoPersona(f.resp))
+          .map((f) => ({ responsable: f.resp, texto_mensaje: f.tx, seg: Number(f.seg) })),
+        {
+          horarioEquipo: horarioSE,
+          ahora,
+          destinosDe: async (texto, seg) => {
+            const [r] = await db.query(PA.SQL_DESTINOS, {
+              replacements: [id_configuracion, seg, seg, texto],
+              type: db.QueryTypes.SELECT,
+            });
+            return Number(r?.n || 0);
+          },
+        },
+      );
+      const d = PA.decidirPausaPersona({
+        mensajes: filas.map((f) => ({ rol: Number(f.rol), resp: f.resp, tm: f.tm, tx: f.tx, t: ahora - Number(f.seg) * 1000 })),
+        humano: humano && { resp: humano.responsable, t: ahora - Number(humano.seg) * 1000 },
+        ahora,
+        horario: horarioSE,
+        minutos: pausaPersona.minutos,
+        horas: pausaPersona.horas,
+      });
+      if (d?.accion === 'callar') {
+        await log(
+          `🤫 ${humano.responsable} ya atiende este chat; el cliente lleva ${d.espera} min de oficina sin respuesta` +
+            `${d.t8Enviado ? ' (T8 ya salió)' : ''}: el bot no se mete (cliente=${id_cliente})`,
+        );
+        anotarSilencio(id_configuracion, id_cliente);
+        return { ok: true, motivo: 'pausa_persona', silencio: true };
+      }
+      if (d?.accion === 't8') {
+        const T = require('../utils/soporteExpertos/textos');
+        const { formatoDesde } = require('../utils/soporteExpertos/proactivo');
+        const desde = formatoDesde(d.desde, ahora, Number(horarioSE?.utc ?? -5));
+        await canal.enviarTexto({
+          texto: T.PROACTIVO.sigue_con.replace('{nombre}', d.nombre).replace('{desde}', desde),
+          responsable: 'IA_Pausa persona',
+          total_tokens: 0,
+        });
+        const [propietario] = await db.query(
+          'SELECT id FROM clientes_chat_center WHERE id_configuracion = ? AND propietario = 1 LIMIT 1',
+          { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+        );
+        await MensajeClienteModel.create({
+          id_configuracion,
+          id_cliente: propietario?.id ?? id_cliente,
+          mid_mensaje: null,
+          tipo_mensaje: 'notificacion',
+          visto: 0,
+          texto_mensaje: `🔔 ${d.nombre}: el cliente volvió a escribir y lleva ${d.espera} min de oficina sin respuesta (tú le escribiste ${desde}).`,
+          rol_mensaje: 3,
+          celular_recibe: String(id_cliente),
+          responsable: 'IA_Escalado Expertos',
+        });
+        await log(`🔔 pausa_persona: T8 a cliente=${id_cliente} (sigue con ${d.nombre}, ${d.espera} min sin respuesta)`);
+        return { ok: true, motivo: 'pausa_persona_t8' };
+      }
+    } catch (ePersona) {
+      await log(`⚠️ pausa_persona: ${ePersona.message}`);
     }
   }
 
@@ -2722,7 +2853,17 @@ async function procesarMensajeKanban(params) {
       if (ajustesIA.soporte_expertos?.herramientas && turnoExpertos) {
         const { crearHerramientas } = require('../utils/soporteExpertos/herramientas');
         const { ejecutarConClaudeHerramientas } = require('../utils/claude/herramientas');
-        const { SECCION_DIAGNOSTICO, SECCION_PAGOS, SECCION_AGENDA } = require('../utils/prompt_soporte_expertos.data');
+        const {
+          SECCION_DIAGNOSTICO,
+          SECCION_PAGOS,
+          SECCION_AGENDA,
+          SECCION_COTIZACION_MX,
+          SECCION_DATO,
+          SECCION_NOVEDAD,
+          SECCION_PROVEEDORES,
+          SECCION_DROPI,
+          SECCION_MEMBRESIA,
+        } = require('../utils/prompt_soporte_expertos.data');
         /* Revisar la cuenta IMPORCHAT del que escribe: bandera aparte
            (soporte_expertos.diagnostico). La sección va al final de las
            instrucciones fijas, no del bloque del producto, para que el
@@ -2732,6 +2873,18 @@ async function procesarMensajeKanban(params) {
         const conPagos = ajustesIA.soporte_expertos.pagos === true;
         // Reuniones y sesión de implementación, solo lectura: bandera aparte (soporte_expertos.agenda).
         const conAgenda = ajustesIA.soporte_expertos.agenda === true;
+        // Cotización de México en borrador para el asesor: bandera aparte (soporte_expertos.cotizacion_mx).
+        const conCotizacionMx = ajustesIA.soporte_expertos.cotizacion_mx === true;
+        // «¿Hay novedad de mi caso?» (tramo 4): bandera aparte (soporte_expertos.novedad).
+        const conNovedad = ajustesIA.soporte_expertos.novedad === true;
+        // Proveedores de Yiwu con su tarjeta: bandera aparte (soporte_expertos.proveedores).
+        const conProveedores = ajustesIA.soporte_expertos.proveedores === true;
+        // Pedidos de Dropi de su tienda, del caché de IMPORCHAT: bandera aparte (soporte_expertos.dropi).
+        const conDropi = ajustesIA.soporte_expertos.dropi === true;
+        // Membresía de Imporsuit del que escribe: bandera aparte (soporte_expertos.membresia).
+        const conMembresia = ajustesIA.soporte_expertos.membresia === true;
+        // Buscar con cotización, marca o correo cuando el número no trae nada (tramo 4).
+        const conDato = ajustesIA.soporte_expertos.cargas !== false || conPagos;
         herramientasTurno = crearHerramientas({
           telefono,
           mensaje,
@@ -2740,7 +2893,13 @@ async function procesarMensajeKanban(params) {
           diagnostico: conDiagnostico,
           pagos: conPagos,
           agenda: conAgenda,
+          cotizacionMx: conCotizacionMx,
+          novedad: conNovedad,
+          proveedores: conProveedores,
+          dropi: conDropi,
+          membresia: conMembresia,
           idConfiguracionPropia: id_configuracion,
+          idCliente: id_cliente,
         });
         resultado = await ejecutarConClaudeHerramientas({
           ...parametrosClaude,
@@ -2749,6 +2908,12 @@ async function procesarMensajeKanban(params) {
             ...(conDiagnostico ? [SECCION_DIAGNOSTICO] : []),
             ...(conPagos ? [SECCION_PAGOS] : []),
             ...(conAgenda ? [SECCION_AGENDA] : []),
+            ...(conCotizacionMx ? [SECCION_COTIZACION_MX] : []),
+            ...(conDato ? [SECCION_DATO] : []),
+            ...(conNovedad ? [SECCION_NOVEDAD] : []),
+            ...(conProveedores ? [SECCION_PROVEEDORES] : []),
+            ...(conDropi ? [SECCION_DROPI] : []),
+            ...(conMembresia ? [SECCION_MEMBRESIA] : []),
           ].join('\n\n'),
           herramientas: herramientasTurno.lista,
         });
@@ -3030,6 +3195,16 @@ async function procesarMensajeKanban(params) {
     await log(`🧹 Después: ${respuestaRaw.slice(0, 200)}`);
   }
 
+  /* Cotización de México que el bot armó en este turno: la recuerda en la
+     conversación para una objeción de precio (soporteExpertos/objecionPrecio.js). */
+  if (turnoExpertos?.hechos?.clave && herramientasTurno?.cotizacionArmada?.()) {
+    try {
+      require('../utils/soporteExpertos/turno').anotarCotizacion(turnoExpertos.hechos.clave, herramientasTurno.cotizacionArmada());
+    } catch (_) {
+      /* nada: sin la cifra, la objeción se explica sin números */
+    }
+  }
+
   /* ── 9.5 Soporte Expertos: la guardia ─────────────────────
      Cifra, plazo o enlace que no sale de un dato leído, presentarse como
      persona, un marcador sin llenar: no se manda; sale el texto seguro del
@@ -3054,6 +3229,10 @@ async function procesarMensajeKanban(params) {
             diagnostico: herramientasTurno?.diagnosticoConsultado?.(),
             pagos: herramientasTurno?.pagosConsultados?.(),
             reuniones: herramientasTurno?.reunionesConsultadas?.(),
+            identidad: herramientasTurno?.identidadConsultada?.(),
+            novedad: herramientasTurno?.novedadConsultada?.(),
+            pedidosDropi: herramientasTurno?.pedidosDropiConsultados?.(),
+            membresia: herramientasTurno?.membresiaConsultada?.(),
           },
         );
       }
@@ -3067,6 +3246,11 @@ async function procesarMensajeKanban(params) {
           `🛡️ soporte_expertos: respuesta ${rev.corregida ? 'corregida' : 'REEMPLAZADA por el texto seguro'} ` +
             `(${rev.motivos.join('; ')}) cliente=${id_cliente}. Antes: ${respuestaRaw.slice(0, 300)}`,
         ).catch(() => {});
+        respuestaRaw = rev.texto;
+      } else if (rev.texto && rev.texto !== respuestaRaw) {
+        /* Sin corrección, pero con «apenas abramos» ajustado a la hora
+           («en breve» con el equipo atendiendo). Antes se descartaba y de
+           día salía «apenas abramos» (265, 26-oct: 209 veces desde las 8:00). */
         respuestaRaw = rev.texto;
       }
     } catch (eGuardia) {
@@ -4069,6 +4253,25 @@ async function procesarMensajeKanban(params) {
     }
   }
 
+  /* Proveedores de Yiwu (buscar_proveedor): sale como foto la tarjeta de cada
+     proveedor que quedó nombrado en la respuesta FINAL (ya pasó la guardia).
+     Si la guardia la cambió por «un asesor…», no sale ninguna tarjeta suelta.
+     El filtro del paso 12 evita repetir la misma tarjeta al mismo cliente. */
+  try {
+    const provYiwu = herramientasTurno?.proveedoresConsultados?.();
+    if (provYiwu) {
+      const { tarjetasParaEnviar } = require('../utils/soporteExpertos/proveedoresYiwu');
+      const tarjetas = tarjetasParaEnviar(respuestaRaw, provYiwu).map((u) => normalizarUrlMedia(u));
+      if (tarjetas.length) {
+        adjuntoImagen += tarjetas.map((u) => `\n[producto_imagen_url]: ${u}`).join('');
+        ofrecerMedia(id_cliente, tarjetas);
+        await log(`🏭 Proveedores de Yiwu: se adjuntan ${tarjetas.length} tarjeta(s) cliente=${id_cliente}`);
+      }
+    }
+  } catch (e) {
+    await log(`⚠️ No se pudieron adjuntar las tarjetas de proveedores: ${e.message}`);
+  }
+
   // ── 12. enviar_media — siempre activo ────────────────────
   let soloTexto = respuestaRaw;
   const media = extraerMedia(`${respuestaParaMedia}${adjuntoImagen}`);
@@ -4346,6 +4549,118 @@ async function procesarMensajeKanban(params) {
     }
   }
 
+  /* ── Bot proactivo (tramo 5, Daniel 27-oct; soporteExpertos/proactivo.js) ──
+     Con soporte_expertos.proactivo, antes de mandar un pase o un acuse:
+     contesta «¿a las cuentas de la cotización?» (T5), confirma los datos de la
+     factura (T4), quita el pase que no hacía falta (P2), no vuelve a pasar un
+     caso que ya espera (P4: nota 🔔 + T8), pide el dato que falta (P1) y dice
+     quién y cuándo (P3). Un error deja la respuesta como estaba. */
+  const consultarExpertos = (sql, replacements) =>
+    db.query(sql, {
+      replacements,
+      type: /^\s*select/i.test(sql) ? db.QueryTypes.SELECT : /^\s*insert/i.test(sql) ? db.QueryTypes.INSERT : db.QueryTypes.UPDATE,
+    });
+  const crearNotaExpertos = async (texto) => {
+    const [propietario] = await db.query(
+      'SELECT id FROM clientes_chat_center WHERE id_configuracion = ? AND propietario = 1 LIMIT 1',
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    await MensajeClienteModel.create({
+      id_configuracion,
+      id_cliente: propietario?.id ?? id_cliente,
+      mid_mensaje: null,
+      tipo_mensaje: 'notificacion',
+      visto: 0,
+      texto_mensaje: texto,
+      rol_mensaje: 3,
+      celular_recibe: String(id_cliente),
+      responsable: 'IA_Escalado Expertos',
+    });
+  };
+  let proactivo = null;
+  if (soloTexto && ajustesIA.soporte_expertos?.proactivo && !params.es_prueba) {
+    try {
+      const TX = require('../utils/soporteExpertos/textos');
+      if (TX.PROACTIVO_APROBADO === true) {
+        const { decidirProactivo } = require('../utils/soporteExpertos/proactivo');
+        const { quienAtiende } = require('../utils/soporteExpertos/escalado');
+        const filas = await db.query(
+          `SELECT m.id, m.rol_mensaje AS rol, m.responsable AS resp, m.tipo_mensaje AS tm,
+                  m.texto_mensaje AS tx, UNIX_TIMESTAMP(m.created_at) * 1000 AS t
+             FROM mensajes_clientes m
+            WHERE m.celular_recibe = ? AND m.id_configuracion = ? AND m.deleted_at IS NULL
+              AND m.created_at >= NOW() - INTERVAL 3 DAY
+            ORDER BY m.id DESC LIMIT 200`,
+          { replacements: [String(id_cliente), id_configuracion], type: db.QueryTypes.SELECT },
+        );
+        const [{ ahoraDb }] = await db.query('SELECT UNIX_TIMESTAMP() * 1000 AS ahoraDb', { type: db.QueryTypes.SELECT });
+        const hechosT = turnoExpertos?.hechos || {};
+        const motivoT = herramientasTurno?.paseConsultado?.() || null;
+        proactivo = await decidirProactivo({
+          texto: soloTexto,
+          mensaje,
+          hechos: hechosT,
+          motivo: motivoT,
+          resolvio:
+            Boolean(resultado?.hechosHerramientas?.length) ||
+            ((hechosT.fichas || []).length > 0 && !(hechosT.fichasConPase || []).length),
+          mensajes: filas.map((f) => ({ ...f, rol: Number(f.rol), t: Number(f.t) })),
+          ahora: Number(ahoraDb),
+          horario: ajustesIA.soporte_expertos?.horario_equipo || null,
+          horarioEcommerce: ajustesIA.soporte_expertos?.horario_ecommerce || null,
+          // `extra`: el área que el proactivo ya sabe (shipping mark → cotización).
+          quien: (extra = null) =>
+            quienAtiende({
+              id_configuracion,
+              id_cliente,
+              telefono,
+              mensaje,
+              motivo: motivoT,
+              hechos: extra ? { ...hechosT, ...extra } : hechosT,
+              deps: { consultar: consultarExpertos },
+            }),
+        });
+        if (proactivo) {
+          await log(`🙋 soporte_expertos (proactivo ${proactivo.accion}): ${proactivo.razon} (cliente=${id_cliente})`);
+          soloTexto = proactivo.texto || '';
+          if (proactivo.nota) {
+            await crearNotaExpertos(proactivo.nota);
+            enviarConsultaAPI(id_configuracion, id_cliente).catch(() => {});
+          }
+        }
+      }
+    } catch (eProactivo) {
+      proactivo = null;
+      await log(`⚠️ soporte_expertos (proactivo): ${eProactivo.message}; la respuesta sale como estaba`).catch(() => {});
+    }
+  }
+
+  /* ── Acuse una sola vez (E4, Daniel 27-oct) ──
+     En la cuenta de Expertos, «Recibí tu mensaje. Un asesor lo revisa…» sale
+     una vez por chat: si la IA ya lo mandó en las últimas 12 h y nadie del
+     equipo escribió después, este no se manda (el caso ya está anotado). */
+  if (soloTexto && ajustesIA.soporte_expertos && !params.es_prueba) {
+    try {
+      const PA = require('../utils/soporteExpertos/pausaYAcuse');
+      if (PA.esAcuse(soloTexto)) {
+        const salientes = await db.query(
+          `SELECT responsable, texto_mensaje FROM mensajes_clientes
+            WHERE celular_recibe = ? AND id_configuracion = ?
+              AND rol_mensaje = 1 AND deleted_at IS NULL
+              AND created_at >= NOW() - INTERVAL 12 HOUR
+            ORDER BY id DESC LIMIT 30`,
+          { replacements: [String(id_cliente), id_configuracion], type: db.QueryTypes.SELECT },
+        );
+        if (PA.acuseRepetido(soloTexto, salientes)) {
+          await log(`🤐 Acuse repetido: ya se le dijo «Recibí tu mensaje» y nadie escribió después; no se manda otro (cliente=${id_cliente})`);
+          soloTexto = '';
+        }
+      }
+    } catch (eAcuse) {
+      await log(`⚠️ Acuse una sola vez: ${eAcuse.message}`);
+    }
+  }
+
   /* ── Guardia anti-bucle ──
      Caso 366 (2026-09-11): "¿A qué ciudad te lo enviamos?" ocho veces seguidas
      ante una objeción, hasta que una persona pidió disculpas por la IA. Nada
@@ -4510,7 +4825,10 @@ async function procesarMensajeKanban(params) {
   if (soloTexto && (modoEscalar === 'simulado' || modoEscalar === 'real') && !params.es_prueba) {
     try {
       const { escalarCaso, esPase } = require('../utils/soporteExpertos/escalado');
-      if (esPase(soloTexto)) {
+      // El bot proactivo decide si este turno se pasa: 'no' (contestó, pidió
+      // el dato o el caso ya espera) o 'forzar' (datos de factura, sin frase de pase).
+      const escalarAhora = proactivo?.escalar === 'forzar' || (esPase(soloTexto) && proactivo?.escalar !== 'no');
+      if (escalarAhora) {
         const { crearHistorial } = require('../utils/historialEncargados');
         await escalarCaso({
           modo: modoEscalar,
@@ -4519,36 +4837,16 @@ async function procesarMensajeKanban(params) {
           telefono,
           mensaje,
           motivo: herramientasTurno?.paseConsultado?.() || null,
-          hechos: turnoExpertos?.hechos || {},
+          resumen: proactivo?.resumen || herramientasTurno?.resumenPase?.() || null,
+          borrador: herramientasTurno?.borradorCotizacion?.() || null,
+          hechos: { ...(turnoExpertos?.hechos || {}), ...(proactivo?.hechosExtra || {}) },
+          callar: ajustesIA.soporte_expertos?.callar_al_pasar === true,
+          notaSiempre: proactivo?.notaSiempre === true,
           log,
           deps: {
-            consultar: (sql, replacements) =>
-              db.query(sql, {
-                replacements,
-                type: /^\s*select/i.test(sql)
-                  ? db.QueryTypes.SELECT
-                  : /^\s*insert/i.test(sql)
-                    ? db.QueryTypes.INSERT
-                    : db.QueryTypes.UPDATE,
-              }),
+            consultar: consultarExpertos,
             crearHistorial: (datos) => crearHistorial(datos, null),
-            crearNota: async (texto) => {
-              const [propietario] = await db.query(
-                'SELECT id FROM clientes_chat_center WHERE id_configuracion = ? AND propietario = 1 LIMIT 1',
-                { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
-              );
-              await MensajeClienteModel.create({
-                id_configuracion,
-                id_cliente: propietario?.id ?? id_cliente,
-                mid_mensaje: null,
-                tipo_mensaje: 'notificacion',
-                visto: 0,
-                texto_mensaje: texto,
-                rol_mensaje: 3,
-                celular_recibe: String(id_cliente),
-                responsable: 'IA_Escalado Expertos',
-              });
-            },
+            crearNota: crearNotaExpertos,
             emitir: () => enviarConsultaAPI(id_configuracion, id_cliente).catch(() => {}),
           },
         });

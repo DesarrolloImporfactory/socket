@@ -358,7 +358,9 @@ const turno = (mensaje, tel, extra = {}) =>
   prueba('solo una cotización generada hoy: NO es una carga («sin_carga»)', r.estado === 'sin_carga' && r.cargas.length === 0 && /todavía no están en el flujo/.test(r.motivo));
   prueba('…pero sigue siendo SUYA: su número y su marca no se tratan como ajenos', r.propias.cotizaciones.includes(9101) && r.propias.marcas.includes('EC-9101001'));
   let b = bloqueCarga(r, { codigos: codigosEnMensaje('en qué va mi cotización 9101, marca EC-9101001'), mensajeAsesor: T.MENSAJE_ASESOR });
-  prueba('…el bloque dice que no hay carga, no nombra la cotización y no avisa de «código ajeno»', /NO hay ninguna carga registrada con este número/.test(b) && !NO_VIAJA.test(b) && !/NO figura/.test(b) && !/9101/.test(b));
+  // Tramo 2 del 70 % (27-oct): la que todavía no viaja tiene su propio texto («lista, falta que la apruebes»), sin paso ni fecha.
+  prueba('…el bloque dice que no hay carga viajando y da el texto de la cotización por aprobar, sin «código ajeno»', /NO hay ninguna carga viajando con este número/.test(b) && b.includes('«Hola, tu cotización N.º 9101 está lista y falta que la apruebes para avanzar.»') && !NO_VIAJA.test(b) && !/NO figura/.test(b));
+  prueba('…y la lista de preparación trae solo esa, con su estado', r.preparacion.length === 1 && r.preparacion[0].id_cotizacion === 9101 && r.preparacion[0].estado === 'generado');
   r = await cargas(Q.generada_marzo);
   prueba('solo una cotización generada en marzo: no se lista («solo_historicas»)', r.estado === 'solo_historicas' && r.cargas.length === 0);
   r = await cargas(Q.bodega_sin_recibir);
@@ -366,11 +368,38 @@ const turno = (mensaje, tel, extra = {}) =>
   r = await cargas(Q.bodega_marzo);
   prueba('«bodega» de marzo que nunca recibió nada: ahora también vence («solo_historicas»)', r.estado === 'solo_historicas' && r.cargas.length === 0);
   r = await cargas(Q.aprobada_sin_recibir);
-  prueba('aprobada pero el proveedor todavía no entrega en China: no se informa', r.estado === 'sin_carga' && r.cargas.length === 0 && r.propias.cotizaciones.includes(9104));
+  prueba('aprobada pero el proveedor todavía no entrega en China: no es una carga', r.estado === 'sin_carga' && r.cargas.length === 0 && r.propias.cotizaciones.includes(9104));
+  prueba('…pero se le dice que está aprobada y que su mercadería no llega a Yiwu (sin fecha ni paso)', textoParaCliente(r, T.MENSAJE_ASESOR) === 'Hola, tu cotización N.º 9104 está aprobada y todavía no llega nada a nuestra bodega de Yiwu (China). Confirma con tu proveedor que envíe las cajas con tu marca de envío.');
+
+  // Shipping mark (marcaEnvio.js, 27-oct): estado y marcas de cada cotización viva, sin las ajenas.
+  {
+    const { shippingMark } = require('../src/utils/soporteExpertos/marcaEnvio');
+    const PIDE = 'mi proveedor me pide el shipping mark';
+    let rr = await cargas(Q.aprobada_sin_recibir);
+    const d = rr.propias.detalle || [];
+    prueba('detalle: la aprobada trae su estado, «aprobada» y su marca', d.length === 1 && d[0].id_cotizacion === 9104 && d[0].estado === 'aprobado' && d[0].aprobada === true && d[0].marcas[0] === 'EC-9104001', JSON.stringify(d));
+    prueba('shipping mark: aprobada con una marca → se la da', JSON.stringify(shippingMark({ mensaje: PIDE, carga: rr })) === JSON.stringify({ caso: 'marca', marca: 'EC-9104001', n: 9104 }));
+    rr = await cargas(Q.generada_hoy);
+    prueba('shipping mark: solo una generada (sin aprobar) → «sin_aprobar» con su número', JSON.stringify(shippingMark({ mensaje: PIDE, carga: rr })) === JSON.stringify({ caso: 'sin_aprobar', n: 9101 }));
+    rr = await cargas(Q.aprobada_y_borrador);
+    prueba('shipping mark: aprobada + generada → la marca de la aprobada', shippingMark({ mensaje: PIDE, carga: rr })?.marca === 'EC-9130001');
+    rr = await cargas(Q.generada_marzo);
+    prueba('shipping mark: solo una de marzo (histórica) → «sin_marca», no se dicta una vieja', shippingMark({ mensaje: PIDE, carga: rr })?.caso === 'sin_marca');
+    rr = await cargas(Q.mezcla);
+    const sm = shippingMark({ mensaje: PIDE, carga: rr });
+    prueba('shipping mark: la que ya viaja (tránsito) no cuenta; la «bodega» sí', sm && sm.caso === 'marca' && sm.marca === 'EC-9112001', JSON.stringify(sm));
+    prueba('shipping mark: «qué es el shipping mark» no es pedirlo (va la ficha)', shippingMark({ mensaje: 'que es el shipping mark', carga: rr }) === null);
+    prueba('shipping mark: sin lectura de la carga (error / varios clientes) no decide', shippingMark({ mensaje: PIDE, carga: { estado: 'varios_clientes' } }) === null && shippingMark({ mensaje: PIDE, carga: null }) === null);
+    const varias = shippingMark({ mensaje: PIDE, carga: { estado: 'sin_carga', propias: { detalle: [{ id_cotizacion: 1, estado: 'aprobado', aprobada: true, marcas: ['EC-1', 'EC-2'] }] } } });
+    prueba('shipping mark: una cotización con dos marcas (dos proveedores) → «varias»', varias?.caso === 'varias' && varias.marcas.length === 2);
+    const borr = shippingMark({ mensaje: PIDE, carga: { estado: 'sin_carga', propias: { detalle: [{ id_cotizacion: 7, estado: 'borrador', aprobada: false, marcas: [] }] } } });
+    prueba('shipping mark: solo un borrador → «sin_aprobar»', borr?.caso === 'sin_aprobar' && borr.n === 7);
+  }
   r = await cargas(Q.generada_recibida);
   prueba('llegó algo a China pero nadie aceptó la cotización: no se informa (lo ve una persona)', r.estado === 'sin_carga' && r.cargas.length === 0);
   r = await cargas(Q.estado_raro);
   prueba('un estado que el código no conoce no cuenta como aceptada', r.estado === 'sin_carga' && r.cargas.length === 0);
+  prueba('…ni tiene texto de preparación (no se sabe qué decir)', r.preparacion.length === 0 && textoParaCliente(r, T.MENSAJE_ASESOR) === null);
 
   r = await cargas(Q.bodega_recibida);
   prueba('aceptada («bodega») y recibida en China: SÍ es una carga, paso 2', r.estado === 'encontradas' && r.cargas.length === 1 && r.cargas[0].paso === 2 && r.cargas[0].informable && /ya recibimos tu mercadería en nuestra bodega de China/.test(r.cargas[0].texto_cliente));
@@ -383,9 +412,10 @@ const turno = (mensaje, tel, extra = {}) =>
   prueba('una en tránsito y tres que no viajan: se cuenta UNA sola carga', r.estado === 'encontradas' && r.cargas.length === 1 && r.cargas[0].id_cotizacion === 9110 && r.hay_mas === 0);
   prueba('…las cuatro siguen siendo suyas (ninguna se señala como ajena)', [9110, 9111, 9112, 9113].every((id) => r.propias.cotizaciones.includes(id)));
   let texto = textoParaCliente(r, T.MENSAJE_ASESOR);
-  prueba('…el texto para el cliente es el de la que viaja, sin lista ni «tu cotización está registrada»', texto.startsWith('Hola, el contenedor EC-PRUEBA-FLUJO-A, donde viaja tu carga EC-9110001, ya está en tránsito hacia Ecuador.') && /30 de octubre/.test(texto) && !/tienes \d+ cargas( registradas|;)/.test(texto) && !NO_VIAJA.test(texto) && !/911[123]/.test(texto));
+  prueba('…el texto para el cliente empieza por la que viaja, sin lista de cargas ni «tu cotización está registrada»', texto.startsWith('Hola, el contenedor EC-PRUEBA-FLUJO-A, donde viaja tu carga EC-9110001, ya está en tránsito hacia Ecuador.') && /30 de octubre/.test(texto) && !/tienes \d+ cargas( registradas|;)/.test(texto) && !NO_VIAJA.test(texto));
+  prueba('…y después, «Además», las dos que no viajan (la de hoy primero); la de marzo no', texto.endsWith('Además:\n- Tu cotización N.º 9111 está lista y falta que la apruebes para avanzar.\n- Tu cotización N.º 9112 está aprobada y todavía no llega nada a nuestra bodega de Yiwu (China). Confirma con tu proveedor que envíe las cajas con tu marca de envío.') && !/9113/.test(texto));
   b = bloqueCarga(r, { mensajeAsesor: T.MENSAJE_ASESOR });
-  prueba('…y el bloque del modelo dice «1 carga en curso», sin las otras tres', /Tiene 1 carga en curso con este número\./.test(b) && !/911[123]/.test(b) && !NO_VIAJA.test(b));
+  prueba('…y el bloque del modelo dice «1 carga en curso»: las que no viajan no se cuentan como carga', /Tiene 1 carga en curso con este número\./.test(b) && !/CARGA 2/.test(b) && !/9113/.test(b) && !NO_VIAJA.test(b));
   r = await cargas(Q.aprobada_y_borrador);
   prueba('una recibida en China y otra generada hoy: solo la recibida', r.estado === 'encontradas' && r.cargas.length === 1 && r.cargas[0].id_cotizacion === 9130 && r.cargas[0].paso === 2);
 
@@ -413,14 +443,19 @@ const turno = (mensaje, tel, extra = {}) =>
 
   /* ───────────────────────────────────────────────────────────────────── */
   console.log('\n7. En el turno: sin nada en el flujo responde «sin carga» y pasa a logística');
-  for (const [quien, tel] of [['cotización generada hoy', Q.generada_hoy], ['«bodega» sin recibir', Q.bodega_sin_recibir], ['aprobada sin recibir', Q.aprobada_sin_recibir], ['generada en marzo', Q.generada_marzo]]) {
+  for (const [quien, tel, id, frase] of [['cotización generada hoy', Q.generada_hoy, 9101, 'está lista y falta que la apruebes'], ['«bodega» sin recibir', Q.bodega_sin_recibir, 9103, 'está aprobada y todavía no llega nada'], ['aprobada sin recibir', Q.aprobada_sin_recibir, 9104, 'está aprobada y todavía no llega nada']]) {
+    olvidarTodo();
+    t = await turno('ya llegó mi mercadería?', tel, { datos: DATOS_FLUJO });
+    prueba(`${quien}: el texto seguro es el de su cotización que no viaja, sin paso ni fecha`, t.hechos.carga?.estado === 'sin_carga' && t.hechos.textoSeguro.startsWith(`Hola, tu cotización N.º ${id} ${frase}`) && !NO_VIAJA.test(t.bloque) && !/\d+ de (?:octubre|noviembre)/.test(t.hechos.textoSeguro));
+  }
+  for (const [quien, tel] of [['generada en marzo', Q.generada_marzo]]) {
     olvidarTodo();
     t = await turno('ya llegó mi mercadería?', tel, { datos: DATOS_FLUJO });
     prueba(`${quien}: el texto seguro es «no encuentro una carga en curso… lo dejo anotado para el área de logística»`, ['sin_carga', 'solo_historicas'].includes(t.hechos.carga?.estado) && t.hechos.textoSeguro === T.MENSAJE_SIN_CARGA && /área de logística/.test(t.hechos.textoSeguro) && /No digas ni supongas ningún estado/.test(t.bloque) && !NO_VIAJA.test(t.bloque));
   }
   olvidarTodo();
   t = await turno('ya llegó mi mercadería?', Q.mezcla, { datos: DATOS_FLUJO });
-  prueba('con una carga que sí viaja: el texto seguro es su estado, sin las cotizaciones que no viajan', t.hechos.textoSeguro.startsWith('Hola, el contenedor EC-PRUEBA-FLUJO-A') && !/911[123]/.test(t.bloque) && !NO_VIAJA.test(t.bloque));
+  prueba('con una carga que sí viaja: el texto seguro es su estado y después las que no viajan', t.hechos.textoSeguro.startsWith('Hola, el contenedor EC-PRUEBA-FLUJO-A') && /Además:\n- Tu cotización N\.º 9111/.test(t.hechos.textoSeguro) && !/9113/.test(t.bloque) && !NO_VIAJA.test(t.bloque));
   olvidarTodo();
   t = await turno('en qué va mi cotización 9111?', Q.mezcla, { datos: DATOS_FLUJO });
   prueba('pregunta por SU cotización que no viaja: no se le da estado de esa ni se la trata como ajena', /📦/.test(t.bloque) && !/NO figura/.test(t.bloque) && !NO_VIAJA.test(t.bloque));
@@ -445,11 +480,14 @@ const turno = (mensaje, tel, extra = {}) =>
     prueba('si el modelo igual repite el estado, sale el paso a asesor', r2.texto === T.MENSAJE_ASESOR && r2.cambiada, r2.texto);
     a = await turno('y cuándo llega entonces?', tel, { ahora: t0 + 12 * 60e3 });
     prueba('si vuelve a pedir el estado («cuándo llega»), se le da de nuevo', a.hechos.cargaYaDicha === false && /📦 CARGA DE ESTE CLIENTE/.test(a.bloque));
+    prueba('E2: …pero el texto seguro no repite el estado dicho hace 12 min (va el paso a asesor)', a.hechos.cargaDichaReciente === true && a.hechos.textoSeguro === T.MENSAJE_ASESOR, a.hechos.textoSeguro);
     olvidarTodo();
     a = await turno('cuándo llega mi carga?', tel, { ahora: t0 });
     revisarTurno(a.hechos.textoSeguro, a.hechos, { ahora: t0 });
     a = await turno('para el 30 de octubre', tel, { ahora: t0 + 25 * 60e3 });
     prueba('pasados 20 minutos ya no cuenta como dicho', a.hechos.cargaYaDicha === false);
+    a = await turno('y cuándo llega entonces?', tel, { ahora: t0 + 26 * 60e3 });
+    prueba('E2: pasados 20 minutos, si lo pide, el texto seguro vuelve a ser el estado', a.hechos.cargaDichaReciente === false && a.hechos.textoSeguro !== T.MENSAJE_ASESOR, a.hechos.textoSeguro);
     olvidarTodo();
     // Revisión independiente del 24-oct: todas estas vuelven a pedir el estado.
     const piden = ['y mi carga?', 'qué día llega?', 'cuánto falta para que llegue?', 'llegó ya?', 'ya llegó mi carga', 'me das el estado?', 'info de mi carga porfa', 'tracking?', 'en qué fecha llega?', 'cuándo llegará?', 'y la marca IMP-2231?'];

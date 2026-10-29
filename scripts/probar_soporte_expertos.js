@@ -361,10 +361,10 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
 
   /* ───────────────────────────────────────────────────────────────────── */
   console.log('\n11. De qué habla el mensaje');
-  for (const q of ['Buen día ya llegaría la mercadería', 'donde esta mi carga', 'cuando llega el contenedor', 'alguna novedad de mi importación?', 'EC-2609112', 'ya salió mi pedido de china?', 'cuando llega mi pedido', 'mi mercadería sigue en aduana?', 'ya puedo retirar mi carga', 'mi carga esta demorada']) {
+  for (const q of ['¿Mis cosas están en Yiwu o en México?', 'mis cajas siguen en china?', 'Buen día ya llegaría la mercadería', 'donde esta mi carga', 'cuando llega el contenedor', 'alguna novedad de mi importación?', 'EC-2609112', 'ya salió mi pedido de china?', 'cuando llega mi pedido', 'mi mercadería sigue en aduana?', 'ya puedo retirar mi carga', 'mi carga esta demorada']) {
     prueba(`habla de su carga: «${q}»`, hablaDeCarga(q));
   }
-  for (const q of ['hola', 'que es la carga grupal', 'cuanto demora una importacion', 'me ayudan con una cotizacion', 'mi pedido de dropi no llega', 'hoy hay clase', 'como saco mi marca de envio', 'la guia 189852073 no sale', '']) {
+  for (const q of ['el producto está en China a buen precio', 'mi tienda está en México', 'hola', 'que es la carga grupal', 'cuanto demora una importacion', 'me ayudan con una cotizacion', 'mi pedido de dropi no llega', 'hoy hay clase', 'como saco mi marca de envio', 'la guia 189852073 no sale', '']) {
     prueba(`NO pregunta por su carga: «${q}»`, !hablaDeCarga(q));
   }
   const W = '593987654321';
@@ -470,7 +470,7 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
   x = g('Lo derivo al área de pricing y al supervisor.');
   prueba('cargos con «al / del»: «al área de precios», «a la persona responsable»', x.corregida && x.texto === 'Lo derivo al área de precios y a la persona responsable.');
   prueba('puede repetir una cifra que escribió el cliente (su número de cotización)', !g('Recibido. Lo sumo a tu caso para el asesor. Cotización 4521.').cambiada);
-  prueba('«No soy una persona. Soy el asistente automático…» no se confunde con presentarse', !g(`No soy una persona. ${T.MENSAJE_ROBOT}`).cambiada);
+  prueba('«No soy una persona. Estás hablando con el asistente…» no se confunde con presentarse', !g(`No soy una persona. ${T.MENSAJE_ROBOT}`).cambiada);
   prueba('«un asesor te atiende apenas abramos» no se confunde con presentarse', !g('Un asesor te atiende apenas abramos.').cambiada);
   prueba('una lista numerada («1. … 2. …») no cuenta como cifra', !g('Recibí tu mensaje.\n1. Envíame la proforma.\n2. Dime cuántas unidades piensas comprar.').cambiada);
   x = revisarRespuesta('Tu carga llega el 30 de octubre.', { ...H, textoSeguro: 'Hola, tu carga EC-1 ya está en tránsito.' });
@@ -577,8 +577,8 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
   console.log('\n14. Ajustes de la cuenta y candado antes de leer audios e imágenes');
   const n = ajustes.normalizar;
   prueba('sin el ajuste, `soporte_expertos` es null (ninguna cuenta cambia)', n(null).soporte_expertos === null && n({ espera_rafaga_seg: 20 }).soporte_expertos === null && n({ soporte_expertos: false }).soporte_expertos === null);
-  prueba('`true` enciende las tres partes', igual(n({ soporte_expertos: true }).soporte_expertos, { cargas: true, fichas: true, guardia: true, herramientas: false, diagnostico: false, pagos: false, agenda: false, callar_bots: true, callar_acuses: true, decir_apertura: false, escalar: false, seguimiento: false }));
-  prueba('un objeto apaga solo lo que trae en false', igual(n({ soporte_expertos: { cargas: false } }).soporte_expertos, { cargas: false, fichas: true, guardia: true, herramientas: false, diagnostico: false, pagos: false, agenda: false, callar_bots: true, callar_acuses: true, decir_apertura: false, escalar: false, seguimiento: false }));
+  prueba('`true` enciende las tres partes', igual(n({ soporte_expertos: true }).soporte_expertos, { cargas: true, fichas: true, guardia: true, herramientas: false, diagnostico: false, pagos: false, agenda: false, cotizacion_mx: false, objecion_precio: false, novedad: false, proveedores: false, dropi: false, membresia: false, callar_bots: true, callar_acuses: true, decir_apertura: false, escalar: false, seguimiento: false, callar_al_pasar: false, proactivo: false, pausa_persona: null }));
+  prueba('un objeto apaga solo lo que trae en false', igual(n({ soporte_expertos: { cargas: false } }).soporte_expertos, { cargas: false, fichas: true, guardia: true, herramientas: false, diagnostico: false, pagos: false, agenda: false, cotizacion_mx: false, objecion_precio: false, novedad: false, proveedores: false, dropi: false, membresia: false, callar_bots: true, callar_acuses: true, decir_apertura: false, escalar: false, seguimiento: false, callar_al_pasar: false, proactivo: false, pausa_persona: null }));
   prueba('un valor raro no enciende nada', n({ soporte_expertos: 'si' }).soporte_expertos === null && n({ soporte_expertos: [1] }).soporte_expertos === null);
   const ec = (hora) => new Date(`2026-10-12T${hora}:00-05:00`);
   const noche = n({ horario: { desde: '16:00', hasta: '08:00' } });
@@ -601,7 +601,7 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
   const sinRegla2 = prompt.replace(/NUNCA voseo \([^)]*\)/, '');
   prueba('el prompt no usa voseo (fuera de la regla que lo prohíbe)', !/(?<!\p{L})(vos|ten[eé]s|pod[eé]s|quer[eé]s|sabés|necesitás|mirá|fijate|decime|pasame|mandame|enviame|contame|avisame)(?!\p{L})/iu.test(sinRegla2));
   prueba('los textos fijos no prometen día ni hora, ni usan voseo ni «usted»', Object.values(T.TEXTOS_FIJOS).every((v) => !/\b(hoy|mañana|lunes|martes|miércoles|jueves|viernes|minutos? más|en breve|pronto)\b/i.test(v.replace('30 minutos antes de cada clase', '')) && !/\busted\b|ten[eé]s|pod[eé]s|enviame/i.test(v)));
-  prueba('ningún texto fijo nombra a una persona ni se presenta como tal', Object.values(T.TEXTOS_FIJOS).every((v) => !/\bsoy [A-ZÁÉÍÓÚ][a-z]+\b(?<!Soy el)/.test(v.replace('Soy el asistente automático de IMPORFACTORY', ''))));
+  prueba('ningún texto fijo nombra a una persona ni se presenta como tal', Object.values(T.TEXTOS_FIJOS).every((v) => !/\bsoy [A-ZÁÉÍÓÚ][a-z]+\b(?<!Soy el)/.test(v)));
 
   console.log('\n16. Explicar el proceso no es afirmar el estado de una carga');
   {
@@ -611,6 +611,31 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
     prueba('«tu mensaje llegó cortado» y «el enlace me llegó» no son la carga', datoSinRespaldo('Tu mensaje llegó cortado. El enlace sí me llegó.', '', '') === null);
     prueba('«tu carga llegó» sin bloque 📦 se sigue frenando', datoSinRespaldo('Tu carga ya llegó a Guayaquil.', '', '') !== null);
     prueba('tres pasos dichos de su carga se siguen frenando', datoSinRespaldo('Tu carga está en tránsito, luego en aduana y después liberada.', '', '') !== null);
+  }
+
+  console.log('\n16b. E3: sus medidas y precios, y los consejos generales (Daniel, 27-oct)');
+  {
+    const eco = '[IMAGEN: cotizacion_proveedor] Mochila escolar, USD 3,50 por unidad, 40 unidades por caja, caja de 60 x 40 x 35 cm, CBM 0.084, peso 12 kg';
+    const d = (txt, e = eco, firme = '') => datoSinRespaldo(txt, firme, e);
+    prueba('repetir su precio por unidad pasa', d('El precio que te dio es USD 3.50 por unidad.') === null, d('El precio que te dio es USD 3.50 por unidad.'));
+    prueba('repetir sus medidas, CBM y peso pasa', d('La caja mide 60 x 40 x 35 cm, el CBM es 0.084 y pesa 12 kg.') === null, d('La caja mide 60 x 40 x 35 cm, el CBM es 0.084 y pesa 12 kg.'));
+    prueba('«40 unidades por caja» de su proforma pasa', d('Vienen 40 unidades por caja.') === null);
+    prueba('🔒 un precio que NO mandó se frena', d('El precio es USD 2.80 por unidad.') !== null);
+    prueba('🔒 un total calculado (3,50 × 40 = 140) se frena', d('Por caja serían USD 140.') !== null);
+    prueba('🔒 una medida que no mandó se frena', d('La caja mide 50 x 40 x 35 cm.') !== null);
+    prueba('🔒 sin su captura, el mismo precio se frena', d('El precio es USD 3.50 por unidad.', 'cuánto me sale?') !== null);
+    prueba('🔒 un porcentaje con sus cifras no pasa por ser suyo', d('Tienes un 40% de descuento.') !== null);
+    prueba('«pide precio a 3 o 4 proveedores» pasa sin respaldo', d('Pide precio a 3 o 4 proveedores a la vez.', '') === null);
+    prueba('«2 o 3 muestras» y «al menos 2 cotizaciones» pasan', d('Lo normal es pedir 2 o 3 muestras y al menos 2 cotizaciones antes del pedido.', '') === null);
+    prueba('🔒 «son 4 proveedores» (un dato, no un consejo) se frena', d('Son 4 proveedores.', '') !== null);
+    prueba('🔒 un depósito que escribió («te deposito USD850») no se confirma', d('Sí, son USD 850.', 'te deposito USD 850 y listo') !== null);
+    prueba('🔒 el monto de un comprobante leído no se confirma', d('Sí, pagaste USD 850.', '[IMAGEN: comprobante_pago] Banco Pichincha, USD 850, 26/10/2026') !== null);
+    prueba('una proforma escrita a mano (precio + medidas) también cuenta como su hoja', d('Con USD 4 por unidad y caja de 50 x 30 x 30 cm, el área de precios te arma la cotización.', 'el proveedor me dice 4 usd la unidad, caja 50x30x30 cm') === null);
+    prueba('🔒 el número de su código no respalda un precio', d('El SGTE-58 te sale en USD 58.', 'me interesa el SGTE-58') !== null);
+    prueba('«iPhone 16», «Galaxy S24 Ultra» y «Windows 11» pasan', d('Las fundas para iPhone 16 y Galaxy S24 Ultra se venden mucho; la app corre en Windows 11.', '') === null, d('Las fundas para iPhone 16 y Galaxy S24 Ultra se venden mucho; la app corre en Windows 11.', ''));
+    prueba('🔒 «tienes 3 cajas» (algo suyo) sin respaldo se frena', d('Tienes 3 cajas en bodega.', '') !== null);
+    prueba('🔒 «15 proveedores» (más de 10) se frena', d('Tenemos 15 proveedores de mochilas.', '') !== null);
+    prueba('🔒 una fecha sigue frenada aunque vaya con un consejo', d('Pide precio a 3 proveedores y llega el 30 de noviembre.', '') !== null);
   }
 
   console.log('\n17. «Recibí» una sola vez, y a los bots de tienda no se les contesta (24-oct)');
@@ -638,6 +663,13 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
       // Sábado 24-oct, después de publicar.
       'Gracias! Necesitamos tu confirmación del ajuste especial del 10% y saber cómo prefieres recibir el pedido: ¿domicilio o retiro en agencia? 😊',
       'Perfecto. ¿Quieres que te avisemos por este mismo número cuando el asesor responda? 📲',
+      // Auditoría 265 del 27-oct (respuestas a la plantilla del «Tip de la semana»).
+      'Hola! 😊 ¿Cuál producto te interesa? Tenemos: • CARGADOR DE BATERÍA PARA CARRO Y MOTO • MINI LAVADORA PLEGABLE',
+      'Perfecto, quedo atenta para ayudarte cuando el asesor te contacte. ¡Que tengas un buen día! 😊',
+      '¿Por cuál producto nos escribes: MAGNESIUM COMPLEX TOPLUX 90 CAPS, PROYECTOR NAVIDEÑO u Otro? 😊',
+      '¿Te refieres al enlace/encuesta o a un pedido pendiente? ¿Quieres que lo pase a un asesor para que te ayude? 😊',
+      'Perfecto, gracias. Paso tu caso con un asesor y te escribirán en breve 🙌',
+      'Perfecto, quedo atento. Avísame si necesitas algo más.',
     ];
     prueba('los mensajes de bots de tienda de anoche se reconocen', bots.every(esMensajeDeBot), bots.filter((b) => !esMensajeDeBot(b)).join(' | '));
     const personas = [
@@ -652,6 +684,9 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
       'Saludo + Validación del problema:\n\n"¡Hola! Claro que sí. ¿A qué ciudad te lo enviamos?"',
       'Mi carga la quiero a domicilio, no retiro en agencia',
       'Necesito su confirmación para pagar',
+      '¿Cuál producto me recomiendas importar?',
+      'Quedo atenta a la respuesta del asesor, ¿me avisan?',
+      '¿Te refieres al enlace de la clase?',
     ];
     prueba('lo que escribe una persona (aunque muestre su bot) no se calla', !personas.some(esMensajeDeBot), personas.filter(esMensajeDeBot).join(' | '));
     olvidarTodo();
@@ -699,23 +734,33 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
     const ec = (iso) => Date.parse(`${iso}-05:00`);
     prueba('viernes 10:00 de Ecuador: atendiendo', equipoAtendiendo(ec('2026-10-23T10:00:00')));
     prueba('viernes 08:00 en punto: atendiendo', equipoAtendiendo(ec('2026-10-23T08:00:00')));
-    prueba('viernes 17:30 en punto: ya no', !equipoAtendiendo(ec('2026-10-23T17:30:00')));
+    prueba('viernes 16:59: atendiendo', equipoAtendiendo(ec('2026-10-23T16:59:00')));
+    prueba('viernes 17:00 en punto: ya no', !equipoAtendiendo(ec('2026-10-23T17:00:00')));
     prueba('viernes 07:59: no', !equipoAtendiendo(ec('2026-10-23T07:59:00')));
     prueba('sábado 10:00: no', !equipoAtendiendo(ec('2026-10-24T10:00:00')));
     prueba('domingo 12:00: no', !equipoAtendiendo(ec('2026-10-25T12:00:00')));
-    prueba('un horario que no se puede leer cae al de oficina', igual(normalizarHorarioEquipo({ dias: [1], desde: '25:00', hasta: '17:30' }), { dias: [1, 2, 3, 4, 5], desde: '08:00', hasta: '17:30', utc: -5 }));
+    prueba('un horario que no se puede leer cae al de oficina', igual(normalizarHorarioEquipo({ dias: [1], desde: '25:00', hasta: '17:30' }), { dias: [1, 2, 3, 4, 5], desde: '08:00', hasta: '17:00', utc: -5 }));
     prueba('horario propio: sábado 09:00-13:00', equipoAtendiendo(ec('2026-10-24T10:00:00'), { dias: [6], desde: '09:00', hasta: '13:00', utc: -5 }));
     prueba('«apenas abramos» → «en breve» con el equipo atendiendo', textoAlHorario(T.MENSAJE_ASESOR, true) === 'Recibí tu mensaje. Un asesor lo revisa y te escribe en breve.');
     prueba('fuera de horario el texto no cambia', textoAlHorario(T.MENSAJE_ASESOR, false) === T.MENSAJE_ASESOR);
     const quedan = Object.entries(T.TEXTOS_FIJOS).filter(([, v]) => /abramos|cerrad|fuera de horario/i.test(textoAlHorario(v, true)));
     prueba('ningún texto fijo dice «abramos» de día', !quedan.length, quedan.map(([k]) => k).join(', '));
+    {
+      // automejora 26-oct: el respaldo (modelo caído) decía «apenas abramos» en plena oficina.
+      const { respaldoAlHorario } = require('../src/utils/soporteExpertos/horario');
+      const hor = { horario_equipo: { dias: [1, 2, 3, 4, 5], desde: '08:00', hasta: '17:30', utc: -5 } };
+      prueba('respaldo de día: «en breve»', respaldoAlHorario(T.MENSAJE_FALLBACK, hor, ec('2026-10-26T10:45:00')) === 'Recibimos tu mensaje. Un asesor te escribe en breve.');
+      prueba('respaldo de noche: no cambia', respaldoAlHorario(T.MENSAJE_FALLBACK, hor, ec('2026-10-26T20:00:00')) === T.MENSAJE_FALLBACK);
+      prueba('respaldo de noche con decir_apertura: dice cuándo abre', respaldoAlHorario(T.MENSAJE_FALLBACK, { ...hor, decir_apertura: true }, ec('2026-10-24T10:00:00')) === 'Recibimos tu mensaje. Un asesor te escribe el lunes desde las 8:00.');
+      prueba('respaldo sin horario en la cuenta: no cambia', respaldoAlHorario(T.MENSAJE_FALLBACK, {}, ec('2026-10-26T10:45:00')) === T.MENSAJE_FALLBACK && respaldoAlHorario(T.MENSAJE_FALLBACK, undefined) === T.MENSAJE_FALLBACK);
+    }
     olvidarTodo();
-    const dia = await prepararTurno({ mensaje: 'necesito hablar con mi asesor', telefono: '593999000111', id_configuracion: 265, id_cliente: 3, opciones: { cargas: false, fichas: false, horario_equipo: { dias: [1, 2, 3, 4, 5], desde: '08:00', hasta: '17:30', utc: -5 } }, deps: { ahora: ec('2026-10-23T10:00:00') } });
+    const dia = await prepararTurno({ mensaje: 'necesito hablar con mi asesor', telefono: '593999000111', id_configuracion: 265, id_cliente: 3, opciones: { cargas: false, fichas: false, horario_equipo: { dias: [1, 2, 3, 4, 5], desde: '08:00', hasta: '17:00', utc: -5 } }, deps: { ahora: ec('2026-10-23T10:00:00') } });
     prueba('de día el turno lo sabe y se lo dice al modelo', dia.hechos.equipoAtendiendo === true && /EQUIPO ESTÁ ATENDIENDO/.test(dia.bloque));
     const rDia = revisarTurno(T.MENSAJE_ASESOR, dia.hechos);
     prueba('de día la respuesta sale con «en breve»', /en breve\.$/.test(rDia.texto) && !/abramos/.test(rDia.texto), rDia.texto);
     olvidarTodo();
-    const noche = await prepararTurno({ mensaje: 'necesito hablar con mi asesor', telefono: '593999000111', id_configuracion: 265, id_cliente: 3, opciones: { cargas: false, fichas: false, horario_equipo: { dias: [1, 2, 3, 4, 5], desde: '08:00', hasta: '17:30', utc: -5 } }, deps: { ahora: ec('2026-10-23T21:00:00') } });
+    const noche = await prepararTurno({ mensaje: 'necesito hablar con mi asesor', telefono: '593999000111', id_configuracion: 265, id_cliente: 3, opciones: { cargas: false, fichas: false, horario_equipo: { dias: [1, 2, 3, 4, 5], desde: '08:00', hasta: '17:00', utc: -5 } }, deps: { ahora: ec('2026-10-23T21:00:00') } });
     prueba('de noche sigue «apenas abramos» y no va el aviso', noche.hechos.equipoAtendiendo === false && !/EQUIPO ESTÁ ATENDIENDO/.test(noche.bloque) && revisarTurno(T.MENSAJE_ASESOR, noche.hechos).texto === T.MENSAJE_ASESOR);
     olvidarTodo();
     const otra = await prepararTurno({ mensaje: 'necesito hablar con mi asesor', telefono: '593999000111', id_configuracion: 10, id_cliente: 4, opciones: { cargas: false, fichas: false }, deps: { ahora: ec('2026-10-23T10:00:00') } });
@@ -778,6 +823,25 @@ const FECHA = /\b\d{1,2} de (enero|febrero|marzo|abril|mayo|junio|julio|agosto|s
     revisarTurno('Aquí lo tienes: https://imporfactory.app/cursos/32', t5.hechos);
     t5 = await prepararTurno({ ...base, mensaje: 'ok gracias' });
     prueba('«ok gracias» después de una respuesta sin pregunta: se calla', t5.hechos.noPideNada === true);
+    olvidarTodo();
+    // Auditoría 265 del 27-oct: un sticker o una reacción sola no se contesta.
+    const t6 = await prepararTurno({ mensaje: 'Tipo de mensaje no reconocido.', telefono: '593999000111', id_configuracion: 265, id_cliente: 4, opciones: { cargas: false, fichas: false } });
+    prueba('«Tipo de mensaje no reconocido.» solo: se calla', t6.hechos.noPideNada === true);
+    olvidarTodo();
+    const t7 = await prepararTurno({ mensaje: 'Sticker recibido y guardado con ID: 4471', tipo_mensaje: 'sticker', telefono: '593999000111', id_configuracion: 265, id_cliente: 4, opciones: { cargas: false, fichas: false } });
+    prueba('un sticker solo: se calla', t7.hechos.noPideNada === true);
+    olvidarTodo();
+    const t8 = await prepararTurno({ mensaje: 'Tipo de mensaje no reconocido.\nNesesito inportar', telefono: '593999000111', id_configuracion: 265, id_cliente: 4, opciones: { cargas: false, fichas: false } });
+    prueba('una reacción con texto detrás: se contesta', t8.hechos.noPideNada === false);
+    olvidarTodo();
+    const t9 = await prepararTurno({ mensaje: 'Tipo de mensaje no reconocido.\n[IMAGEN: producto] Caseta metálica de jardín', telefono: '593999000111', id_configuracion: 265, id_cliente: 4, opciones: { cargas: false, fichas: false } });
+    prueba('una reacción con una foto: se contesta', t9.hechos.noPideNada === false);
+    olvidarTodo();
+    const t10 = await prepararTurno({ mensaje: 'Tipo de mensaje no reconocido.', telefono: '593999000111', id_configuracion: 265, id_cliente: 4, opciones: { cargas: false, fichas: false, callar_acuses: false } });
+    prueba('con callar_acuses = false la reacción no se calla', t10.hechos.noPideNada === false);
+    olvidarTodo();
+    const t11 = await prepararTurno({ mensaje: 'Tip', telefono: '593999000111', id_configuracion: 265, id_cliente: 4, opciones: { cargas: false } });
+    prueba('«Tip» abre la ficha del tip, no se calla ni pasa', t11.hechos.fichas.includes('ia-tip-bot-cotiza-solo') && t11.hechos.noPideNada === false, JSON.stringify(t11.hechos.fichas));
     olvidarTodo();
   }
 

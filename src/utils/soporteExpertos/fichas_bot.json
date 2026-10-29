@@ -45,14 +45,11 @@
    "necesito cotizar varios productos",
    "me cotizan este producto que encontre"
   ],
-  "respuesta_base": "Las cotizaciones las hace el área de precios. Se necesitan 3 datos que te da tu proveedor: el precio por unidad, cuántas unidades vienen en cada caja y el volumen de la caja (CBM) o sus medidas. Sirve una captura de la respuesta del proveedor o la proforma. Una foto del producto sola no alcanza.",
-  "pasos": [
-   "Pídele a tu proveedor: precio por unidad, unidades por caja y CBM (o largo, ancho y alto de la caja).",
-   "Envía por aquí la captura de su respuesta o la proforma."
-  ],
+  "respuesta_base": "Te ayudo a juntar los datos para que el área de precios te prepare la cotización. Sirve una captura de lo que te mandó tu proveedor o la proforma. Una foto del producto sola no alcanza.",
+  "pasos": [],
   "enlace": "https://imporfactory.app/cursos/30?contenido=323",
   "pasar_a": "pricing",
-  "pedir": "precio por unidad que te dio el proveedor, unidades por caja, CBM o medidas de la caja, y cuántas unidades piensas comprar (sirve una captura o la proforma)",
+  "pedir": "país al que importas; el producto (foto, nombre o enlace); cuántas unidades piensas comprar; el precio por unidad que te dio el proveedor (EXW más envío a Yiwu); cuántas unidades vienen en cada caja; el volumen de la caja (CBM) o sus medidas; el peso, si lo tiene",
   "no_decir": [
    "Ningún precio, tarifa, flete ni «más o menos cuánto sale».",
    "No prometer en cuánto tiempo llega la cotización (en clase se dijeron 30 minutos y 24 a 48 horas: no hay plazo oficial).",
@@ -62,8 +59,10 @@
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `cotizar-datos`",
    "AGENTE_24_7/prompt_agente_expertos_v1.txt · tabla del bloque D",
    "ENTRENAMIENTO_FRONT/decisiones.json · puntos 3 y 4",
-   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo C01 (lección 323)"
-  ]
+   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo C01 (lección 323)",
+   "Daniel, 26-oct: «QUE EL PROPIO AGENTE VAYA PIDIENDO TODOS LOS DATOS» + «dale todos los tramos» (precio EXW más envío a Yiwu, como el paso 2 del proceso P)"
+  ],
+  "junta_datos": true
  },
  {
   "id": "cotizar-producto-del-catalogo",
@@ -135,11 +134,12 @@
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "No dar el precio del metro cúbico ni hacer la cuenta del flete."
+   "No hacer la cuenta del flete de su carga; en Ecuador no hay tarifa por metro cúbico."
   ],
   "fuentes": [
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `cbm`",
-   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo C02 (lección 323)"
+   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo C02 (lección 323)",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
   ]
  },
  {
@@ -287,7 +287,7 @@
   "respuesta_base": "Es lo primero que suelen preguntar los proveedores. La respuesta es pasarle el documento de «instrucciones de carga» de IMPORFACTORY: viene en chino y en español y trae la dirección de la bodega en China y los datos para coordinar la entrega. Se lo pasas tal cual, sin modificar nada. El documento se entrega por privado y por el grupo de WhatsApp de tu ciclo.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "asesor",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No escribir la dirección de la bodega de China de memoria ni copiarla de otro chat.",
@@ -296,7 +296,9 @@
   "fuentes": [
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `agente-de-carga`",
    "ENTRENAMIENTO_FRONT/GUIA_DEL_ASESOR.md · «5 · Mi carga» (dirección de la bodega: respuesta por aprobar)"
-  ]
+  ],
+  "pasar_a_antes": "asesor",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "negociar-directo",
@@ -339,14 +341,14 @@
   "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "No dar costos ni días de una muestra.",
-   "No decir si la muestra paga o no paga impuestos: en clase se dijo de dos formas.",
+   "No dar el precio que cobra el proveedor por la muestra ni los días de envío.",
    "No ofrecer «muestra de bodega»: no está confirmado que siga vigente."
   ],
   "fuentes": [
    "PORTAL_PUESTOS/plantillas/propuestas/p14.json (aprobada, texto_final)",
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `muestras`",
-   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo P06 y C20 (avisos)"
+   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo P06 y C20 (avisos)",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
   ]
  },
  {
@@ -406,7 +408,9 @@
    "como funciona el pago protegido de alibaba",
    "como pago seguro en alibaba",
    "como se si mi orden esta protegida",
-   "el proveedor me mando un link de pago"
+   "el proveedor me mando un link de pago",
+   "le pago al proveedor por alibaba",
+   "el proveedor me dice que le pague por medio de alibaba"
   ],
   "respuesta_base": "Es pagar tu compra por dentro de Alibaba con el enlace que te envía el proveedor: la plataforma retiene el dinero hasta que confirmas que recibiste lo pactado y, si no, puedes abrir una disputa. La orden tiene que aparecer en tu cuenta, en tus órdenes: si no aparece ahí, no está protegida. Antes de pagar revisa que la cantidad, el precio y las especificaciones sean lo negociado, porque ese enlace funciona como el contrato.",
   "pasos": [],
@@ -614,10 +618,11 @@
   "pedir": "",
   "no_decir": [
    "No dar el mínimo en metros cúbicos ni en dinero: no hay dato oficial.",
-   "No dar plazos de tránsito."
+   "No dar fecha de salida ni de llegada de una carga puntual."
   ],
   "fuentes": [
-   "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `carga-grupal`"
+   "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `carga-grupal`",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
   ]
  },
  {
@@ -635,14 +640,16 @@
   "respuesta_base": "IMPORFACTORY trae carga grupal desde China a Ecuador y a México. La carga grupal sale solo desde China. Otros países de destino no están confirmados.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "pricing",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No decir que sí ni que no se llega a un país distinto de Ecuador y México."
   ],
   "fuentes": [
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `paises-carga-grupal`"
-  ]
+  ],
+  "pasar_a_antes": "pricing",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "carga-a-otro-pais",
@@ -700,7 +707,10 @@
    "no tengo marca de envio",
    "cual es mi shipping mark",
    "necesito mi marca para el proveedor",
-   "no me aparece la marca en la plataforma"
+   "no me aparece la marca en la plataforma",
+   "mi proveedor me pide el shipping mark",
+   "cual es mi webmarker",
+   "el proveedor me pide la marca para las cajas"
   ],
   "respuesta_base": "La marca de envío la ves en la plataforma. Si todavía no te aparece, lo dejo anotado para que el área de precios la revise.",
   "pasos": [],
@@ -788,18 +798,21 @@
    "cualquier producto demora ese lapso",
    "todo demora ese tiempo"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Desde que el contenedor sale del puerto de China son unos 45 días: unos 35 días de barco hasta el puerto de destino (Guayaquil en Ecuador; Manzanillo o Lázaro Cárdenas en México) y el resto de aduana. Esos días se cuentan desde que sale el contenedor: si tu carga llega a la bodega de China el 1 y el contenedor sale el 15, en total son unos 60 días. Hay dos salidas al mes: una entre el 12 y el 17 y otra entre el 29 y el 31.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "logística",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "Ningún plazo: ni días de tránsito, ni semanas de aduana, ni «unos dos meses». En las clases hay cinco versiones y no hay plazo oficial."
+   "No prometer la fecha de llegada de una carga puntual: para eso está el estado de su carga.",
+   "No mencionar Colombia ni otros destinos: la carga grupal es a Ecuador y México."
   ],
   "fuentes": [
    "ENTRENAMIENTO_FRONT/decisiones.json · punto 1",
-   "ENTRENAMIENTO_FRONT/GUIA_DEL_ASESOR.md · «5 · Mi carga» (falta el dato de Daniel)"
-  ]
+   "ENTRENAMIENTO_FRONT/GUIA_DEL_ASESOR.md · «5 · Mi carga» (falta el dato de Daniel)",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "logística"
  },
  {
   "id": "cajas-incompletas-china",
@@ -815,14 +828,16 @@
   "respuesta_base": "Si la bodega de China registra menos cajas de las que esperas, las que faltan todavía no han llegado de parte de tu proveedor: confirma con tu proveedor el envío de las que faltan.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "logística",
+  "pasar_a": "",
   "pedir": "marca de envío o número de cotización",
   "no_decir": [
    "No afirmar que las cajas se perdieron ni quién tiene la culpa."
   ],
   "fuentes": [
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `cajas-incompletas`"
-  ]
+  ],
+  "pasar_a_antes": "logística",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "carga-no-aparece",
@@ -907,6 +922,36 @@
   ]
  },
  {
+  "id": "objecion-de-precio",
+  "tema": "cotización",
+  "pais": "todos",
+  "preguntas": [
+   "me sale muy caro",
+   "esta muy caro el flete",
+   "en otro lado me cobran menos",
+   "me pueden hacer un descuento en el flete",
+   "me sale mas barato comprarlo aca",
+   "es muy alto el costo del traslado",
+   "me preocupa el incremento de los costos",
+   "la cotizacion me salio muy alta"
+  ],
+  "respuesta_base": "El flete se cobra por el volumen de tu carga (CBM): a México ya incluye los impuestos de importación y a Ecuador los impuestos van aparte, según el valor de tu mercadería. Para bajar el costo por unidad puedes ajustar la cantidad o sumar tu mercadería a una carga grupal con otros importadores.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "líder comercial",
+  "pedir": "",
+  "no_decir": [
+   "No ofrecer, insinuar ni calcular descuentos o rebajas.",
+   "No ofrecer igualar la cotización de otra empresa.",
+   "No decir que el líder comercial va a bajar el precio."
+  ],
+  "fuentes": [
+   "265 · 22 chats con objeción de precio del 29-sep al 27-oct (medición del 27-oct)",
+   "soporteExpertos/objecionPrecio.js (flujo en pasos; textos en textos.OBJECION)"
+  ],
+  "borrador": true
+ },
+ {
   "id": "cliente-de-volumen",
   "tema": "cotización",
   "pais": "todos",
@@ -950,11 +995,12 @@
   "no_decir": [
    "No pasar ninguna cuenta bancaria, ni copiada de otro chat.",
    "No confirmar que un pago llegó.",
-   "No decir montos, saldos ni fechas de pago."
+   "No decir montos ni fechas de pago; los saldos, solo como los entrega la herramienta de pagos."
   ],
   "fuentes": [
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `pagos`",
-   "AGENTE_24_7/prompt_agente_expertos_v1.txt · tabla del bloque D"
+   "AGENTE_24_7/prompt_agente_expertos_v1.txt · tabla del bloque D",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
   ]
  },
  {
@@ -999,7 +1045,7 @@
   "respuesta_base": "La atención es solo por esta línea oficial: así todo queda respaldado para ti y para la empresa. Si hace falta hablar, se puede coordinar una llamada o una videollamada desde la línea oficial.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "asesor",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No dar ningún número, ni de un asesor ni de un área."
@@ -1007,7 +1053,9 @@
   "fuentes": [
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `numero-personal`",
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `llamada-o-videollamada`"
-  ]
+  ],
+  "pasar_a_antes": "asesor",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "llamada-o-reunion",
@@ -1072,7 +1120,7 @@
   "respuesta_base": "Las clases son para aprender. El asesor es para ir dando pasos firmes en el proceso: conviene llegar con el producto o la pregunta puntual. El camino es el mismo para todos: producto, proveedor, cotización, pagos, carga y entrega.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/30?contenido=290",
-  "pasar_a": "asesor",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No hacer preguntas de asesoría (cuánto quiere invertir, qué producto le conviene): eso lo hace su asesor.",
@@ -1083,7 +1131,9 @@
    "ENTRENAMIENTO_FRONT/GUIA_DEL_ASESOR.md · «1 · Empezar»",
    "AGENTE_24_7/prompt_agente_expertos_v1.txt · «Lo que nunca haces»",
    "ENTRENAMIENTO_FRONT/tutoriales.json · tramo E03 (lección 290)"
-  ]
+  ],
+  "pasar_a_antes": "asesor",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "viajes-a-china",
@@ -1116,21 +1166,21 @@
    "estoy hablando con una persona",
    "eres un bot",
    "hay alguien atendiendo",
-   "me atiende un humano",
-   "quiero hablar con una persona real"
+   "me atiende un humano"
   ],
-  "respuesta_base": "Soy el asistente automático de IMPORFACTORY. Un asesor te escribe apenas abramos.",
+  "respuesta_base": "Estás hablando con el asistente de IMPORFACTORY y te ayudo ahora mismo. Si prefieres a una persona, dímelo.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "asesor",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "No presentarse como persona ni dar un nombre.",
-   "No decir a qué hora abre el equipo ni cuándo escribe el asesor."
+   "No presentarse como persona ni dar un nombre."
   ],
   "fuentes": [
-   "AGENTE_24_7/prompt_agente_expertos_v1.txt · regla de forma 7"
-  ]
+   "AGENTE_24_7/prompt_agente_expertos_v1.txt · regla de forma 7",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "asesor"
  },
  {
   "id": "no-puedo-entrar-plataforma",
@@ -1518,7 +1568,7 @@
   "respuesta_base": "La cotización que recibes ya es con el producto puesto en tu país. Si estás en una ciudad principal (Quito, Guayaquil o Ciudad de México) no hay flete interno. Si es otra ciudad, se cotiza el envío o puedes retirar en la bodega.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "pricing",
+  "pasar_a": "",
   "pedir": "número de cotización (solo si la duda es sobre un valor de tu cotización)",
   "no_decir": [
    "No desglosar qué se cobra aparte (impuestos, bodegaje, pago al proveedor): la lista oficial está pendiente.",
@@ -1528,7 +1578,9 @@
   "fuentes": [
    "PORTAL_PUESTOS/plantillas/propuestas/p06.json (aprobada, texto_final; su campo «duda» pide la lista oficial)",
    "ENTRENAMIENTO_FRONT/banco.json · B78"
-  ]
+  ],
+  "pasar_a_antes": "pricing",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "acepto-la-cotizacion",
@@ -1696,24 +1748,54 @@
   "preguntas": [
    "cuanto cuesta el metro cubico",
    "cual es la tarifa por cbm",
-   "a como esta el flete a ecuador",
    "cuanto cobran por cbm a mexico",
    "en clase dijeron 650 el metro cubico",
    "precio del flete maritimo"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "A México la tarifa es todo incluido (impuestos e IVA) hasta la bodega de México: 1 m³ cuesta 750 USD; 2 m³, 1300 USD; 3 m³, 1500 USD; y 4 m³, 1600 USD. Cada m³ adicional suma 400 USD, y menos de 1 m³ se cobra en proporción. Para cargas muy grandes o mercadería de mucho valor, el área de precios confirma la tarifa. A Ecuador el valor depende de la mercancía, porque se suman los impuestos de cada producto: si me pasas los datos de tu proveedor, el área de precios te prepara la cotización.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "pricing",
-  "pedir": "precio por unidad que te dio el proveedor, unidades por caja, CBM o medidas de la caja, y cuántas unidades piensas comprar",
+  "pasar_a": "",
+  "pedir": "",
   "no_decir": [
-   "Ninguna tarifa por metro cúbico, ni la que el alumno oyó en clase: las clases dan cifras distintas.",
-   "No confirmar ni corregir la cifra que escribe el alumno."
+   "En Ecuador no dar tarifa por metro cúbico: depende de la mercancía.",
+   "No confirmar ni corregir otras cifras que el alumno oyó en clase."
   ],
   "fuentes": [
    "ENTRENAMIENTO_FRONT/decisiones.json · punto 2",
    "PORTAL_PUESTOS/plantillas/propuestas/p05.json (pendiente)",
-   "ENTRENAMIENTO_FRONT/banco.json · B39"
+   "ENTRENAMIENTO_FRONT/banco.json · B39",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
+  ],
+  "pasar_a_antes": "pricing"
+ },
+ {
+  "id": "flete-ecuador",
+  "tema": "cotización",
+  "pais": "ec",
+  "preguntas": [
+   "a como esta el flete a ecuador",
+   "cuanto cuesta el metro cubico a ecuador",
+   "cuanto cuesta el metro cubico",
+   "cual es la tarifa por cbm",
+   "precio del flete maritimo",
+   "cuanto cobran por traer un cbm a ecuador"
+  ],
+  "respuesta_base": "A Ecuador el valor depende de la mercancía, porque se suman los impuestos de cada producto. Te ayudo a juntar los datos para que el área de precios te prepare la cotización. Sirve una captura de lo que te mandó tu proveedor o la proforma.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "pricing",
+  "pedir": "el producto (foto, nombre o enlace); cuántas unidades piensas comprar; el precio por unidad que te dio el proveedor (EXW más envío a Yiwu); cuántas unidades vienen en cada caja; el volumen de la caja (CBM) o sus medidas; el peso, si lo tiene",
+  "no_decir": [
+   "En Ecuador no dar tarifa por metro cúbico ni «más o menos cuánto sale»: depende de la mercancía.",
+   "No dar la tarifa de México como si fuera de Ecuador.",
+   "No prometer en cuánto tiempo llega la cotización."
+  ],
+  "junta_datos": true,
+  "fuentes": [
+   "Daniel, audio del 26-oct-2026 (punto 2: a Ecuador el área de precios arma la propuesta)",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
   ]
  },
  {
@@ -1730,7 +1812,7 @@
   "respuesta_base": "En carga grupal se puede enviar desde una sola caja. El valor para tu caso lo confirma el área de precios con tu cotización.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "pricing",
+  "pasar_a": "",
   "pedir": "los 3 datos del proveedor y cuántas unidades piensas comprar",
   "no_decir": [
    "No decir un cobro mínimo (medio metro cúbico, un metro cúbico): no hay dato oficial.",
@@ -1739,7 +1821,9 @@
   "fuentes": [
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `carga-grupal`",
    "PORTAL_PUESTOS/plantillas/propuestas/p22.json (pendiente: falta el dato del cobro mínimo)"
-  ]
+  ],
+  "pasar_a_antes": "pricing",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "cbm-de-la-caja-no-de-la-unidad",
@@ -1812,7 +1896,7 @@
    "cuanto me cuesta traer mi producto puesto aqui",
    "quiero saber cuanto me sale todo"
   ],
-  "respuesta_base": "La Calculadora de importación está en la plataforma, en «Importaciones». Eliges el país (Ecuador, México o Colombia), agregas cada producto con su precio, unidades por caja, número de cajas y medidas o CBM de la caja, y te calcula flete, aranceles e IVA y el total de tu importación. Es una referencia para decidir: el valor final es el de tu cotización del área de precios.",
+  "respuesta_base": "La Calculadora de importación está en la plataforma, en «Importaciones». Eliges el país (Ecuador o México), agregas cada producto con su precio, unidades por caja, número de cajas y medidas o CBM de la caja, y te calcula flete, aranceles e IVA y el total de tu importación. Es una referencia para decidir: el valor final es el de tu cotización del área de precios.",
   "pasos": [],
   "enlace": "https://imporfactory.app/calculadora",
   "pasar_a": "",
@@ -1820,10 +1904,12 @@
   "no_decir": [
    "No mandar un enlace ni un archivo de calculadora: no está definido cuál es la oficial (la de la plataforma o el Excel).",
    "No hacer el costeo en el chat.",
-   "tarifas o porcentajes de memoria"
+   "tarifas o porcentajes de memoria",
+   "No mencionar Colombia ni otros destinos: la carga grupal es a Ecuador y México."
   ],
   "fuentes": [
-   "PORTAL_PUESTOS/plantillas/propuestas/p43.json y p64.json (pendientes; duda abierta sobre cuál es la calculadora oficial)"
+   "PORTAL_PUESTOS/plantillas/propuestas/p43.json y p64.json (pendientes; duda abierta sobre cuál es la calculadora oficial)",
+   "Daniel, audio del 28-oct-2026 (preguntas de la auditoría: buró, Colombia, sábado)"
   ]
  },
  {
@@ -1836,12 +1922,20 @@
    "cuando cierran la carga",
    "cada cuanto sale contenedor",
    "alcanzo a la proxima salida",
-   "cuando es el corte"
+   "cuando es el corte",
+   "cuando hacen la proxima importacion grupal desde china",
+   "cuando tienen previsto salir el nuevo contenedor",
+   "tienen las fechas de embarque para ver a cual avanzo",
+   "el proximo container sale a finales de este mes",
+   "hasta cuando puedo mandar mi carga a la bodega de china",
+   "cuando es el proximo embarque",
+   "que fechas sale el contenedor",
+   "cuando sale el contenedor a mexico o a ecuador"
   ],
   "respuesta_base": "Hay dos salidas al mes desde China: una entre el 12 y el 17, y otra entre el 29 y el 31. Lo que llegue a la bodega después del corte sube al siguiente contenedor.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "logística",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No dar la fecha exacta de la próxima salida ni hasta qué día recibe la bodega.",
@@ -1849,8 +1943,11 @@
    "No sumar días de tránsito ni de aduana."
   ],
   "fuentes": [
-   "PORTAL_PUESTOS/plantillas/propuestas/p17.json (aprobada, texto_final; falta el dato de cuántos días antes recibe la bodega)"
-  ]
+   "PORTAL_PUESTOS/plantillas/propuestas/p17.json (aprobada, texto_final; falta el dato de cuántos días antes recibe la bodega)",
+   "2026-10-28: frases de 4 chats reales del 27-oct que pasaron a logística (pedido de Daniel «las fechas del próximo contenedor»)"
+  ],
+  "pasar_a_antes": "logística",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "varios-proveedores-un-envio",
@@ -1897,7 +1994,7 @@
   "respuesta_base": "Cuando tu carga llega a la bodega de destino se coordina la entrega. Si estás en una ciudad principal (Quito, Guayaquil o Ciudad de México) no hay flete interno; si es otra ciudad, se cotiza el envío o puedes retirar en la bodega. Los retiros en bodega son de lunes a viernes, de 8:00 a 17:00.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "logística",
+  "pasar_a": "",
   "pedir": "marca de envío o número de cotización, y la ciudad donde quieres recibir",
   "no_decir": [
    "No dar la dirección de la bodega: el dato oficial está pendiente.",
@@ -1910,7 +2007,9 @@
    "PORTAL_PUESTOS/plantillas/propuestas/p23.json (pendiente: falta dirección y horario)",
    "ENTRENAMIENTO_FRONT/tutoriales.json · tramo M09 y M12 (avisos)",
    "Daniel, 25-oct: «los retiros de bodega son de lunes a viernes de 8am a 5pm»"
-  ]
+  ],
+  "pasar_a_antes": "logística",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "fotos-en-bodega-china",
@@ -1951,7 +2050,7 @@
   "respuesta_base": "En la carga grupal IMPORFACTORY recibe tu mercadería en su bodega de Yiwu, la trae y la entrega en el país de destino.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "logística",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No afirmar qué trámites de aduana están incluidos ni cuáles se cobran aparte: falta la confirmación oficial.",
@@ -1961,7 +2060,9 @@
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `carga-grupal`",
    "PORTAL_PUESTOS/plantillas/propuestas/p63.json (pendiente: falta el dato)",
    "ENTRENAMIENTO_FRONT/decisiones.json · punto 8"
-  ]
+  ],
+  "pasar_a_antes": "logística",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "registro-de-importador",
@@ -1980,19 +2081,20 @@
    "que es el padron de importadores",
    "necesito numero de patente de agente aduanal"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Si estás empezando no necesitas RUC (Ecuador) ni RFC (México): puedes importar desde una caja a nombre de nuestras comercializadoras en los dos países. Si tu importación ya es más grande, sí conviene tener tu RUC o tu RFC.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "asesor",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "No decir «no necesitas RUC ni registro» ni «la empresa te lo tramita»: falta la regla oficial para Ecuador y para México.",
    "No decir «no te preocupes del SRI»."
   ],
   "fuentes": [
    "PORTAL_PUESTOS/plantillas/propuestas/p25.json (pendiente: falta el dato)",
-   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo G02 y M13 (avisos)"
-  ]
+   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo G02 y M13 (avisos)",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "asesor"
  },
  {
   "id": "avion-o-courier",
@@ -2079,12 +2181,12 @@
   "pedir": "",
   "no_decir": [
    "No prometer ventas ni ingresos.",
-   "No ofrecer fulfillment ni dar su tarifa.",
-   "No dar días de tránsito."
+   "No ofrecer fulfillment ni dar su tarifa."
   ],
   "fuentes": [
    "ENTRENAMIENTO_FRONT/tutoriales.json · tramo M08 y M14 (avisos)",
-   "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `ideas-y-plantillas`"
+   "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `ideas-y-plantillas`",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
   ]
  },
  {
@@ -2153,21 +2255,22 @@
    "puedo diferir el pago",
    "tienen link de pago"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Sí, aceptamos tarjeta, con un recargo del 3 %.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "contabilidad",
-  "pedir": "número de cotización",
+  "pasar_a": "",
+  "pedir": "",
   "no_decir": [
-   "No decir que sí se puede ni el recargo: en clase y en los chats se dijeron 3 % y 6 %.",
    "No ofrecer diferidos.",
    "No mandar enlaces de pago."
   ],
   "fuentes": [
    "ENTRENAMIENTO_FRONT/decisiones.json · punto 7",
    "PORTAL_PUESTOS/plantillas/propuestas/p28.json (pendiente: falta el recargo oficial)",
-   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo G03 (aviso)"
-  ]
+   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo G03 (aviso)",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "contabilidad"
  },
  {
   "id": "cuanto-y-cuando-pago",
@@ -2178,8 +2281,7 @@
    "cuando pago el flete",
    "cuando se pagan los impuestos",
    "es 50 y 50",
-   "cuanto es el primer pago",
-   "cuanto debo"
+   "cuanto es el primer pago"
   ],
   "respuesta_base": "",
   "pasos": [],
@@ -2188,12 +2290,13 @@
   "pedir": "número de cotización",
   "no_decir": [
    "No decir cuántos pagos son, de cuánto ni cuándo vence cada uno: falta la regla oficial.",
-   "No dar saldos."
+   "Los saldos solo los da la herramienta de pagos (ficha pago-estado-de-mi-cuenta); nunca calcularlos."
   ],
   "fuentes": [
    "PORTAL_PUESTOS/plantillas/propuestas/p30.json (pendiente: falta la regla oficial de pagos)",
    "ENTRENAMIENTO_FRONT/tutoriales.json · tramo G01 y E09 (avisos)",
-   "ENTRENAMIENTO_FRONT/decisiones.json · punto 7"
+   "ENTRENAMIENTO_FRONT/decisiones.json · punto 7",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
   ]
  },
  {
@@ -2215,14 +2318,15 @@
   "pasar_a": "contabilidad",
   "pedir": "número de cotización, si ya la tienes",
   "no_decir": [
-   "No decir recargos, comisiones ni impuesto a la salida de divisas: se dijeron de memoria y no coinciden.",
+   "No decir comisiones del pago por el agente en China: no hay dato oficial.",
    "No decir que el agente «garantiza» entrega o calidad.",
    "No recomendar pagar con criptomonedas."
   ],
   "fuentes": [
    "PORTAL_PUESTOS/plantillas/propuestas/p13.json (aprobada, texto_final)",
    "ENTRENAMIENTO_FRONT/tutoriales.json · tramo P08 y G04 (avisos)",
-   "ENTRENAMIENTO_FRONT/decisiones.json · punto 7"
+   "ENTRENAMIENTO_FRONT/decisiones.json · punto 7",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
   ]
  },
  {
@@ -2263,18 +2367,19 @@
    "como compro usdt para pagar",
    "me conviene pagar en cripto"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Sí puedes pagar con criptomoneda, pero el valor y las cuentas se los pides personalmente a tu asesor.",
   "pasos": [],
   "enlace": "",
   "pasar_a": "contabilidad",
   "pedir": "",
   "no_decir": [
-   "No decir que se aceptan criptomonedas (en clase se dijo «yo creo que sí»).",
+   "No dar cuentas, billeteras ni valores.",
    "No dar consejos de dinero ni de criptomonedas: ni comprar, ni cambiar, ni por dónde."
   ],
   "fuentes": [
    "ENTRENAMIENTO_FRONT/decisiones.json · punto 5 y 7",
-   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo G03 (aviso)"
+   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo G03 (aviso)",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
   ]
  },
  {
@@ -2317,18 +2422,20 @@
   "respuesta_base": "En Ecuador una importación paga IVA, FODINFA y el arancel, que cambia según el producto. El valor exacto para tu producto va en tu cotización.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "pricing",
+  "pasar_a": "",
   "pedir": "los 3 datos del proveedor y cuántas unidades piensas comprar",
   "no_decir": [
-   "No dar porcentajes: la respuesta con cifras está sin aprobar.",
-   "No mencionar el impuesto a la salida de divisas.",
+   "No dar porcentajes de IVA, FODINFA ni arancel: la respuesta con cifras está sin aprobar.",
    "No dar aranceles de ropa, textiles ni de ningún producto."
   ],
   "fuentes": [
    "ENTRENAMIENTO_FRONT/tutoriales.json · tramo C08 (lección 375)",
    "ENTRENAMIENTO_FRONT/banco.json · B35",
-   "PORTAL_PUESTOS/plantillas/propuestas/p60.json (pendiente)"
-  ]
+   "PORTAL_PUESTOS/plantillas/propuestas/p60.json (pendiente)",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
+  ],
+  "pasar_a_antes": "pricing",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "impuestos-mexico",
@@ -2341,21 +2448,22 @@
    "cuanto es el arancel a mexico",
    "tengo que pagar igi"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "En carga grupal a México el precio ya incluye los impuestos y el IVA: no pagas nada aparte.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "pricing",
-  "pedir": "los 3 datos del proveedor y cuántas unidades piensas comprar",
+  "pasar_a": "",
+  "pedir": "",
   "no_decir": [
-   "No decir que el precio por metro cúbico «ya incluye los impuestos»: está sin aprobar y no se sabe si incluye el IVA.",
-   "No explicar lo de México como un «acuerdo» con la aduana.",
-   "No dar porcentajes."
+   "No dar porcentajes de arancel.",
+   "No explicar lo de México como un «acuerdo» con la aduana."
   ],
   "fuentes": [
    "PORTAL_PUESTOS/plantillas/propuestas/p61.json (pendiente: falta el dato)",
    "ENTRENAMIENTO_FRONT/tutoriales.json · tramo C09 y C15 (avisos)",
-   "ENTRENAMIENTO_FRONT/decisiones.json · punto 6"
-  ]
+   "ENTRENAMIENTO_FRONT/decisiones.json · punto 6",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "pricing"
  },
  {
   "id": "arancel-de-mi-producto",
@@ -2426,20 +2534,21 @@
    "me cobran el 5 por ciento por pagar afuera",
    "el primer pago al exterior no paga isd?"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Sí: todo pago que sale desde Ecuador al exterior paga el 5 % de impuesto a la salida de divisas (ISD).",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "contabilidad",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "No dar el porcentaje ni decir cuándo aplica.",
-   "No repetir que «el primer pago al exterior no paga»: se dijo en clase sin respaldo."
+   "No repetir que «el primer pago al exterior no paga»."
   ],
   "fuentes": [
    "ENTRENAMIENTO_FRONT/decisiones.json · punto 7",
    "ENTRENAMIENTO_FRONT/tutoriales.json · tramo G04 (aviso)",
-   "PORTAL_PUESTOS/plantillas/propuestas/p60.json (duda abierta)"
-  ]
+   "PORTAL_PUESTOS/plantillas/propuestas/p60.json (duda abierta)",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "contabilidad"
  },
  {
   "id": "muestra-paga-impuestos",
@@ -2449,20 +2558,24 @@
    "la muestra paga impuestos",
    "dhl me quiere cobrar impuestos por la muestra",
    "me llego un cobro de aduana por mi muestra",
-   "que es entregado sin impuestos"
+   "que es entregado sin impuestos",
+   "cuanto cuesta traer una muestra por dhl",
+   "cuanto cobra dhl por nacionalizar una muestra"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Sí, pero poco. Una muestra por DHL suele costar unos 25 a 50 USD de nacionalización, más un impuesto pequeño que te pueden cobrar. Si la muestra viene como «sin valor comercial», solo pagas la nacionalización a DHL.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "asesor",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "No decir que las muestras «no pagan impuestos» ni que sí pagan: en clase se dijo de las dos formas.",
-   "No dar montos."
+   "No prometer que la muestra no paga nada."
   ],
   "fuentes": [
-   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo P06 y C20 (avisos)"
-  ]
+   "ENTRENAMIENTO_FRONT/tutoriales.json · tramo P06 y C20 (avisos)",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
+  ],
+  "pasar_a_antes": "asesor"
  },
  {
   "id": "permisos-del-producto",
@@ -2506,20 +2619,22 @@
    "si le quito la marca pasa?",
    "puedo traer perfumes de marca"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Por ahora no traemos réplicas ni productos de marca sin autorización del dueño de la marca.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "líder comercial",
-  "pedir": "foto y descripción del producto",
+  "pasar_a": "",
+  "pedir": "",
   "no_decir": [
-   "Ni «sí» ni «no» ni «solo sin marca».",
-   "Nunca ofrecer atajos: quitar la marca, cambiar el empaque, declararlo distinto o traerlo por otra vía."
+   "Nunca ofrecer atajos: quitar la marca, cambiar el empaque, declararlo distinto o traerlo por otra vía.",
+   "No recomendar agentes ni terceros para traer réplicas."
   ],
   "fuentes": [
    "ENTRENAMIENTO_FRONT/decisiones.json · punto 5",
    "ENTRENAMIENTO_FRONT/banco.json · B26",
-   "PORTAL_PUESTOS/plantillas/propuestas/p35.json (pendiente)"
-  ]
+   "PORTAL_PUESTOS/plantillas/propuestas/p35.json (pendiente)",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "líder comercial"
  },
  {
   "id": "maquinaria-y-materia-prima",
@@ -2669,7 +2784,7 @@
   "respuesta_base": "Si tu plataforma se ve distinta a la de las clases o no encuentras el curso, lo más probable es que hayas entrado a la plataforma antigua. La actual es imporfactory.app.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "asesor",
+  "pasar_a": "",
   "pedir": "el correo con el que te registraste",
   "no_decir": [
    "No mandar otros enlaces de ingreso: circulan dos distintos."
@@ -2678,7 +2793,9 @@
    "ENTRENAMIENTO_FRONT/banco.json · B70",
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `entrar-a-la-plataforma`",
    "PORTAL_PUESTOS/plantillas/propuestas/p37.json (duda abierta sobre el enlace oficial)"
-  ]
+  ],
+  "pasar_a_antes": "asesor",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "cuenta-suspendida",
@@ -2701,12 +2818,13 @@
   "pasar_a": "contabilidad",
   "pedir": "el correo con el que te registraste y, si ya pagaste, el comprobante",
   "no_decir": [
-   "No decir cuánto debe ni cuántas cuotas.",
+   "Lo que debe y sus cuotas, solo como lo entrega la herramienta de pagos; nunca calcularlos.",
    "No prometer cuándo se reactiva."
   ],
   "fuentes": [
    "PORTAL_PUESTOS/plantillas/propuestas/p66.json (pendiente)",
-   "ENTRENAMIENTO_FRONT/GUIA_DEL_ASESOR.md · «6 · Plataforma y clases» (cuenta suspendida → contabilidad)"
+   "ENTRENAMIENTO_FRONT/GUIA_DEL_ASESOR.md · «6 · Plataforma y clases» (cuenta suspendida → contabilidad)",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
   ]
  },
  {
@@ -2752,7 +2870,7 @@
   "respuesta_base": "El equipo no te va a llamar a pedir códigos, y nunca se piden claves ni firma electrónica por chat. La atención es solo por esta línea oficial.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "asesor",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No pedir ni repetir códigos o claves.",
@@ -2762,7 +2880,9 @@
    "ENTRENAMIENTO_FRONT/CURSO_ASESOR_FRONT.md · «1 · Tu puesto» (cita de Daniel, Bienvenida ciclo octubre)",
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `pagos`",
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · ficha `numero-personal`"
-  ]
+  ],
+  "pasar_a_antes": "asesor",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "como-son-las-clases",
@@ -2891,20 +3011,19 @@
    "a que hora abren",
    "atienden feriados"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Atendemos de lunes a viernes, de 8:00 a 17:00. Igual puedes escribirme tus consultas a cualquier hora y te ayudo en ese momento.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "asesor",
+  "pasar_a": "",
   "pedir": "",
-  "no_decir": [
-   "No dar horario ni decir a qué hora abre el equipo: falta el horario oficial (en clase se dijo uno y el plan nuevo trae otro).",
-   "Solo «un asesor te escribe apenas abramos»."
-  ],
+  "no_decir": [],
   "fuentes": [
    "ENTRENAMIENTO_FRONT/decisiones.json · punto 9",
    "PORTAL_PUESTOS/plantillas/propuestas/p46.json (pendiente: falta el dato)",
-   "AGENTE_24_7/prompt_agente_expertos_v1.txt · regla de forma 8"
-  ]
+   "AGENTE_24_7/prompt_agente_expertos_v1.txt · regla de forma 8",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "asesor"
  },
  {
   "id": "premios-y-promesas-de-clase",
@@ -2945,14 +3064,16 @@
   "respuesta_base": "Por este chat cada cliente recibe solo lo suyo.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "asesor",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "Nunca dar datos de otro cliente: ni cargas, ni pagos, ni cotizaciones, ni contactos."
   ],
   "fuentes": [
    "IMPORSUIT origin/main:Class/ConocimientoFront.php · NO_HACER («Cada cliente recibe solo lo suyo»)"
-  ]
+  ],
+  "pasar_a_antes": "asesor",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "consejos-de-dinero",
@@ -2965,20 +3086,22 @@
    "cuanto voy a ganar",
    "es buen negocio importar esto"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "No damos consejos de inversión ni de crédito. Sí te puedo ayudar a calcular el costeo de un producto que te interese, y en la bóveda de productos tienes ideas de qué es lo que más conviene traer.",
   "pasos": [],
-  "enlace": "",
-  "pasar_a": "asesor",
+  "enlace": "https://imporfactory.app/ideas-productos",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "No dar consejos de dinero, de crédito ni de criptomonedas.",
-   "No prometer ganancias ni decir cuánto «se gana»."
+   "No prometer ganancias ni decir cuánto «se gana».",
+   "No opinar sobre préstamos, dólares ni criptomonedas."
   ],
   "fuentes": [
    "ENTRENAMIENTO_FRONT/decisiones.json · punto 5",
    "AGENTE_24_7/prompt_agente_expertos_v1.txt · «Lo que nunca haces»",
-   "ENTRENAMIENTO_FRONT/banco.json · B16"
-  ]
+   "ENTRENAMIENTO_FRONT/banco.json · B16",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "asesor"
  },
  {
   "id": "no-he-recibido-respuesta",
@@ -3281,17 +3404,19 @@
    "que pongo en sitio web del negocio",
    "puedo poner el link de otra tienda"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "No te preocupes: si aún no tienes página web, puedes usar tu página de Facebook o cualquier red social de tu negocio.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=874",
-  "pasar_a": "ecommerce",
-  "pedir": "el correo con el que te registraste y en qué paso estás",
+  "pasar_a": "",
+  "pedir": "",
   "no_decir": [
-   "No decir que ponga la página de otra tienda ni el catálogo de IMPORSHOP como si fuera suyo: los videos se contradicen y está en revisión."
+   "No decir que ponga la página de otra tienda ni el catálogo de IMPORSHOP como si fuera suyo."
   ],
   "fuentes": [
-   "ENTRENAMIENTO_ECOMMERCE/notas/m1_ecosistema.md · §5 (sitio web: tres versiones) y §6"
-  ]
+   "ENTRENAMIENTO_ECOMMERCE/notas/m1_ecosistema.md · §5 (sitio web: tres versiones) y §6",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "ecommerce"
  },
  {
   "id": "eco-cuenta-publicitaria",
@@ -3512,7 +3637,7 @@
   "respuesta_base": "Calentar el número es darle actividad real antes de usarlo para vender: mandar y recibir mensajes, guardar contactos y subir estados.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=848",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No decir cuántos días ni cuántos mensajes: ningún video lo dice.",
@@ -3521,7 +3646,9 @@
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m1_ecosistema.json · m1_07 «CONFIGURA TU CUENTA DE WHATSAPP BUSINESS»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m1_ecosistema.md · §4 y §7 (hueco: cuánto tiempo)"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "eco-google-maps",
@@ -3561,7 +3688,7 @@
   "respuesta_base": "En el Dropsystem se vende por WhatsApp con el agente de IA; Shopify no se toca al inicio. La lección «Crea tu tienda con IA» te deja el nombre, el logo y la descripción, no una tienda en línea.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No decir que el curso tiene lecciones de Shopify o de landing: no hay ninguna.",
@@ -3571,7 +3698,9 @@
    "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §4 («Shopify y Aliclik no se tocan al inicio», sep_02 01:06:27)",
    "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §2.1 (≈ 28 chats; ningún video)",
    "ENTRENAMIENTO_ECOMMERCE/notas/m1_ecosistema.json · m1_01 «CREA TU TIENDA CON INTELIGENCIA ARTIFICIAL»"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "eco-me-lo-configuran-ustedes",
@@ -3662,7 +3791,7 @@
   "respuesta_base": "Los pasos son los mismos, eligiendo tu país, tu zona horaria y tu divisa. Dos diferencias dichas en clase: al conectar el número se escribe 52, luego 1 y luego tu número, y los beneficios de Dropi México los activa el equipo.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "el correo con el que te registraste y en qué paso estás",
   "no_decir": [
    "No dar umbrales de campaña en pesos, lista de estados sin contraentrega ni paqueterías: no hay dato.",
@@ -3673,7 +3802,9 @@
    "ENTRENAMIENTO_ECOMMERCE/notas/m1_ecosistema.md · §7",
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.md · §7",
    "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §6, punto 12"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ia-crear-cuenta-imporchat",
@@ -3685,7 +3816,9 @@
    "imporchat me pide pagar desde el primer dia",
    "como entro a imporchat",
    "con que correo entro a imporchat",
-   "me cobro imporchat y no debia"
+   "me cobro imporchat y no debia",
+   "donde esta el enlace para crear mi cuenta de imporchat",
+   "link para registrarme en imporchat"
   ],
   "respuesta_base": "A IMPORCHAT se entra desde el botón «IMPORCHAT» de la plataforma, nunca por fuera: la primera vez crea tu cuenta sola y te da los beneficios de la comunidad. El registro pide un método de pago para «Empezar prueba». Si te quiere cobrar desde el primer día, lo más probable es que hayas entrado por fuera de la plataforma.",
   "pasos": [
@@ -3695,10 +3828,9 @@
    "Registra el método de pago y da en «Empezar prueba»."
   ],
   "enlace": "https://imporfactory.app/cursos/32?contenido=651",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "el correo con el que te registraste (solo si ya te cobró o no te deja entrar)",
   "no_decir": [
-   "No decir el precio de IMPORCHAT ni cuánto dura la prueba: no hay dato oficial.",
    "No pedir ni recibir datos de tarjeta.",
    "No prometer devoluciones de un cobro."
   ],
@@ -3706,8 +3838,11 @@
    "ENTRENAMIENTO_ECOMMERCE/notas/m2_agente_ia.json · m2_01 «CREA TU CUENTA EN IMPORCHAT»",
    "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §3 y §4 (sep_02 00:35:26)",
    "ENTRENAMIENTO_ECOMMERCE/notas/m2_agente_ia.md · §6 y §7",
-   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §5, fila 8"
-  ]
+   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §5, fila 8",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ia-precio-de-imporchat",
@@ -3724,18 +3859,44 @@
    "pague un plan de imporchat en la cuenta equivocada",
    "como cancelo el plan de imporchat que pague"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "IMPORCHAT cuesta 49 USD al mes; para alumnos el precio es de 29 USD al mes. Y recuerda que al entrar tienes 3 meses gratis.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "No dar precio, duración de la prueba ni cómo cancelar: ningún video lo dice y en clase se dijeron cifras distintas."
+   "No explicar cómo cancelar: eso lo ve su asesor."
   ],
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m2_agente_ia.md · §7 (hueco)",
    "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §5 (costos) y §7",
-   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §5, fila 8, y §6, punto 8"
+   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §5, fila 8, y §6, punto 8",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "ecommerce"
+ },
+ {
+  "id": "ia-imporchat-en-otros-paises",
+  "tema": "ecommerce-agente-ia",
+  "pais": "todos",
+  "preguntas": [
+   "imporchat funciona en colombia",
+   "puedo usar el bot en colombia",
+   "el bot de imporchat sirve en otro pais",
+   "en que paises funciona imporchat",
+   "soy de peru puedo usar imporchat",
+   "imporchat sirve fuera de ecuador y mexico"
+  ],
+  "respuesta_base": "Sí, IMPORCHAT y su bot de IA se pueden usar en cualquier país, también en Colombia.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "",
+  "pedir": "",
+  "no_decir": [
+   "No confundir con la carga grupal: la carga grupal desde China es solo a Ecuador y México."
+  ],
+  "fuentes": [
+   "Daniel, audio del 28-oct-2026 (preguntas de la auditoría: buró, Colombia, sábado)"
   ]
  },
  {
@@ -3806,14 +3967,16 @@
   "respuesta_base": "Cuando se queda en «procesando conexión» suele haber una ventana del navegador abierta detrás: búscala y sigue los pasos ahí.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=654",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "el correo con el que te registraste (solo si sigue sin conectar)",
   "no_decir": [
    "No prometer que con eso se resuelve."
   ],
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §3 (sep_02 00:59:53)"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ia-numero-mexico-no-conecta",
@@ -3828,14 +3991,16 @@
   "respuesta_base": "Para México el número se escribe con 52, luego 1 y luego tu número. Si ya lo habías creado mal, edita la tarjeta de la conexión o elimínala y créala de nuevo.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=654",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "el correo con el que te registraste (solo si sigue sin conectar)",
   "no_decir": [
    "No dar más reglas para México: no hay video."
   ],
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §3 y §4 (sep_02 01:00:55)"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ia-enlace-valido-sitio-web",
@@ -3908,7 +4073,7 @@
    "Da en «Editar», enciende el bot y «Guardar»."
   ],
   "enlace": "https://imporfactory.app/cursos/32?contenido=655",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "el correo con el que te registraste (solo si ya revisaste las tres cosas)",
   "no_decir": [
    "No decir cuánto dura una recarga ni cuántas respuestas da.",
@@ -3918,7 +4083,9 @@
    "ENTRENAMIENTO_ECOMMERCE/notas/m2_agente_ia.json · m2_03 «CONECTAR IMPORCHAT CON OPEN IA»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m2_agente_ia.md · §3 y §4",
    "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §3"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ia-openai-llave-y-saldo",
@@ -3997,7 +4164,7 @@
   "respuesta_base": "La tarjeta se pone en dos lugares de Meta: en la cuenta de WhatsApp y en la cuenta publicitaria. La lección muestra dónde está cada uno.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=661",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No decir qué tarjeta sirve ni qué hacer si la rechaza: ningún video lo contesta.",
@@ -4007,7 +4174,9 @@
    "ENTRENAMIENTO_ECOMMERCE/notas/m2_agente_ia.json · m2_04 «CONFIGURA MÉTODOS DE PAGO»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m2_agente_ia.md · §1",
    "ENTRENAMIENTO_ECOMMERCE/notas/m1_ecosistema.md · §7"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ia-fanpage-instagram-al-portafolio",
@@ -4237,7 +4406,7 @@
   "respuesta_base": "Si una regla de «Personalizar prompt» no se cumple, es porque choca con el prompt: hay que editar esa interacción en el prompt completo. Un cambio de prompt tarda unos minutos en aplicarse. Si el cliente compra y no cambia de columna, revisa que no se hayan borrado las etiquetas del prompt.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=869",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "el correo con el que te registraste y qué le pediste al bot",
   "no_decir": [
    "No reescribirle el prompt.",
@@ -4246,7 +4415,9 @@
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m2_agente_ia.json · m2_15 «OPTIMIZA Y PERSONALIZA EL PROMPT DE TU BOT»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m2_agente_ia.md · §3"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ia-apagar-el-bot",
@@ -4448,17 +4619,19 @@
    "como agrego a alguien de mi equipo a imporchat",
    "puedo usar imporchat sin dropi"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Para publicar un producto propio que no está en Dropi, busca en YouTube «cómo publicar un producto en Dropi»: ahí hay videos con el paso a paso.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "No improvisar: ningún video lo contesta."
+   "No improvisar pasos."
   ],
   "fuentes": [
-   "ENTRENAMIENTO_ECOMMERCE/notas/m2_agente_ia.md · §7 (hueco)"
-  ]
+   "ENTRENAMIENTO_ECOMMERCE/notas/m2_agente_ia.md · §7 (hueco)",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "ecommerce"
  },
  {
   "id": "prod-precio-de-proveedor",
@@ -4558,7 +4731,7 @@
   "respuesta_base": "El precio de la calculadora se compara con el de la competencia en la biblioteca de anuncios. Si la calculadora te da un poco más que la competencia, la lección muestra que se baja un poco el margen para quedar en un precio parecido.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=771",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No decir a qué precio venderlo.",
@@ -4568,7 +4741,9 @@
    "ENTRENAMIENTO_ECOMMERCE/notas/m3_producto.json · m3_02 «COSTEA Y VALIDA LA OFERTA DEL PRODUCTO»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m3_producto.json · m3_05 «MIDE TUS MÉTRICAS CON LA CALCULADORA DE COSTEO»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m3_producto.md · §3"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "prod-calculadora-kill-marginal",
@@ -4584,7 +4759,7 @@
   "respuesta_base": "El simulador de la calculadora da tres veredictos según tu costo por mensaje y tu porcentaje de cierre: «en target» (mantener), «marginal» (ajustado) y «kill» (apagar).",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=758",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "producto, presupuesto diario, cuántos anuncios tienes, cuánto te cuesta cada mensaje y si tu WhatsApp ya está conectado a IMPORCHAT",
   "no_decir": [
    "No decidir por él si apaga o mantiene.",
@@ -4593,7 +4768,9 @@
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m3_producto.json · m3_05 «MIDE TUS MÉTRICAS CON LA CALCULADORA DE COSTEO»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m3_producto.md · §4 y §5"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "prod-combos-y-ofertas",
@@ -4629,19 +4806,20 @@
    "cuantos pedidos se devuelven",
    "por que me rechazan tanto"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Sí, es normal. En Ecuador la devolución promedio es del 30 % y en México del 45 %. Con una buena logística puedes subir tu entrega hasta un 80 % en Ecuador y un 65 % en México. Eso tiene que estar en tu costeo: usa la calculadora.",
   "pasos": [],
-  "enlace": "https://imporfactory.app/cursos/32?contenido=758",
-  "pasar_a": "ecommerce",
+  "enlace": "https://imporfactory.app/calculadora",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "No dar una tasa de entrega ni de devolución «normal»: el video dice dos cosas distintas.",
    "No decir «no vas a perder dinero con las devoluciones»."
   ],
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m3_producto.md · §5 (devolución)",
-   "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §6"
-  ]
+   "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §6",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "ecommerce"
  },
  {
   "id": "prod-que-producto-vendo",
@@ -4657,7 +4835,7 @@
   "respuesta_base": "Una alternativa para elegir es el catálogo de IMPORSHOP: cada producto tiene una pestaña «Material» con anuncios listos, imágenes para la landing e imágenes reales.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=774",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No recomendar un producto ni decir que «se vende seguro», «está validado» o «testeado».",
@@ -4667,7 +4845,9 @@
    "ENTRENAMIENTO_ECOMMERCE/notas/m3_producto.json · m3_09 «CATÁLOGO DE PRODUCTOS IMPORSHOP»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m3_producto.md · §6",
    "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §5, fila 13"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "prod-catalogo-y-stock",
@@ -4945,7 +5125,7 @@
   "respuesta_base": "Cuando completas los módulos 1 y 2 del Dropsystem se desbloquea en la plataforma «Agenda tu implementación»: es la sesión para acompañarte a lanzar tu primera campaña, y la agendas tú desde ahí.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=737",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "el correo con el que te registraste (solo si ya completaste los módulos 1 y 2 y no te aparece)",
   "no_decir": [
    "No decir que el equipo le publica o le configura la campaña.",
@@ -4955,7 +5135,9 @@
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §1.2 (mentoría de implementación) y §3, momento 5",
    "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §1, punto 14, y §4"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "camp-crear-primera-campana",
@@ -5000,19 +5182,44 @@
    "alcanza con 5 dolares",
    "pongo el presupuesto en la campana o en el conjunto"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Te recomendamos un presupuesto de 4 a 5 USD al día. Puedes empezar incluso con menos; depende mucho de cuántos mensajes te estén llegando.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=737",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "Ningún monto de presupuesto: el tutorial y las clases no coinciden (ni en cuánto, ni en si va en la campaña o en el conjunto).",
-   "No recomendar montos ni prometer retorno."
+   "No prometer retorno."
   ],
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.md · §5 (presupuesto y con cuánto empezar) y §6",
-   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §5, fila 9, y §6, punto 3"
-  ]
+   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §5, fila 9, y §6, punto 3",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "ecommerce"
+ },
+ {
+  "id": "camp-pagar-meta-por-anuncio",
+  "tema": "ecommerce-campañas",
+  "pais": "todos",
+  "preguntas": [
+   "hay que pagarle a meta por un anuncio nuevo",
+   "cada anuncio se paga aparte",
+   "tengo que pagar por cada anuncio",
+   "si creo otro anuncio pago otra vez",
+   "como se le paga a meta por los anuncios"
+  ],
+  "respuesta_base": "Sí. A cada anuncio le pones un presupuesto, y con ese presupuesto se le paga a Meta.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "",
+  "pedir": "",
+  "no_decir": [
+   "No prometer retorno."
+  ],
+  "fuentes": [
+   "Daniel, 27-oct-2026 (respuestas a las FAQ) · texto aprobado por Daniel el 27-oct"
+  ],
+  "pasar_a_antes": "ecommerce"
  },
  {
   "id": "camp-zonas-que-excluyo",
@@ -5028,7 +5235,7 @@
   "respuesta_base": "En Ecuador la lección excluye Galápagos. Para México se excluyen los estados sin contraentrega, pero no hay una lista publicada.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=737",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No dar una lista de estados de México."
@@ -5036,7 +5243,9 @@
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.json · m4_01 «COMO CREAR LA PRIMERA CAMPAÑA»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.md · §1 y §7"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "camp-titulo-y-mensaje-del-anuncio",
@@ -5155,7 +5364,7 @@
   "respuesta_base": "La decisión se toma anuncio por anuncio, nunca por el promedio de la campaña. Un anuncio que se apaga se queda apagado: no se edita, se crea otro.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=753",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "producto, presupuesto diario, cuántos anuncios tienes, cuánto te cuesta cada mensaje y si tu WhatsApp ya está conectado a IMPORCHAT",
   "no_decir": [
    "Ningún corte de cuándo apagar ni cuánto esperar: se dijo «mínimo 48 horas» y también «el mismo día».",
@@ -5166,7 +5375,9 @@
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.md · §4 y §5 (cuándo apagar / cuánto esperar)",
    "ENTRENAMIENTO_ECOMMERCE/notas/m3_producto.md · §5",
    "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §5, fila 9"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "camp-costo-por-mensaje",
@@ -5179,20 +5390,21 @@
    "mi cpm esta bien",
    "mi ctr es bajo"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Te recomiendo que tu costo por mensaje se mantenga entre 0,10 y 0,30 USD como máximo. Si pasa de 0,30, mira cuántas ventas y de qué calidad te ha traído: si está caro y además no vende, apágalo.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=754",
-  "pasar_a": "ecommerce",
-  "pedir": "producto, presupuesto diario, cuántos anuncios tienes, cuánto te cuesta cada mensaje y si tu WhatsApp ya está conectado a IMPORCHAT",
+  "pasar_a": "",
+  "pedir": "",
   "no_decir": [
-   "Ningún costo por mensaje «bueno», «máximo» o «crítico»: los videos dan tres escalas.",
    "No calificar su CPM ni su CTR."
   ],
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.md · §5 (costo por mensaje «malo») y §6",
    "ENTRENAMIENTO_ECOMMERCE/notas/m3_producto.md · §5",
-   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §1 («Lo más importante») y §5, fila 9"
-  ]
+   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §1 («Lo más importante») y §5, fila 9",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "ecommerce"
  },
  {
   "id": "camp-mensajes-pero-no-ventas",
@@ -5208,7 +5420,7 @@
   "respuesta_base": "Si los mensajes llegan bien y no hay ventas, el anuncio no se apaga: el problema está en el bot o en la oferta. La lección lo revisa en tres etapas: tráfico, bot y oferta.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=754",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "producto, presupuesto diario, cuántos anuncios tienes, cuánto te cuesta cada mensaje y si tu WhatsApp ya está conectado a IMPORCHAT",
   "no_decir": [
    "No dar porcentajes de cierre «normales».",
@@ -5219,7 +5431,9 @@
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.json · m4_09 «APAGAR, MANTENER, ESCALAR»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.json · m4_07 «3 ETAPAS DE TUS CAMPAÑAS»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.md · §3 y §4"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "camp-meta-no-gasta-en-todos",
@@ -5256,7 +5470,7 @@
   "respuesta_base": "La campaña winner es una campaña nueva a la que se duplican los anuncios que ya venden; la campaña de testeo sigue encendida. Lo que funciona no se toca.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=637",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No decir cuánto subir el presupuesto: los videos dan tres formas distintas.",
@@ -5267,7 +5481,9 @@
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.json · m4_05 «CAMPAÑA WINNER»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.md · §4 y §5 (cómo escalar)",
    "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.md · §6"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "camp-estructura-cbo-abo",
@@ -5283,7 +5499,7 @@
   "respuesta_base": "La estructura que enseña la lección es una campaña, un conjunto de anuncios abierto y varios anuncios.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=750",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No decir si el presupuesto va en la campaña o en el conjunto: el tutorial y la clase no coinciden."
@@ -5291,7 +5507,9 @@
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.json · m4_06 «CÓMO LEER LAS CAMPAÑAS»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.md · §1 y §5"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "camp-precio-en-el-anuncio",
@@ -5303,19 +5521,20 @@
    "que objetivo es mejor",
    "cambio el objetivo de la campana"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Puedes usar campañas de Interacción o de Ventas sin problema: nosotros usamos las dos y nos funcionan muy bien.",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=752",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "No recomendar un objetivo: un video usa solo Interacción y otros dicen probar también Ventas.",
    "No recomendar herramientas de pago de terceros."
   ],
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.md · §5 (objetivo) y §6",
-   "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.json · m4_08 «QUÉ ESTÁ FRENANDO TU CAMPAÑA»"
-  ]
+   "ENTRENAMIENTO_ECOMMERCE/notas/m4_campanas.json · m4_08 «QUÉ ESTÁ FRENANDO TU CAMPAÑA»",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "ecommerce"
  },
  {
   "id": "camp-cambiar-video-de-un-anuncio",
@@ -5398,20 +5617,22 @@
    "me garantizan resultados",
    "cuantas ventas al dia hace un alumno"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Lo importante es que tengas metas. La primera es llegar a 5 ventas diarias: eso te da estabilidad, y con 5 ventas diarias ya puedes ganar más que el promedio en México y en Ecuador. Después puedes ir por unas 25 ventas diarias; para eso necesitas automatizaciones, y en eso te ayudamos.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "Ninguna promesa de ventas, ingresos, utilidad ni plazos («ventas en la primera semana», «10 % de cierre»).",
+   "No garantizar resultados ni plazos.",
    "No citar resultados de otros alumnos."
   ],
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §5, fila 1",
    "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §6 (garantías dichas en clase)",
-   "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.md · §4 («el 10 % es una referencia, no una promesa»)"
-  ]
+   "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.md · §4 («el 10 % es una referencia, no una promesa»)",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "ecommerce"
  },
  {
   "id": "ped-orden-automatica",
@@ -5640,7 +5861,7 @@
    "Revisa que aparezca en «Mis garantías»."
   ],
   "enlace": "https://imporfactory.app/cursos/32?contenido=633",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "número de orden y descripción del problema (solo si es un producto de IMPORSHOP o la garantía no avanza)",
   "no_decir": [
    "No prometer reposición, devolución ni plazo: el video no dice qué pasa después.",
@@ -5650,7 +5871,9 @@
    "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.json · duda_05 «CÓMO SOLICITAR UNA GARANTÍA»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.md · §4 y §7",
    "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §3, «A quién se pasa»"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ped-novedades",
@@ -5672,7 +5895,7 @@
    "«Solucionar»: elige la opción, indica el día de entrega acordado y envía."
   ],
   "enlace": "https://imporfactory.app/cursos/32?contenido=642",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "número de guía y transportadora (solo si no es Gintracom o la novedad no se resuelve)",
   "no_decir": [
    "Para Servientrega, Laar o Veloces no hay video: no inventar los pasos.",
@@ -5682,7 +5905,9 @@
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.json · duda_13 «GESTIONAR NOVEDADES EN DROPI»",
    "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.md · §4, §6 y §7"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ped-historial-del-cliente",
@@ -5745,20 +5970,24 @@
    "que le digo al cliente que no quiere recibir",
    "me van a devolver el pedido"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Si el cliente no retira el pedido, insiste hasta el final y con más intensidad: llámalo y escríbele por WhatsApp hasta que lo retire. Si aun así no lo retira, Dropi tiene su propio buró de clientes: puedes reportarlo en el sistema de Dropi y el cliente queda reportado ahí.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "Nunca sugerir llamar haciéndose pasar por la transportadora.",
-   "No sugerir mensajes de presión («se le cobrará el envío», leyes, plazos falsos).",
+   "No hablar de un buró de IMPORFACTORY: no existe; el único buró es el de Dropi.",
+   "No sugerir amenazas ni consecuencias inventadas (leyes, multas, plazos falsos).",
    "No decir quién paga la devolución."
   ],
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.md · §6 (m5_03 00:05:13 y 00:07:18)",
-   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §5, fila 11"
-  ]
+   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §5, fila 11",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)",
+   "Daniel, audio del 28-oct-2026 (preguntas de la auditoría: buró, Colombia, sábado)"
+  ],
+  "pasar_a_antes": "ecommerce"
  },
  {
   "id": "ped-kanban-que-reviso",
@@ -5803,20 +6032,21 @@
    "si agrego saldo y no lo uso se pierde",
    "por que me hacen un debito en dropi"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "Dropi te paga cuando haces los retiros de tu saldo. Busca en YouTube «retiro de saldo Dropi»: ahí está el paso a paso.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
-   "No decir cuándo ni cómo paga Dropi: ningún video lo contesta y depende de Dropi.",
    "No prometer indemnizaciones ni compensaciones de Dropi."
   ],
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.md · §7 (hueco)",
    "ENTRENAMIENTO_ECOMMERCE/notas/sep_ciclo.md · §7",
-   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §2.1 (≈ 26 chats) y §5, fila 14"
-  ]
+   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §2.1 (≈ 26 chats) y §5, fila 14",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "ecommerce"
  },
  {
   "id": "ped-dropi-mexico-saldo",
@@ -5853,18 +6083,18 @@
    "que paqueterias hay contraentrega",
    "cuanto tarda la entrega en mexico"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "En México la más usada es Quality Post, con cobertura en todo el país, y TIUI para la última milla dentro de Ciudad de México y el Estado de México. Te recomiendo elegir según tu volumen de entregas.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
-  "no_decir": [
-   "No nombrar paqueterías, estados ni tiempos de México: no hay video y en clase se contó «de oídas»."
-  ],
+  "no_decir": [],
   "fuentes": [
    "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.md · §7 (todo lo de México)",
-   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §2.1 (≈ 52 chats) y §6, punto 12"
-  ]
+   "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · §2.1 (≈ 52 chats) y §6, punto 12",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "ecommerce"
  },
  {
   "id": "ped-cuanto-tarda-la-entrega",
@@ -5879,17 +6109,17 @@
    "es buena servientrega en quito",
    "se puede lanzar campana en feriado por las transportadoras"
   ],
-  "respuesta_base": "",
+  "respuesta_base": "En Ecuador la entrega tarda entre 24 y 72 horas. En México, desde 2 días hasta 5 o 6 días laborables. Si el destino está muy lejos, puede tardar un poco más.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
-  "no_decir": [
-   "No dar días de entrega: ningún video lo dice."
-  ],
+  "no_decir": [],
   "fuentes": [
-   "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.md · §7 (hueco)"
-  ]
+   "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.md · §7 (hueco)",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)"
+  ],
+  "pasar_a_antes": "ecommerce"
  },
  {
   "id": "ped-pedidos-en-peru-aliclik",
@@ -6278,7 +6508,7 @@
    "Revisa la respuesta en «CAS» → «Bandeja de entrada»."
   ],
   "enlace": "",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "número de orden, número de guía, qué pasó y captura del caso sin respuesta (solo si el CAS no contesta)",
   "no_decir": [
    "No dar el tiempo de respuesta de Dropi ni de la transportadora.",
@@ -6292,7 +6522,9 @@
    "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 2 §7, punto 2 (datos para escalar: orden, guía, descripción e imagen)",
    "AGENTE_24_7/base_v2/NO_DECIR.md · línea 76 (sin plazos de Dropi ni compensaciones)",
    "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 1 §6.B y Clase 2 §6.B (atención sin horario, indemnización)"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ped-corregir-datos-de-la-guia",
@@ -6315,7 +6547,7 @@
    "En Ecuador, para retiro en una agencia de Servientrega: verifica en la web de Servientrega que sea un «centro de soluciones» y escribe en la dirección «Retiro CS» más la dirección de la agencia."
   ],
   "enlace": "https://imporfactory.app/cursos/32?contenido=630",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "número de orden, número de guía y qué dato está mal (solo si la guía ya está en ruta)",
   "no_decir": [
    "No decir cómo cambiar dirección, teléfono, nombre o agencia en una guía ya generada sin anularla: ningún video lo explica.",
@@ -6329,7 +6561,9 @@
    "ENTRENAMIENTO_FRONT/transcripciones/ago12.md · [00:40:27], [00:41:31] (motivos: me equivoqué, dijiste mal el nombre) y [00:42:35] (en ruta ya no se puede)",
    "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 2 §5 (01:22:05, «Retiro CS» y centros de soluciones) · ENTRENAMIENTO_FRONT/transcripciones/ago12.md [01:23:05], [01:24:06]",
    "ENTRENAMIENTO_ECOMMERCE/notas/m5_ventas_dudas.md · §3 y §7 (hueco: editar guía sin cancelar)"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ped-cobros-devoluciones-y-pago-anticipado",
@@ -6352,7 +6586,7 @@
    "Si no entiendes un débito puntual, pasa el caso con el número de orden."
   ],
   "enlace": "",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "número de orden y captura del movimiento de la wallet (solo si pregunta por un débito puntual)",
   "no_decir": [
    "No decir quién paga el envío de una devolución: las fuentes se contradicen y falta la confirmación de Daniel.",
@@ -6367,7 +6601,35 @@
    "ENTRENAMIENTO_FRONT/notas/eco_logistica.md · Clase 2 §6.B (México «tengo entendido»; retiros «desconozco») y §6.B fletes del día",
    "ENTRENAMIENTO_ECOMMERCE/ROL_FRONT_ECOMMERCE.md · líneas 193-194 (el alumno oyó que la devolución la paga él)",
    "AGENTE_24_7/base_v2/NO_DECIR.md · línea 76"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
+ },
+ {
+  "id": "ped-contra-entrega-como-me-pagan",
+  "tema": "ecommerce-pedidos",
+  "pais": "todos",
+  "preguntas": [
+   "como me pagan una venta contra entrega",
+   "quien me paga el contra entrega",
+   "como recibo el dinero de un pedido contra entrega",
+   "cuando me depositan las ventas contra entrega",
+   "el cliente le paga al courier y despues que",
+   "quien me paga el contraentrega",
+   "como me pagan el contraentrega"
+  ],
+  "respuesta_base": "En una venta contra entrega, tu cliente le paga al courier cuando recibe el pedido. El courier le paga a Dropi, y Dropi te deposita tu ganancia después de descontar el flete y el pago al proveedor.",
+  "pasos": [],
+  "enlace": "",
+  "pasar_a": "",
+  "pedir": "",
+  "no_decir": [
+   "No prometer una fecha de depósito."
+  ],
+  "fuentes": [
+   "Daniel, 27-oct-2026 (respuestas a las FAQ) · texto aprobado por Daniel el 27-oct"
+  ],
+  "pasar_a_antes": "ecommerce"
  },
  {
   "id": "dropi-cuenta-correo-pais-y-privados",
@@ -6412,22 +6674,27 @@
    "me cobran un monto distinto al acordado",
    "la diferencia es por el tipo de cambio?",
    "tengo saldo a favor, se descuenta en mi otra importacion",
-   "confirmame mi situacion de pagos y adeudo"
+   "confirmame mi situacion de pagos y adeudo",
+   "cuanto debo",
+   "cuanto me falta pagar"
   ],
-  "respuesta_base": "Tu estado de cuenta (pagos registrados, saldo y cuotas) lo revisa cobranza con tu número de cotización. Por este chat no se dan ni se confirman saldos.",
+  "respuesta_base": "Te digo lo que tienes registrado en el sistema: pagos, saldo y cuotas. Si algo no cuadra, lo revisa cobranza con tu número de cotización.",
   "pasos": [],
   "enlace": "",
-  "pasar_a": "contabilidad",
-  "pedir": "número de cotización",
+  "pasar_a": "",
+  "pedir": "número de cotización, solo si la herramienta de pagos no encuentra nada con su número",
   "no_decir": [
-   "No dar saldos, montos pendientes, saldo a favor ni cuántas cuotas faltan.",
-   "No dar ni explicar el tipo de cambio usado: no hay dato oficial.",
+   "Solo dar los pagos y saldos que entrega la herramienta de pagos; nunca calcularlos ni inventarlos. Si no la tiene, pasa a cobranza.",
+   "No dar ni explicar el tipo de cambio usado.",
    "No decir que un saldo a favor se descuenta en otra importación."
   ],
   "fuentes": [
    "fichas_bot.json · `pago-a-que-cuenta` (ficha oficial `pagos`: «los pagos, saldos y comprobantes los revisa cobranza»)",
-   "AGENTE_24_7/base_v2/NO_DECIR.md · §6 «Pagos: cuentas, recargos, formas y momentos» (no dice saldos)"
-  ]
+   "AGENTE_24_7/base_v2/NO_DECIR.md · §6 «Pagos: cuentas, recargos, formas y momentos» (no dice saldos)",
+   "Daniel, audio del 26-oct-2026 (respuestas a las 26 preguntas)",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
+  ],
+  "pasar_a_antes": "contabilidad"
  },
  {
   "id": "pago-aviso-cuota-vencida",
@@ -6507,13 +6774,14 @@
   "pedir": "número de cotización y el correo donde esperas el enlace",
   "no_decir": [
    "No mandar ni reenviar enlaces de pago.",
-   "No decir el monto del enlace ni el recargo con tarjeta.",
+   "No decir el monto del enlace.",
    "No confirmar que un enlace recibido es válido."
   ],
   "fuentes": [
    "AGENTE_24_7/base_v2/NO_DECIR.md · §6 («no pasa cuentas bancarias ni enlaces de pago»)",
    "fichas_bot.json · `pago-a-que-cuenta` (ficha oficial `pagos`: solo cuentas de la empresa, nunca de un tercero)",
-   "fichas_bot.json · `pago-con-tarjeta` (no mandar enlaces de pago; recargo sin dato oficial)"
+   "fichas_bot.json · `pago-con-tarjeta` (no mandar enlaces de pago)",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
   ]
  },
  {
@@ -6686,7 +6954,7 @@
    "Si se cierra la herramienta, escribe su nombre en ese mismo espacio y vuelve a abrirla."
   ],
   "enlace": "",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "el sistema de tu computadora y el mensaje que te sale, escrito (si no logra instalarlo)",
   "no_decir": [
    "Nunca escribir el correo, la clave ni los códigos de la cuenta compartida de herramientas.",
@@ -6698,7 +6966,9 @@
    "ENTRENAMIENTO_FRONT/notas/oct02.md · fila «Dropkiller (acceso)» [00:56:09] («No entren directo a Dropkiller») y pregunta 15 (no crear cuenta)",
    "ENTRENAMIENTO_FRONT/notas/oct01.md · pregunta 11 (Linux: lo revisa el equipo técnico) [01:26:25]",
    "fichas_bot.json · `dropkiller-acceso` (no_decir sobre la cuenta compartida)"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "planes-precio-y-que-incluye",
@@ -6851,7 +7121,7 @@
   "pasar_a": "",
   "pedir": "si ya tienes proveedor: precio por unidad, unidades por caja y CBM o medidas de la caja (sirve una captura o la proforma)",
   "no_decir": [
-   "Ningún precio, flete ni plazo de tránsito.",
+   "No calcular el precio ni el flete de su carga, ni darle fecha de llegada.",
    "No dar el mínimo de compra en metros cúbicos ni en dinero: no hay dato oficial.",
    "No decir si su producto se puede traer: eso se revisa caso por caso (ficha producto-se-puede-traer).",
    "No dar fecha de salida del próximo contenedor."
@@ -6860,7 +7130,8 @@
    "fichas_bot.json · carga-grupal (ConocimientoFront `carga-grupal`)",
    "fichas_bot.json · que-pedir-al-proveedor (ConocimientoFront `que-pedir-al-proveedor`; lección 323)",
    "fichas_bot.json · cotizar-datos (ConocimientoFront)",
-   "fichas_bot.json · acepto-la-cotizacion (PORTAL_PUESTOS p07.json aprobada)"
+   "fichas_bot.json · acepto-la-cotizacion (PORTAL_PUESTOS p07.json aprobada)",
+   "Auditoría del 27-oct-2026 (lo dictado por Daniel el 26-oct manda sobre lo viejo)"
   ]
  },
  {
@@ -7045,7 +7316,7 @@
   "respuesta_base": "Este es el catálogo de IMPORSHOP: https://chatcenter.imporfactory.app/catalogo/catalogo-imporshop-comunidad\nY este es el paso a paso para armar tu tienda, desde la primera lección: https://imporfactory.app/cursos/32?contenido=646",
   "pasos": [],
   "enlace": "https://chatcenter.imporfactory.app/catalogo/catalogo-imporshop-comunidad",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "Nunca afirmar que hay o no hay stock.",
@@ -7055,7 +7326,9 @@
   "fuentes": [
    "Daniel, 25-oct: «pasarle el catalogo de imporshop y darles el paso a paso. ademas de asignarle a un asesor de ecommerce»",
    "Chats de ecommerce de la 265 (10 al 24-oct): enlace del catálogo que manda el equipo"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ia-tip-bot-cotiza-solo",
@@ -7071,7 +7344,7 @@
   "respuesta_base": "Aquí tienes el video del tip, cómo lanzar tu campaña: https://imporfactory.app/cursos/32?contenido=737",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=737",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No prometer que el bot vende solo.",
@@ -7080,7 +7353,9 @@
   "fuentes": [
    "Plantilla recup_nutri_1 «Tip de la semana» (recuperacion_textos.js)",
    "Daniel, 25-oct: «el de como lanzar campaña creo que seria el video ideal» → lección 737 «COMO CREAR LA PRIMERA CAMPAÑA»"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ia-tip-seguimientos",
@@ -7094,7 +7369,7 @@
   "respuesta_base": "Así activas los seguimientos automáticos (remarketing) en IMPORCHAT: https://imporfactory.app/cursos/32?contenido=659",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=659",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No prometer cuántas ventas recupera."
@@ -7102,7 +7377,9 @@
   "fuentes": [
    "Plantilla recup_nutri_2 (recuperacion_textos.js)",
    "Lección 659 «PERSONALIZA TU BOT Y CREA MENSAJES DE REMARKETING»"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  },
  {
   "id": "ia-tip-anuncios",
@@ -7116,7 +7393,7 @@
   "respuesta_base": "Así vinculas tus anuncios de Meta a tus productos para que el bot sepa qué vio cada cliente: https://imporfactory.app/cursos/32?contenido=900",
   "pasos": [],
   "enlace": "https://imporfactory.app/cursos/32?contenido=900",
-  "pasar_a": "ecommerce",
+  "pasar_a": "",
   "pedir": "",
   "no_decir": [
    "No prometer que se lo configuran hoy."
@@ -7124,6 +7401,8 @@
   "fuentes": [
    "Plantilla recup_nutri_3 (recuperacion_textos.js)",
    "Lección 900 «VINCULA TUS ANUNCIOS DE META A TUS PRODUCTOS…»"
-  ]
+  ],
+  "pasar_a_antes": "ecommerce",
+  "pase_quitado": "2026-10-26: solo informa (auditoría de pases 265, OK de Daniel «arreglalo»)"
  }
 ]

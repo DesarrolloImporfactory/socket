@@ -55,6 +55,8 @@ function escenario(cambios = {}) {
     actividad: [{ id_configuracion: 101, n: 40 }],
     // [{ id_usuario, email, sub }]: sub = correo del administrador (sub_usuarios), si no, del dueño.
     correos: [],
+    // Imporsuit: [{ email, whatsapp }] = alumnos cuya plataforma tiene ese WhatsApp.
+    alumnos: [],
     ...cambios,
   };
 }
@@ -87,7 +89,14 @@ function baseFalsa(e) {
     if (/FROM clientes_chat_center/.test(sql)) return enIds(e.chats, r);
     throw new Error(`consulta inesperada: ${sql.slice(0, 80)}`);
   };
-  return { consultar, llamadas };
+  // Imporsuit (db_2): solo el cruce del WhatsApp con la plataforma del alumno.
+  const consultarImporsuit = async (sql, valores = []) => {
+    llamadas.push({ sql, r: valores, imporsuit: true });
+    if (e.imporsuitFalla) throw new Error(e.imporsuitFalla);
+    if (/FROM plataformas p[\s\S]*\?/.test(sql)) return (e.alumnos || []).filter((a) => cola(a.whatsapp) === valores[0]);
+    throw new Error(`consulta inesperada a Imporsuit: ${sql.slice(0, 80)}`);
+  };
+  return { consultar, consultarImporsuit, llamadas };
 }
 
 const PERMITIDO = async () => ({ permitido: true, motivo: 'ok' });

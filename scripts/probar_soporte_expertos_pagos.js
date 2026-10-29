@@ -207,7 +207,8 @@ const ALUMNA = { id_users: 50, whatsapp: '+593 98 700 0111', email: 'ana@gmail.c
   let hs = crearHerramientas({ telefono: EC, mensaje: 'cuánto debo', canalVerificable: true, pagos: true, deps: { consultar: b.consultar } });
   const vmp = hs.lista.find((x) => x.definicion.name === 'ver_mis_pagos');
   prueba('con pagos: true se ofrece ver_mis_pagos', Boolean(vmp));
-  prueba('sin campos de identidad en el esquema', vmp && Object.keys(vmp.definicion.input_schema.properties).length === 0);
+  // Tramo 4: solo el dato que escribió (cotización, marca o correo); ningún teléfono ni id.
+  prueba('sin campos de identidad en el esquema (solo «dato»)', vmp && JSON.stringify(Object.keys(vmp.definicion.input_schema.properties)) === '["dato"]');
   const out = vmp ? await vmp.ejecutar({ telefono: MX }) : '';
   prueba('aunque el modelo mande otro número, busca el del remitente', b.sqls[0]?.rep[0] === '987000111' && /Saldo pendiente/.test(out));
   prueba('queda guardado para la guardia', hs.pagosConsultados()?.estado === 'encontrado');

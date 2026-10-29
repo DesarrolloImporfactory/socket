@@ -40,9 +40,9 @@ const EC = '593987000111';
 const MX = '5215512345678';
 const d = (mensajes, ahora, telefono = EC) => decidirSeguimiento({ mensajes, ahora, telefono });
 
-console.log('1. Minutos de oficina (L-V 08:00-17:30, Ecuador)');
+console.log('1. Minutos de oficina (L-V 08:00-17:00, Ecuador)');
 prueba('lunes 10:00 → 13:00 = 180', minutosHabiles(ec(26, '10:00'), ec(26, '13:00')) === 180);
-prueba('viernes 17:00 → lunes 09:00 = 90 (sin noche ni fin de semana)', minutosHabiles(ec(23, '17:00'), ec(26, '09:00')) === 90);
+prueba('viernes 16:30 → lunes 09:00 = 90 (sin noche ni fin de semana)', minutosHabiles(ec(23, '16:30'), ec(26, '09:00')) === 90);
 prueba('sábado entero = 0', minutosHabiles(ec(24, '08:00'), ec(24, '20:00')) === 0);
 prueba('al revés = 0', minutosHabiles(ec(26, '13:00'), ec(26, '10:00')) === 0);
 
@@ -111,7 +111,7 @@ console.log('\n6. Ajustes y textos');
 const n = (v) => ajustes.normalizar({ soporte_expertos: v }).soporte_expertos.seguimiento;
 prueba('sin la clave: apagado', n({}) === false);
 prueba('«simulado» y «real» se guardan; true queda apagado', n({ seguimiento: 'simulado' }) === 'simulado' && n({ seguimiento: 'real' }) === 'real' && n({ seguimiento: true }) === false);
-prueba('el texto sigue SIN aprobar (no se le escribe a nadie)', T.SEGUIMIENTO_APROBADO === false);
+prueba('el texto está aprobado (Daniel, 27-oct): aun así solo escribe con seguimiento «real» y --enviar', T.SEGUIMIENTO_APROBADO === true);
 prueba('el texto no está en los textos fijos de la guardia', !Object.values(T.TEXTOS_FIJOS).includes(T.MENSAJE_SEGUIMIENTO));
 
 console.log(`\n${fallos ? `HAY FALLAS: ${fallos} fallan, ${ok} pasan` : `TODO BIEN: ${ok} pasan, 0 fallan`}`);

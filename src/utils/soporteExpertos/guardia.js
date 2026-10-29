@@ -44,7 +44,7 @@
 'use strict';
 
 const { sinTildes } = require('./texto');
-const { MENSAJE_ASESOR, CIERRE_ASESOR, MENSAJE_SALUDO, PREGUNTA_CANTIDAD } = require('./textos');
+const { MENSAJE_ASESOR, CIERRE_ASESOR, MENSAJE_SALUDO, PREGUNTA_CANTIDAD, MENSAJE_ROBOT } = require('./textos');
 
 const MAX_RESPUESTA = 1500;
 
@@ -244,6 +244,8 @@ const RE_CODIGO_DEL_CLIENTE = new RegExp(
    código ENTERO y solo si está en lo que escribió el cliente; letras pegadas a
    una moneda o a una fecha («USD850», «dia15») no son un código. */
 const RE_CODIGO_DE_PRODUCTO = /(?<![\p{L}\d])(?!(?:usd|us|rmb|cny|mxn|eur|dia|el|al|del)-?\d)[a-z]{2,10}-?\d{1,8}(?:-[a-z\d]+)*(?![\p{L}\d])/giu;
+const RE_TELEFONO = /\+\d{1,3}(?:[\s.-]?\d){7,12}(?!\d)/g;
+const RE_NUMERO_LARGO = /\+?\d[\d\s().-]{6,}\d/g;
 const codigoNormal = (c) => sinTildes(c).replace(/[^a-z0-9]/g, '');
 
 /* La lista de los pasos por los que pasa TODA carga («cotización registrada,
@@ -271,6 +273,61 @@ function sinListaDePasos(texto) {
 const RE_PARTE_DEL_CAMINO =
   /(?<![\p{L}\d])(?:(?:partes?|pasos?)\s+[1-6](?:\s*(?:,|y|o|a|-)\s*[1-6])*|[1-6]\s+(?:partes|pasos|herramientas)|3\s+datos)(?![\p{L}\d])/giu;
 
+/* E3 (Daniel, 27-oct): lo que el cliente mandó en su hoja o su captura
+   (precio por unidad, medidas de la caja, CBM, peso) se le puede repetir: la
+   guardia cambiaba por «un asesor…» la respuesta que solo le ordenaba sus
+   propios datos. Vale la medida o el precio ENTERO y solo si todas sus cifras
+   eran un precio o una medida en su hoja o su captura (cifrasDeSuHoja). Un
+   total calculado o un precio que no mandó se sigue frenando. */
+const UNIDAD_MEDIDA = 'cm|mm|mts?|metros?|m3|m³|cbm|kgs?|kilos?|kilogramos?|gr|gramos?|g|lbs?|libras?|ml|lts?|litros?|l|pulgadas?|pies';
+const RE_MEDIDA = new RegExp(
+  `\\d+(?:[.,]\\d+)?(?:\\s*(?:x|×|\\*)\\s*\\d+(?:[.,]\\d+)?){0,2}\\s*(?:${UNIDAD_MEDIDA})(?!\\p{L})|` +
+    '(?<!\\p{L})(?:cbm|peso|volumen|medidas?)\\s*(?:de la caja|por caja|de cada caja)?\\s*(?:es|son|de)?\\s*:?\\s*\\d+(?:[.,]\\d+)?(?:\\s*(?:x|×|\\*)\\s*\\d+(?:[.,]\\d+)?){0,2}',
+  'giu',
+);
+const RE_PRECIO_ECO = new RegExp(
+  `(?:us\\$|\\$|usd|¥|rmb|cny)\\s*\\d[\\d.,]*|\\d[\\d.,]*\\s*(?:${MONEDA}|cny|¥)(?!\\p{L})`,
+  'giu',
+);
+const todasDelCliente = (t, delCliente) => {
+  const c = cifras(t);
+  return c.length > 0 && c.every((x) => delCliente.has(x));
+};
+/* Las cifras de SU HOJA O SU CAPTURA, y solo las que allí eran un precio o una
+   medida: una imagen leída que no sea un comprobante de pago («Sí, son
+   USD 850» confirmaría un depósito), o una línea escrita con forma de proforma
+   (dos datos o más entre precio, medidas, CBM/peso y unidades por caja). El
+   número de un código («SGTE-58») o una cifra suelta no respaldan un precio. */
+const RE_POR_CAJA = /\d+\s*(?:unidades|piezas|pcs)\s*(?:por|x|cada)\s*caja/i;
+function cifrasDeSuHoja(eco) {
+  const hoja = String(eco || '')
+    .split(/\n+/)
+    .filter((l) => {
+      if (/^\s*\[IMAGEN:\s*comprobante/i.test(l)) return false;
+      if (/^\s*\[IMAGEN:/i.test(l)) return true;
+      const tipos = [new RegExp(RE_PRECIO_ECO.source, 'iu'), new RegExp(RE_MEDIDA.source, 'iu'), RE_POR_CAJA].filter((re) => re.test(l));
+      return tipos.length >= 2;
+    })
+    .join('\n');
+  const trozos = [...(hoja.match(RE_PRECIO_ECO) || []), ...(hoja.match(RE_DINERO) || []), ...(hoja.match(RE_MEDIDA) || [])];
+  return new Set(trozos.flatMap(cifras));
+}
+
+/* E3: consejos generales que llevan una cifra y no son un dato del cliente:
+   «pide precio a 3 o 4 proveedores», «al menos 2 muestras» (en rango o con
+   «al menos / unos / a»: «son 4 proveedores» es un dato y se frena), y el modelo de un
+   producto de marca conocida («iPhone 16», «Galaxy S24 Ultra», «Windows 11»).
+   Las cantidades son chicas (hasta 10) y de cosas que se le aconsejan, nunca
+   de las suyas (sus cajas, unidades o productos siguen necesitando respaldo). */
+const RE_CONSEJO_CANTIDAD =
+  /(?<![\p{L}\d.,])(?:(?:[1-9]|10)\s*(?:o|a|y|-)\s*(?:[1-9]|10)|(?<=(?:^|[^\p{L}])(?:al menos|como m[ií]nimo|m[ií]nimo|unos|unas|entre|a)\s+)(?:[1-9]|10))\s+(?:proveedores|cotizaciones|opciones|muestras|f[aá]bricas|alternativas|ofertas|veces|fotos|videos|preguntas)(?!\p{L})/giu;
+const MARCAS_MODELO =
+  'iphone|ipad|ipod|macbook|airpods|apple watch|galaxy|redmi|xiaomi|huawei|oppo|realme|motorola|pixel|nokia|playstation|ps|xbox|nintendo|tecno|infinix|lenovo|windows|android|ios|usb|bluetooth|wifi|hdmi';
+const RE_MODELO = new RegExp(
+  `(?<![\\p{L}\\d])(?:${MARCAS_MODELO})(?:\\s+(?:pro|max|plus|ultra|mini|note|series|watch|lite|se))?\\s*[a-z]?\\d{1,3}(?:[.,]\\d)?(?:\\s*(?:pro|max|plus|ultra|mini|lite|se|fe))*(?![\\p{L}\\d])`,
+  'giu',
+);
+
 /** Cifra, plazo, monto, enlace, correo o estado sin respaldo. Devuelve el motivo o null. */
 function datoSinRespaldo(texto, firme, eco, estado = firme) {
   const firmePlano = plano(firme);
@@ -292,6 +349,16 @@ function datoSinRespaldo(texto, firme, eco, estado = firme) {
     }
   }
   sinEnlaces = sinEnlaces.replace(RE_DOMINIO, ' ');
+  /* Un teléfono con prefijo que está en el dato leído o que escribió el cliente
+     se puede repetir aunque vaya con otros espacios: «+593 98 097 …» se partía
+     en cifras sueltas («593») y la respuesta del diagnóstico de IMPORCHAT se
+     cambiaba por el paso a asesor (automejora 26-oct). Se comparan los últimos
+     9 dígitos; un teléfono que no está en ningún lado sigue frenado. */
+  const telefonosConocidos = (`${firme} ${eco}`.match(RE_NUMERO_LARGO) || []).map((t) => t.replace(/\D/g, ''));
+  sinEnlaces = sinEnlaces.replace(RE_TELEFONO, (tel) => {
+    const cola = tel.replace(/\D/g, '').slice(-9);
+    return telefonosConocidos.some((t) => t.length >= 9 && t.endsWith(cola)) ? ' ' : tel;
+  });
 
   /* Una FECHA («24 de octubre») vale si está tal cual en el respaldo. Una
      duración, un «hoy» o un día suelto («el 30») necesitan además a su
@@ -313,8 +380,12 @@ function datoSinRespaldo(texto, firme, eco, estado = firme) {
     }
     if (!respaldado) return `traía el plazo «${m[0]}», que no sale de un dato leído`;
   }
+  const deSuHoja = cifrasDeSuHoja(eco);
   for (const monto of sinEnlaces.match(RE_DINERO) || []) {
-    if (!firmePlano.includes(plano(monto))) return `traía el monto «${monto.trim()}», que no sale de un dato leído`;
+    if (firmePlano.includes(plano(monto))) continue;
+    // E3: un precio de su hoja o su captura («USD 3,50» de su proforma).
+    if (!/%|por ciento/i.test(monto) && todasDelCliente(monto, deSuHoja)) continue;
+    return `traía el monto «${monto.trim()}», que no sale de un dato leído`;
   }
   for (const frase of plano(sinListaDePasos(sinEnlaces)).match(RE_ESTADO_CARGA) || []) {
     if (!estadoPlano.includes(frase)) return `afirmaba «${frase}» sobre una carga sin un dato leído que lo diga`;
@@ -336,7 +407,12 @@ function datoSinRespaldo(texto, firme, eco, estado = firme) {
   // 18-oct cambiaban por el paso a asesor la respuesta a «aún no tengo proveedor».
   const sinOrden = sinCodigos
     .replace(/^[ \t]*\d{1,2}[.)][ \t]+/gm, '')
-    .replace(RE_PARTE_DEL_CAMINO, ' ');
+    .replace(RE_PARTE_DEL_CAMINO, ' ')
+    // E3: sus medidas y precios, y los consejos generales.
+    .replace(RE_MEDIDA, (m) => (todasDelCliente(m, deSuHoja) ? ' ' : m))
+    .replace(RE_PRECIO_ECO, (m) => (todasDelCliente(m, deSuHoja) ? ' ' : m))
+    .replace(RE_CONSEJO_CANTIDAD, ' ')
+    .replace(RE_MODELO, ' ');
   for (const c of cifras(sinOrden)) {
     if (!delRespaldo.has(c)) return `traía la cifra «${c}», que no sale de un dato leído`;
   }
@@ -383,13 +459,17 @@ function ofreceLoQueNoPuede(texto, firme) {
 const RE_A_COBRANZA = /(?<!\p{L})(?:cobranza|comprobante|contabilidad|n[uú]mero de cotizaci[oó]n)(?!\p{L})/iu;
 
 /* ── El aviso de «un asesor te escribe», una sola vez ──────────────────── */
-/** «Soy el asistente automático… Un asesor te escribe apenas abramos. Recibí
-    tu mensaje. Un asesor lo revisa y te escribe apenas abramos.» → sin lo
-    segundo. Solo se quita el paso a asesor EXACTO, y solo si queda otro aviso. */
+/** «Recibí tu mensaje. Un asesor lo revisa y te escribe apenas abramos. Apenas
+    tengamos la fecha… apenas abramos.» → sin lo primero. Solo se quita el paso
+    a asesor EXACTO, y solo si queda otro aviso. También cuando la respuesta
+    es SOLO el texto de «¿persona o robot?» (MENSAJE_ROBOT, Daniel 26-oct) más
+    ese paso a asesor: ya ofrece a una persona. Si trae algo más («tu pago lo
+    revisa cobranza»), el paso a asesor se queda. */
 function quitarAvisoRepetido(texto) {
-  if ((texto.match(/apenas abramos/gi) || []).length < 2 || !texto.includes(MENSAJE_ASESOR)) return { texto, cambios: 0 };
+  const conRobot = texto.includes(MENSAJE_ROBOT);
+  if (((texto.match(/apenas abramos/gi) || []).length < 2 && !conRobot) || !texto.includes(MENSAJE_ASESOR)) return { texto, cambios: 0 };
   const sin = texto.replace(MENSAJE_ASESOR, ' ').replace(/[ \t]{2,}/g, ' ').replace(/ ?\n ?/g, '\n').trim();
-  if (!/apenas abramos/i.test(sin)) return { texto, cambios: 0 };
+  if (!/apenas abramos/i.test(sin) && sin !== MENSAJE_ROBOT) return { texto, cambios: 0 };
   return { texto: sin, cambios: 1 };
 }
 
@@ -503,7 +583,7 @@ function revisarRespuesta(respuesta, hechos = {}) {
     [quitarDespedida, 'despedida quitada'],
     [corregirVoseo, 'voseo corregido'],
     [cambiarCargos, 'cargo interno cambiado'],
-    [quitarAvisoRepetido, 'aviso de «un asesor te escribe» repetido: se dejó uno'],
+    [quitarAvisoRepetido, 'aviso de «un asesor te escribe» repetido: se quitó el sobrante'],
     [quitarRecibiRepetido, '«Recibí» repetido: se dejó uno'],
   ];
   for (const [fn, motivo] of pasos) {

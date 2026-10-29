@@ -13,8 +13,10 @@
    registra y borra pagos).
 
    SEGURIDAD — de quién es la cuenta:
-     · Se busca por el número que entrega Meta, nunca por un número, correo o
-       cotización que alguien ESCRIBA en el chat.
+     · Se busca por el número que entrega Meta. Un número, correo o
+       cotización que alguien ESCRIBA en el chat no se busca aquí: la única
+       otra entrada es `pagosDelDueno`, con un alumno que identidadPorDato.js
+       ya probó que es el que escribe (tramo 4 del 70 %, 27-oct).
      · El WhatsApp guardado sin código de país solo vale si la moneda de sus
        cuotas es la del país del que escribe (USD → Ecuador, MXN → México).
      · Si el número está en cuentas de dos personas distintas (otro nombre),
@@ -164,9 +166,33 @@ async function alumnosDelTelefono(telefono, cola, consultar) {
   return { como, persona };
 }
 
+/**
+ * La cartera de un alumno ya identificado por identidadPorDato.js (nunca un id
+ * que venga del modelo o del chat). Mismo resultado que `pagosDelTelefono`,
+ * con `por: 'dato'`; sus cuotas y facturas valen todas (ya se sabe que es él).
+ */
+async function pagosDelDueno(idUsuario, o = {}) {
+  const consultar = o.consultar || consultarImporsuit;
+  const id = Number(idUsuario);
+  if (!id) return { ...VACIO('error', 'sin alumno identificado'), por: 'dato' };
+  try {
+    const r = await conLimite(
+      armar({ como: new Map([[id, 'exacto']]), persona: new Map([[id, `id:${id}`]]) }, null, consultar),
+      o.limite_ms || LIMITE_MS,
+    );
+    return { ...r, por: 'dato' };
+  } catch (err) {
+    return { ...VACIO('error', `no se pudo consultar: ${err.message}`), por: 'dato' };
+  }
+}
+
 async function buscar(telefono, cola, consultar) {
-  const { como, persona } = await alumnosDelTelefono(telefono, cola, consultar);
-  if (!como.size) return VACIO('sin_cartera', 'ningún alumno con este número');
+  const alumnos = await alumnosDelTelefono(telefono, cola, consultar);
+  if (!alumnos.como.size) return VACIO('sin_cartera', 'ningún alumno con este número');
+  return armar(alumnos, paisDelTelefono(telefono), consultar);
+}
+
+async function armar({ como, persona }, pais, consultar) {
   const ids = [...como.keys()];
   const [cuotasTodas, facturasTodas] = await Promise.all([
     consultar(SQL_CUOTAS, [ids]),
@@ -176,7 +202,6 @@ async function buscar(telefono, cola, consultar) {
   /* Guardado sin código de país: solo valen sus cuotas en la moneda del país
      del que escribe. El mismo 987654321 es un móvil de Ecuador y otro de Perú.
      Sus facturas no traen moneda: solo valen las de un número exacto. */
-  const pais = paisDelTelefono(telefono);
   const cuotas = (cuotasTodas || []).filter((c) => {
     const m = como.get(Number(c.id_users));
     if (m === 'exacto') return true;
@@ -247,12 +272,19 @@ const ESTADO_FACTURA = {
 /* «fecha límite 5 de noviembre» o, si ya pasó, «venció el 10 de octubre». */
 const plazo = (f, hoy) => (!f ? '' : f < hoy ? `venció el ${fechaTexto(f)}` : `fecha límite ${fechaTexto(f)}`);
 
-function bloquePagos(r, { hoy = hoyEcuador() } = {}) {
-  const cab = '💳 PAGOS DE ESTE CLIENTE — leído ahora de la cartera, buscando SOLO por el número de WhatsApp desde el que escribe';
+function bloquePagos(r, { hoy = hoyEcuador(), pideDato = false } = {}) {
+  const porDato = r?.por === 'dato';
+  const cab = porDato
+    ? '💳 PAGOS DE ESTE CLIENTE — leído ahora de la cartera, buscando con el dato que escribió (ya se confirmó que es suyo)'
+    : '💳 PAGOS DE ESTE CLIENTE — leído ahora de la cartera, buscando SOLO por el número de WhatsApp desde el que escribe';
   if (r.estado === 'varios_clientes')
     return `${cab}: ESTE NÚMERO ESTÁ EN LA CUENTA DE VARIOS ALUMNOS. No digas montos, cuotas, pagos ni facturas. Dile que cobranza lo revisa y usa pasar_a_humano con motivo pago.`;
   if (r.estado === 'error' || r.estado === 'telefono_no_valido')
     return `${cab}: NO SE PUDO CONSULTAR. No digas montos ni si pagó. Usa pasar_a_humano con motivo pago.`;
+  if (r.estado !== 'encontrado' && porDato)
+    return `${cab}: no hay cuotas ni facturas registradas en su cuenta. No digas que no debe ni que no pagó y no le pidas más datos. Si pregunta por su pago o su factura, usa pasar_a_humano con motivo pago.`;
+  if (r.estado !== 'encontrado' && pideDato)
+    return `${cab}: no hay cuotas ni facturas registradas con este número. No digas que no debe ni que no pagó (puede estar registrado con otro número). Pídele su número de cotización, su marca de envío o el correo con el que se registró; cuando lo escriba, usa ver_mis_pagos con ese dato. No pases el caso todavía.`;
   if (r.estado !== 'encontrado')
     return `${cab}: no hay cuotas ni facturas registradas con este número. No digas que no debe ni que no pagó (puede estar registrado con otro número). Si pregunta por su pago o su factura, pide su correo o su número de cotización y usa pasar_a_humano con motivo pago.`;
 
@@ -361,6 +393,7 @@ function pidePagos(texto) {
 
 module.exports = {
   pagosDelTelefono,
+  pagosDelDueno,
   alumnosDelTelefono,
   bloquePagos,
   textoPagosParaCliente,

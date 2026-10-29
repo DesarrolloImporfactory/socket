@@ -77,6 +77,9 @@ const BIEN = [
   ['necesito hablar con un asesor de verdad, me pueden llamar?', 'llamada-o-reunion'],
   ['puedo pagar con tarjeta de crédito?', 'pago-con-tarjeta'],
   ['qué es trade assurance', 'trade-assurance'],
+  // 27-oct (automejora): así lo preguntó un cliente de la 265; caía en el directorio.
+  ['consulté con el proveedor y si me debe pagar por medio de Alibaba', 'trade-assurance'],
+  ['le pago al proveedor por alibaba?', 'trade-assurance'],
   ['cómo sé si mi proveedor es confiable?', 'proveedor-confiable'],
   ['en cuánto tiempo llega una carga desde china?', 'cuanto-demora-la-importacion'],
   ['quiero cotizar unos parlantes, cuánto me sale traer 300?', 'cotizar-datos'],
@@ -222,8 +225,23 @@ const NADA = [
     prueba('una ficha que solo pasa no trae «Respuesta» (no hay nada con qué cerrar)', !/Respuesta:/.test(b3) && /  Lo resuelve una persona: paso a asesor/.test(b3));
     prueba('no queda «paso a asesor para un asesor»', !real.fichas.some((f) => /para un asesor/.test(bloqueFichas([{ ficha: f }]))));
     const marcadas = real.fichas.filter((f) => /NO CIERRA SOLA/.test(bloqueFichas([{ ficha: f }])));
-    const debian = real.fichas.filter((f) => f.pasar_a && f.respuesta_base);
-    prueba(`las ${debian.length} fichas con respuesta y \`pasar_a\` llevan la marca, y ninguna otra`, marcadas.length === debian.length && marcadas.every((f) => f.pasar_a && f.respuesta_base));
+    // Las que juntan datos (`junta_datos`, tramo 3 del 70 %) pasan al final, con la herramienta: no llevan la marca.
+    const debian = real.fichas.filter((f) => f.pasar_a && f.respuesta_base && !f.junta_datos);
+    prueba(`las ${debian.length} fichas con respuesta y \`pasar_a\` llevan la marca, y ninguna otra`, marcadas.length === debian.length && marcadas.every((f) => f.pasar_a && f.respuesta_base && !f.junta_datos));
+    const juntan = real.fichas.filter((f) => f.junta_datos);
+    const bCot = bloqueFichas([{ ficha: real.fichas.find((f) => f.id === 'cotizar-datos') }]);
+    prueba('juntan datos solo cotizar-datos y flete-ecuador: el bloque dice que los pida de uno o dos y que no pase mientras falten', juntan.map((f) => f.id).sort().join() === 'cotizar-datos,flete-ecuador' && /Tú juntas los datos: país al que importas/.test(bCot) && /Mientras falte alguno NO va el paso a asesor/.test(bCot) && /pasar_a_humano \(motivo cotizacion\) con el resumen/.test(bCot) && !/NO CIERRA SOLA/.test(bCot));
+    // Auditoría 27-oct: a Ecuador no hay tarifa por m³ (depende de la mercancía), así que la ficha de
+    // Ecuador junta los datos y pasa a precios; a México contesta la tarifa sola, sin pase.
+    const idsDe = (q, pais) => real.buscar(q, { pais }).map((x) => x.ficha.id);
+    prueba('Ecuador: «a cómo está el flete a ecuador» trae flete-ecuador (junta los datos y pasa a precios)', idsDe('a como esta el flete a ecuador', 'ec')[0] === 'flete-ecuador');
+    prueba('Ecuador: «cuánto cuesta el metro cúbico» trae primero flete-ecuador', idsDe('cuanto cuesta el metro cubico', 'ec')[0] === 'flete-ecuador');
+    prueba('México: «cuánto cuesta el metro cúbico» trae la tarifa (precio-metro-cubico) y nunca flete-ecuador', idsDe('cuanto cuesta el metro cubico', 'mx')[0] === 'precio-metro-cubico' && !idsDe('cuanto cuesta el metro cubico', 'mx').includes('flete-ecuador'));
+    const bEc = bloqueFichas([{ ficha: real.fichas.find((f) => f.id === 'flete-ecuador') }]);
+    prueba('flete-ecuador no vuelve a pedir el país y no trae tarifa', /Tú juntas los datos: el producto/.test(bEc) && !/USD/.test(bEc));
+    prueba('«cuánto debo» lo contesta la herramienta de pagos (pago-estado-de-mi-cuenta), no cobranza', idsDe('cuanto debo', 'ec')[0] === 'pago-estado-de-mi-cuenta');
+    prueba('«cuánto cuesta traer una muestra por DHL» trae lo dictado por Daniel (muestra-paga-impuestos)', idsDe('cuanto cuesta traer una muestra por dhl', 'ec').includes('muestra-paga-impuestos'));
+    prueba('ninguna ficha que llega con «a qué cuenta pago y cuánto debo» prohíbe dar saldos', real.buscar('a que cuenta pago y cuanto debo', { pais: 'ec' }).every((x) => !(x.ficha.no_decir || []).some((n) => /no (?:decir|dar)[^.;]*\bsaldos\b/i.test(n))));
     const max = Math.max(...real.fichas.map((f) => bloqueFichas([{ ficha: f }]).length));
     prueba(`el bloque de la ficha más larga cabe en 2.600 caracteres (${max})`, max < 2600);
     prueba('sin fichas no hay bloque', bloqueFichas([]) === '' && bloqueFichas(buscar('feliz cumpleaños')) === '');
@@ -321,16 +339,23 @@ const NADA = [
     olvidarTodo();
     t = await turno('que datos necesitan para cotizar un producto?', 'f5');
     r2 = revisarTurno(cotizar.respuesta_base, t.hechos);
-    prueba('«qué datos necesitan para cotizar»: lleva cotizar-datos con su `pedir`, y sin cantidad dicha la guardia completa pase + cantidad', t.hechos.fichasConPase.some((f) => f.id === 'cotizar-datos' && /cuántas unidades/.test(f.pedir)) && t.hechos.dioCantidad === false && r2.texto.endsWith(`${T.CIERRE_ASESOR}\n${T.PREGUNTA_CANTIDAD}`));
+    // Tramo 3 del 70 % (27-oct): el bot junta los datos; la guardia ya NO le pega el paso a asesor a cotizar-datos.
+    prueba('«qué datos necesitan para cotizar»: llega cotizar-datos, pero no va a la lista de la guardia y la respuesta sale sin pase', t.hechos.fichas.includes('cotizar-datos') && !t.hechos.fichasConPase.some((f) => f.id === 'cotizar-datos') && t.hechos.dioCantidad === false && !r2.texto.includes(T.CIERRE_ASESOR) && !r2.texto.includes(T.PREGUNTA_CANTIDAD));
     t = await turno('quiero traer 500', 'f5');
     r2 = revisarTurno(cotizar.respuesta_base, t.hechos);
-    prueba('…al turno siguiente dice «quiero traer 500»: dioCantidad y la guardia ya no la pide', t.hechos.dioCantidad === true && r2.texto.endsWith(T.CIERRE_ASESOR) && !r2.texto.includes(T.PREGUNTA_CANTIDAD));
+    prueba('…al turno siguiente dice «quiero traer 500»: dioCantidad, y la guardia sigue sin agregar nada', t.hechos.dioCantidad === true && !r2.texto.includes(T.CIERRE_ASESOR) && !r2.texto.includes(T.PREGUNTA_CANTIDAD));
     t = await turno('y el cbm lo pido al proveedor?', 'f5');
     prueba('…y se recuerda en los mensajes que siguen (20 minutos)', t.hechos.dioCantidad === true);
     olvidarTodo();
     t = await turno('hola quiero cotizar unos audífonos inalámbricos, cuánto me sale traer 500?', 'f6');
     r2 = revisarTurno(cotizar.respuesta_base, t.hechos);
-    prueba('el escenario del arnés (cantidad en el primer mensaje): la guardia completa el pase sin volver a pedir la cantidad', t.hechos.dioCantidad === true && r2.cambiada && !r2.texto.includes(T.PREGUNTA_CANTIDAD));
+    prueba('el escenario del arnés (cantidad en el primer mensaje): la guardia no fuerza el pase ni vuelve a pedir la cantidad', t.hechos.dioCantidad === true && !r2.texto.includes(T.CIERRE_ASESOR) && !r2.texto.includes(T.PREGUNTA_CANTIDAD));
+    // La regla de completar el pase sigue viva para las demás fichas con `pasar_a` (cotizar-producto-del-catalogo pide la cantidad).
+    olvidarTodo();
+    t = await turno('me interesa el producto del catalogo de ideas de productos', 'f6b');
+    const catalogo = real.fichas.find((f) => f.id === 'cotizar-producto-del-catalogo');
+    r2 = revisarTurno(catalogo.respuesta_base, t.hechos);
+    prueba('…las demás fichas con `pasar_a` siguen recibiendo el pase de la guardia (catálogo)', t.hechos.fichasConPase.some((f) => f.id === 'cotizar-producto-del-catalogo') && r2.texto.includes(T.CIERRE_ASESOR));
     olvidarTodo();
     t = await turno('hola', 'f7');
     prueba('hechos de emergencia y un turno sin fichas traen dioCantidad en false', t.hechos.dioCantidad === false && revisarTurno('hola', undefined).cambiada === false);
@@ -380,6 +405,14 @@ const NADA = [
     prueba('con un solo producto también pasa', !x.cambiada);
     x = r2('Tu cotización 4521 y tu marca EC-2609112 quedan anotadas. Un asesor te escribe apenas abramos.', 'mi cotización es la 4521 y la marca EC-2609112');
     prueba('los códigos que ya se aceptaban (cotización, marca) siguen pasando', !x.cambiada, x.motivos.join('; '));
+    // automejora 26-oct: falsos positivos de la guardia en la 265
+    const r3 = (texto, firme, eco = '') => revisarRespuesta(texto, { respaldo: { firme: `${FIJOS}\n${firme}`, eco }, textoSeguro: T.MENSAJE_ASESOR });
+    x = r3('Tu número +593 98 765 4321 no está vinculado a esta conexión. Entra a «Conexiones» y pulsa «Conectar».', 'Conexión: telefono 593987654321, sin vincular');
+    prueba('un teléfono del dato leído escrito con espacios («+593 98 …») no son cifras sueltas', !x.cambiada, x.motivos.join('; '));
+    x = r3('Tu número +593 98 765 4321 no está vinculado a esta conexión.', 'Conexión sin vincular', 'mi número es 0987654321');
+    prueba('…ni el teléfono que escribió el propio cliente', !x.cambiada, x.motivos.join('; '));
+    x = r3('Tu número +593 98 111 2222 no está vinculado a esta conexión.', 'Conexión: telefono 593987654321, sin vincular', 'mi número es 0987654321');
+    prueba('…pero un teléfono que no está en ningún lado sigue frenado', x.cambiada);
   }
 
   /* ───────────────────────────────────────────────────────────────────── */
@@ -500,7 +533,9 @@ const NADA = [
   {
     const r2 = (texto) => revisarRespuesta(texto, { respaldo: { firme: FIJOS, eco: '' }, textoSeguro: T.MENSAJE_ASESOR });
     let x = r2(`${T.MENSAJE_ROBOT} ${T.MENSAJE_ASESOR}`);
-    prueba('texto del asistente automático + paso a asesor pegado: queda solo el primero', x.cambiada && x.corregida && x.texto === T.MENSAJE_ROBOT, x.texto);
+    prueba('texto de «¿persona o robot?» + paso a asesor pegado: queda solo el primero', x.cambiada && x.corregida && x.texto === T.MENSAJE_ROBOT, x.texto);
+    x = r2(`${T.MENSAJE_ROBOT} Tu pago lo revisa cobranza. ${T.MENSAJE_ASESOR}`);
+    prueba('texto de «¿persona o robot?» + algo más + paso a asesor: el paso a asesor se queda', !x.cambiada && x.texto.includes(T.MENSAJE_ASESOR), x.texto);
     x = r2(`${T.MENSAJE_ASESOR} ${T.MENSAJE_CARGA_A_LOGISTICA}`);
     prueba('paso a asesor + paso a logística: queda uno', x.corregida && (x.texto.match(/apenas abramos/g) || []).length === 1);
     prueba('un solo aviso no se toca', !r2(T.MENSAJE_ASESOR).cambiada && !r2(T.MENSAJE_ROBOT).cambiada && !r2(T.MENSAJE_RECLAMO).cambiada && !r2(T.MENSAJE_SIN_CARGA).cambiada);
@@ -571,6 +606,18 @@ const NADA = [
     const pasa = (t, eco = '') => datoSinRespaldo(t, '', eco, '') === null;
     prueba('«producto 2» que escribió el cliente se puede repetir; «producto 3» no', pasa('Recibí los datos del producto 2.', 'Producto 2 me interesa') && !pasa('Recibí los datos del producto 3.', 'Producto 2 me interesa'));
   }
+
+  console.log('\nFAQ de Daniel (27-oct): contra entrega y pagarle a Meta');
+  for (const [q, id] of [
+    ['cómo me pagan una venta contra entrega?', 'ped-contra-entrega-como-me-pagan'],
+    ['quien me paga el contraentrega', 'ped-contra-entrega-como-me-pagan'],
+    ['hay que pagarle a Meta por cada anuncio nuevo?', 'camp-pagar-meta-por-anuncio'],
+    ['si creo otro anuncio tengo que pagar otra vez', 'camp-pagar-meta-por-anuncio'],
+  ]) {
+    const top = buscar(q)[0];
+    prueba(`«${q}» → ${id}`, top && top.ficha.id === id, entregadas(q));
+  }
+  prueba('las dos fichas nuevas, tal como las dijo Daniel', ids.has('ped-contra-entrega-como-me-pagan') && ids.has('camp-pagar-meta-por-anuncio'));
 
   console.log(`\n${fallos ? `HAY FALLAS: ${fallos} fallan, ${ok} pasan` : `TODO BIEN: ${ok} pasan, 0 fallan`}`);
   process.exit(fallos ? 1 : 0);

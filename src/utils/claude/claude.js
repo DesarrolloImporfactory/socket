@@ -25,6 +25,11 @@
 //   · fallbacks: "default": si un clasificador de seguridad declina la
 //     respuesta, la API la vuelve a correr en el modelo de respaldo dentro de
 //     la misma llamada (header server-side-fallback-2026-07-01).
+//   · Haiku 5.5 cuesta ~40 veces menos que Opus. Va pensando (adaptive, con
+//     esfuerzo «low» y el mismo piso de max_tokens) y sin `fallbacks`, que no
+//     tiene. Con thinking apagado copiaba su razonamiento («La ficha dice…,
+//     según las reglas…») dentro del mensaje al cliente: prueba A/B del
+//     26-oct, 3 de 42 respuestas; pensando, 0.
 // ════════════════════════════════════════════════════════════
 'use strict';
 
@@ -47,6 +52,12 @@ const esModeloClaude = (modelo) => /^claude-/i.test(String(modelo || ''));
 function modeloClaude(modelo) {
   const m = String(modelo || '').trim();
   return IDS_CLAUDE.includes(m) ? m : MODELO_CLAUDE_DEFECTO;
+}
+
+/** Lo que cambia según el modelo (ver la cabecera): Haiku pensando y sin respaldo. */
+function opcionesPorModelo(modelo) {
+  if (/^claude-haiku-/i.test(String(modelo || ''))) return { thinking: { type: 'adaptive' } };
+  return { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' };
 }
 
 // Con razonamiento, un tope de 500 deja la respuesta vacía: piso de 4000.
@@ -127,8 +138,7 @@ async function ejecutarConClaude({
     max_tokens: Math.max(Number(max_tokens) || 0, PISO_MAX_TOKENS),
     // Chat de ventas: razonamiento corto. Opus 5.5 no deja apagarlo.
     output_config: { effort: 'low' },
-    betas: ['server-side-fallback-2026-07-01'],
-    fallbacks: 'default',
+    ...opcionesPorModelo(modelo),
     system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
     messages: [{ role: 'user', content: String(input || '') }],
   });
@@ -377,5 +387,6 @@ module.exports = {
   describirImagenClaude,
   // Para el bucle de herramientas (utils/claude/herramientas.js)
   cliente,
+  opcionesPorModelo,
   PISO_MAX_TOKENS,
 };

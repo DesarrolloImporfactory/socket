@@ -8,10 +8,10 @@
    que con razón no deja que el modelo prometa tiempos por su cuenta).
 
    Horario del equipo: ia_ajustes → soporte_expertos.horario_equipo
-     { dias: [1,2,3,4,5], desde: '08:00', hasta: '17:30', utc: -5 }
+     { dias: [1,2,3,4,5], desde: '08:00', hasta: '17:00', utc: -5 }
    Sin el ajuste el bot NO cambia «apenas abramos» (turno.js): el cambio es
    por cuenta. El seguimiento, que se corre a mano por cuenta, usa L-V
-   08:00-17:30 de Ecuador si falta. No hay feriados: un feriado cuenta como
+   08:00-17:00 de Ecuador si falta. No hay feriados: un feriado cuenta como
    día de oficina.
 
    Ecommerce también atiende el sábado de 08:00 a 12:00 (Daniel, 25-oct):
@@ -24,7 +24,7 @@
 
 'use strict';
 
-const HORARIO_EQUIPO = Object.freeze({ dias: [1, 2, 3, 4, 5], desde: '08:00', hasta: '17:30', utc: -5 });
+const HORARIO_EQUIPO = Object.freeze({ dias: [1, 2, 3, 4, 5], desde: '08:00', hasta: '17:00', utc: -5 });
 // Ecommerce: lo mismo + el sábado de 08:00 a 12:00 (Daniel, 25-oct).
 const HORARIO_ECOMMERCE = Object.freeze({ ...HORARIO_EQUIPO, extra: [{ dias: [6], desde: '08:00', hasta: '12:00' }] });
 
@@ -130,6 +130,41 @@ function proximaApertura(ahora, horario = HORARIO_EQUIPO) {
   return null;
 }
 
+/**
+ * Hasta qué hora atiende hoy el equipo, dicho al cliente: «hoy hasta las 17:00»
+ * (el sábado de ecommerce, «hoy hasta las 12:00»). null si no está atendiendo.
+ */
+function cierreDeHoy(ahora, horario = HORARIO_EQUIPO) {
+  const h = normalizarHorarioEquipo(horario);
+  const ms = ahora ?? horaDePrueba ?? Date.now();
+  if (!equipoAtendiendo(ms, h)) return null;
+  const local = new Date(Number(ms) + h.utc * 3600 * 1000);
+  const dia = local.getUTCDay();
+  const m = local.getUTCHours() * 60 + local.getUTCMinutes();
+  const t = tramosDe(h).find((x) => x.dias.includes(dia) && aMinutos(x.desde) <= m && m < aMinutos(x.hasta));
+  return t ? `hoy hasta las ${hora(t.hasta)}` : null;
+}
+
+/** Cuándo le escribe una persona: «hoy hasta las 17:00» o «mañana desde las 8:00».
+    Con menos de MARGEN_CIERRE minutos para cerrar no se promete «hoy»: se da
+    la próxima apertura (a las 16:50, «hoy hasta las 17:00» no se cumple). */
+const MARGEN_CIERRE = 30;
+function cuandoTeEscribe(ahora, horario = HORARIO_EQUIPO) {
+  const h = normalizarHorarioEquipo(horario);
+  const ms = Number(ahora ?? horaDePrueba ?? Date.now());
+  if (equipoAtendiendo(ms, h)) {
+    const local = new Date(ms + h.utc * 3600 * 1000);
+    const dia = local.getUTCDay();
+    const m = local.getUTCHours() * 60 + local.getUTCMinutes();
+    const t = tramosDe(h).find((x) => x.dias.includes(dia) && aMinutos(x.desde) <= m && m < aMinutos(x.hasta));
+    const quedan = t ? aMinutos(t.hasta) - m : 0;
+    if (quedan >= MARGEN_CIERRE) return cierreDeHoy(ms, h);
+    // Se busca la apertura desde el cierre de este tramo.
+    return proximaApertura(ms + quedan * 60000, h);
+  }
+  return proximaApertura(ms, h);
+}
+
 /* «…te escribe apenas abramos» → «…te escribe en breve» con el equipo
    atendiendo. Fuera de horario, si se le pasa `apertura` («el lunes desde las
    8:00»), «apenas abramos» → «el lunes desde las 8:00». Solo esa frase: lo
@@ -142,6 +177,19 @@ function textoAlHorario(texto, atendiendo, apertura = null) {
   return texto;
 }
 
+/* El mensaje de respaldo (ajustes → mensaje_fallback) sale cuando el modelo
+   falla y no pasa por el turno, así que nadie le cambiaba «apenas abramos»:
+   el 26-oct, de 10:45 a 11:56, 23 clientes de la 265 lo recibieron en plena
+   oficina. Mismas reglas que el turno: solo con `horario_equipo` en la cuenta,
+   y la apertura solo con `decir_apertura`. Sin soporte_expertos no cambia. */
+function respaldoAlHorario(texto, soporte, ahora) {
+  const horario = soporte?.horario_equipo || null;
+  if (!texto || !horario) return texto;
+  const atendiendo = equipoAtendiendo(ahora, horario);
+  const apertura = soporte.decir_apertura && !atendiendo ? proximaApertura(ahora, horario) : null;
+  return textoAlHorario(texto, atendiendo, apertura);
+}
+
 module.exports = {
   HORARIO_EQUIPO,
   HORARIO_ECOMMERCE,
@@ -149,6 +197,9 @@ module.exports = {
   equipoAtendiendo,
   minutosHabiles,
   proximaApertura,
+  cierreDeHoy,
+  cuandoTeEscribe,
   textoAlHorario,
+  respaldoAlHorario,
   fijarHoraParaPruebas,
 };

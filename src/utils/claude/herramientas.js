@@ -15,7 +15,7 @@
  * llega texto. Lo que devolvieron las herramientas sale en
  * `hechosHerramientas` para que la guardia lo dé por respaldado.
  */
-const { cliente, modeloClaude, PISO_MAX_TOKENS } = require('./claude');
+const { cliente, modeloClaude, opcionesPorModelo, PISO_MAX_TOKENS } = require('./claude');
 
 const TOPE_HERRAMIENTA_MS = 8000;
 const TOPE_TURNO_MS = 30000;
@@ -72,8 +72,7 @@ async function ejecutarConClaudeHerramientas({
     model: modelo,
     max_tokens: Math.max(Number(max_tokens) || 0, PISO_MAX_TOKENS),
     output_config: { effort: 'low' },
-    betas: ['server-side-fallback-2026-07-01'],
-    fallbacks: 'default',
+    ...opcionesPorModelo(modelo),
     system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
   };
 
