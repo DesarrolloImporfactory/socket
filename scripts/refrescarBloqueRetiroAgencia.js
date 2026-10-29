@@ -19,12 +19,21 @@
 // nuevo; el resto del prompt no se toca. Misma BD que producción: correr
 // DESPUÉS de deployar el código (la guardia en código y el bloque nuevo van
 // juntos).
+//
+// Desde 2026-10-29 el bloque va SOLO en las columnas que cierran venta
+// (columnaCierraVenta): en las de posventa se quita. En las de venta solo se
+// refresca donde ya está — si alguien lo sacó a mano, no se vuelve a meter.
 // ─────────────────────────────────────────────────────────────
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const { db } = require('../src/database/config');
 const {
   aplicarBloqueRetiroAgencia,
 } = require('../src/utils/promptCompiler');
+const {
+  columnaCierraVenta,
+} = require('../src/services/kanban_retiro_agencia.service');
+
+const MARCA = 'RETIRO EN AGENCIA SERVIENTREGA (BLOQUE DE PLATAFORMA)';
 
 const APLICAR = process.argv.includes('--aplicar');
 const i = process.argv.indexOf('--config');
@@ -48,11 +57,25 @@ const SOLO = i > -1 ? Number(process.argv[i + 1]) : null;
       { replacements: [cfg.id], type: db.QueryTypes.SELECT },
     );
     for (const col of cols) {
-      const nuevo = aplicarBloqueRetiroAgencia(col.instrucciones, true);
+      const acciones = await db.query(
+        `SELECT tipo_accion, config FROM kanban_acciones
+          WHERE id_kanban_columna = ? AND activo = 1`,
+        { replacements: [col.id], type: db.QueryTypes.SELECT },
+      );
+      const tiene = String(col.instrucciones || '').includes(MARCA);
+      const venta = columnaCierraVenta(acciones);
+      if (venta && !tiene) continue;
+      const nuevo = aplicarBloqueRetiroAgencia(col.instrucciones, venta);
+      // Columna cuyo prompt era SOLO el bloque (cfg 422): quitarlo la deja
+      // sin prompt. Se reporta y se deja como está.
+      if (!venta && nuevo.length < 200) {
+        console.log(`  cfg ${cfg.id} · col ${col.id} ${col.nombre}: SALTADA, el prompt es solo el bloque`);
+        continue;
+      }
       const cambia = nuevo !== String(col.instrucciones || '').trim();
       console.log(
         `  cfg ${cfg.id} (${cfg.nombre_configuracion}) · col ${col.id} ${col.nombre}: ` +
-          (cambia ? `${APLICAR ? 'ACTUALIZADA' : 'cambiaría'} (${col.instrucciones.length} → ${nuevo.length} chars)` : 'ya al día'),
+          (cambia ? `${venta ? '' : 'POSVENTA, se quita · '}${APLICAR ? 'ACTUALIZADA' : 'cambiaría'} (${col.instrucciones.length} → ${nuevo.length} chars)` : 'ya al día'),
       );
       if (cambia && APLICAR) {
         await db.query(`UPDATE kanban_columnas SET instrucciones = ? WHERE id = ?`, {

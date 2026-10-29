@@ -15,9 +15,10 @@ const {
 
 /* Switch "retiro en agencia Servientrega": si está encendido, cada
    recompilación del prompt (aplicar, personalizar, resincronizar, preview)
-   debe volver a inyectar su bloque — si no, personalizar lo perdería. */
+   debe volver a inyectar su bloque — si no, personalizar lo perdería. Solo
+   en columnas que cierran venta (retiroAplicaEnColumna). */
 const {
-  estaActivo: retiroAgenciaActivo,
+  retiroAplicaEnColumna,
 } = require('../services/kanban_retiro_agencia.service');
 
 const axios = require('axios');
@@ -1460,7 +1461,9 @@ exports.aplicarGlobal = catchAsync(async (req, res, next) => {
     const promptCompilado = col.instrucciones
       ? compilarPromptFinal(col.instrucciones, {
           ...personalizacionInicial,
-          retiro_agencia: await retiroAgenciaActivo(id_configuracion),
+          retiro_agencia: await retiroAplicaEnColumna(id_configuracion, {
+            acciones: col.acciones,
+          }),
         })
       : null;
 
@@ -2105,14 +2108,15 @@ async function _sincronizarEstructuraColumnas(
     }
   };
 
-  const retiroActivoEstructura = await retiroAgenciaActivo(id_configuracion);
   for (const col of colsPlantilla) {
     if (!col.estado_db) continue;
     const existente = porEstado.get(String(col.estado_db).toLowerCase());
     const prompt = col.instrucciones
       ? compilarPromptFinal(col.instrucciones, {
           ...personalizacion,
-          retiro_agencia: retiroActivoEstructura,
+          retiro_agencia: await retiroAplicaEnColumna(id_configuracion, {
+            acciones: col.acciones,
+          }),
         })
       : null;
 
@@ -2364,7 +2368,9 @@ async function _resincronizarUnaConfiguracion(
 
           const promptCompilado = compilarPromptFinal(promptBaseNuevo, {
             ...(persoActual || {}),
-            retiro_agencia: await retiroAgenciaActivo(id_configuracion),
+            retiro_agencia: await retiroAplicaEnColumna(id_configuracion, {
+              id_columna: col.id,
+            }),
           });
 
           // La BD va PRIMERO. Mismo motivo que en personalizacionActualizar:
@@ -2615,7 +2621,9 @@ exports.personalizacionPreview = catchAsync(async (req, res, next) => {
 
   const promptCompilado = compilarPromptFinal(promptBase, {
     ...personalizacion,
-    retiro_agencia: await retiroAgenciaActivo(col.id_configuracion),
+    retiro_agencia: await retiroAplicaEnColumna(col.id_configuracion, {
+      id_columna: id_kanban_columna,
+    }),
   });
 
   return res.json({
@@ -2756,7 +2764,9 @@ exports.personalizacionActualizar = catchAsync(async (req, res, next) => {
         const promptCompilado = compilarPromptFinal(promptBase, {
           ...camposGlobales,
           instrucciones_extra: instruccionesExtraDeEstaColumna,
-          retiro_agencia: await retiroAgenciaActivo(id_configuracion),
+          retiro_agencia: await retiroAplicaEnColumna(id_configuracion, {
+            id_columna: col.id,
+          }),
         });
 
         // 6.4) Guardar el prompt en NUESTRA BD. Va primero, y no es negociable.
