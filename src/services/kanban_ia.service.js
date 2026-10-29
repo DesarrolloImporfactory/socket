@@ -3261,24 +3261,29 @@ async function procesarMensajeKanban(params) {
      Si el pedido es con retiro, no hay oficina elegida ni lista ofrecida, y
      el modelo pide nombre/teléfono (el guion base le gana a los prompts), su
      respuesta se REEMPLAZA en código: pregunta de ciudad, o la lista real de
-     oficinas del directorio. Determinístico, nunca revienta el turno. */
-  try {
-    const {
-      guardiaOficinaRetiro,
-    } = require('./kanban_retiro_agencia.service');
-    const guardia = await guardiaOficinaRetiro({
-      respuesta: respuestaRaw,
-      ficha: fichaPedido,
-      id_configuracion,
-      id_cliente,
-      mensajeCliente: mensaje,
-    });
-    if (guardia) {
-      respuestaRaw = guardia.texto;
-      await log(`🏦 Guardia de oficina de retiro: ${guardia.motivo} (respuesta reemplazada)`);
+     oficinas del directorio. Determinístico, nunca revienta el turno.
+     Solo en la columna que cierra la venta: en posventa (y en la dropi
+     principal, donde el pedido ya existe) no hay ficha y reemplazaba
+     cualquier mención de la agencia por "¿domicilio u oficina?" (cfg 285). */
+  if (accCierreVenta && !columna.es_dropi_principal) {
+    try {
+      const {
+        guardiaOficinaRetiro,
+      } = require('./kanban_retiro_agencia.service');
+      const guardia = await guardiaOficinaRetiro({
+        respuesta: respuestaRaw,
+        ficha: fichaPedido,
+        id_configuracion,
+        id_cliente,
+        mensajeCliente: mensaje,
+      });
+      if (guardia) {
+        respuestaRaw = guardia.texto;
+        await log(`🏦 Guardia de oficina de retiro: ${guardia.motivo} (respuesta reemplazada)`);
+      }
+    } catch (eGuard) {
+      await log(`⚠️ Guardia de oficina falló (se sigue igual): ${eGuard.message}`);
     }
-  } catch (eGuard) {
-    await log(`⚠️ Guardia de oficina falló (se sigue igual): ${eGuard.message}`);
   }
 
   /* ── 9.9 Cierre narrado sin tag: inferirlo ──
@@ -3573,10 +3578,38 @@ async function procesarMensajeKanban(params) {
             `SELECT tipo_accion, activo FROM kanban_acciones
              WHERE id_kanban_columna = ?
                AND tipo_accion IN ('crear_orden_dropi','actualizar_orden_dropi')
-             ORDER BY id DESC LIMIT 1`,
+             ORDER BY id DESC`,
             { replacements: [columna.id], type: db.QueryTypes.SELECT },
           );
-          const acc = dropiAcc[0];
+          /* Columna con crear Y actualizar encendidos (pasa cuando la columna
+             que vende también recibe los pedidos de la tienda): decide la
+             orden real. Antes ganaba la acción más nueva y, si era
+             actualizar, toda venta por WhatsApp quedaba "omitida" sin orden
+             (cfg 1348, 2026-10-29). */
+          const activas = dropiAcc.filter((a) => Number(a.activo) === 1);
+          let acc = activas[0] || dropiAcc[0];
+          if (
+            activas.some((a) => a.tipo_accion === 'crear_orden_dropi') &&
+            activas.some((a) => a.tipo_accion === 'actualizar_orden_dropi')
+          ) {
+            const tel9 = String(telefono || '').replace(/\D/g, '').slice(-9);
+            const [porConfirmar] = await db.query(
+              `SELECT dropi_order_id FROM dropi_orders_cache
+                WHERE id_configuracion = ?
+                  AND RIGHT(REGEXP_REPLACE(phone, '[^0-9]', ''), 9) = ?
+                  AND UPPER(status) = 'PENDIENTE CONFIRMACION'
+                LIMIT 1`,
+              { replacements: [id_configuracion, tel9], type: db.QueryTypes.SELECT },
+            );
+            acc = activas.find(
+              (a) =>
+                a.tipo_accion ===
+                (porConfirmar ? 'actualizar_orden_dropi' : 'crear_orden_dropi'),
+            );
+            await log(
+              `🔀 Columna con crear y actualizar activos: ${porConfirmar ? `orden ${porConfirmar.dropi_order_id} por confirmar → actualizar` : 'sin orden por confirmar → crear'}`,
+            );
+          }
 
           if (acc) {
             // Nuevo modelo: la acción es el gate (force salta el flag config).

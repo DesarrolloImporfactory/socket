@@ -1323,12 +1323,20 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
     /* Modalidad preferida de la tienda (configuraciones.modalidad_envio_preferida):
        con 'agencia', la pregunta de modalidad ofrece primero la oficina. */
     let preferirAgencia = false;
+    /* Con el switch ON pero en una columna posventa no va ninguna regla de
+       agencias: el pedido ya tiene su entrega (cfg 285, 2026-10-29). */
+    let retiroPosventa = false;
     try {
       const {
         estaActivo: retiroAgenciaActivo,
         modalidadPreferida,
+        columnaCierraVenta,
       } = require('../services/kanban_retiro_agencia.service');
       retiroDirectorio = await retiroAgenciaActivo(id_configuracion);
+      if (retiroDirectorio && !columnaCierraVenta(acciones)) {
+        retiroDirectorio = false;
+        retiroPosventa = true;
+      }
       if (retiroDirectorio && typeof modalidadPreferida === 'function') {
         preferirAgencia =
           (await modalidadPreferida(id_configuracion)) === 'agencia';
@@ -1386,7 +1394,7 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
         `sugirió: [su referencia])". Nunca digas "no hay cobertura" y con ` +
         `retiro NUNCA pidas la dirección del domicilio.\n\n`;
       say(`✅ Regla de agencias (directorio) inyectada`);
-    } else {
+    } else if (!retiroPosventa) {
       bloque +=
         `🏦 SI EL CLIENTE RETIRA EN AGENCIA (Servientrega):\n` +
         `- Cada agencia que muestres va CON su ciudad, la que dice su propia ` +

@@ -1601,6 +1601,21 @@ async function suiteA() {
     );
   }
 
+  /* ── Bloque 15b: retiro en agencia solo en columnas de venta (caso 285, 2026-10-29) ──
+     La guardia y el bloque corrían en TODA columna IA: en Retiro en Agencia
+     le preguntaban "¿domicilio u oficina?" a quien ya tenía el paquete en la
+     agencia. Solo aplica donde la columna cierra venta (→ generar_guia). */
+  {
+    console.log('\n── Bloque 15b: retiro en agencia solo en columnas de venta ──');
+    const R = require('../src/services/kanban_retiro_agencia.service');
+    const cierre = { tipo_accion: 'cambiar_estado', config: JSON.stringify({ estado_destino: 'generar_guia', trigger: '[generar_guia]:true' }) };
+    const aContacto = { tipo_accion: 'cambiar_estado', config: { estado_destino: 'contacto_inicial' } };
+    caso('columna con cierre → generar_guia es de venta', R.columnaCierraVenta([cierre]) === true);
+    caso('remarketing (→ contacto_inicial) no es de venta', R.columnaCierraVenta([aContacto]) === false);
+    caso('columna sin acciones (Retiro en Agencia) no es de venta', R.columnaCierraVenta([]) === false);
+    caso('config doble-serializada se lee igual', R.columnaCierraVenta([{ ...cierre, config: JSON.stringify(cierre.config) }]) === true);
+  }
+
   /* ── Bloque 16: guardia de listas de oficinas (caso 411, Santa Elena, 2026-09-08) ──
      gpt-4o-mini "ofreció" 3 oficinas de Santa Elena que no existen (la ciudad
      tiene UNA: Comercial Aguilar) sin que la clienta eligiera retiro. Toda

@@ -612,11 +612,13 @@ exports.actualizarAsistente = catchAsync(async (req, res, next) => {
        el prompt a mano con el switch encendido le quitaría el bloque (la
        compilación siempre lo quita primero y solo lo repone si el flag va). */
     const {
-      estaActivo: retiroAgenciaActivo,
+      retiroAplicaEnColumna,
     } = require('../services/kanban_retiro_agencia.service');
     instruccionesFinal = compilarPromptFinal(estructura, {
       ...(perso || {}),
-      retiro_agencia: await retiroAgenciaActivo(col.id_configuracion),
+      retiro_agencia: await retiroAplicaEnColumna(col.id_configuracion, {
+        id_columna: id,
+      }),
     });
   }
 

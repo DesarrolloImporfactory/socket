@@ -8,9 +8,9 @@
 //            Files + BD + copia local). Si la cuenta ya tiene un archivo con
 //            el nombre canónico (subió el suyo propio), se reutiliza ESE en
 //            vez del default de la plataforma.
-//         2. agrega el bloque de instrucciones al prompt de cada columna IA
-//            (aplicarBloqueRetiroAgencia sobre kanban_columnas.instrucciones,
-//            que es lo que lee la Responses API). Con marcas, idempotente.
+//         2. agrega el bloque de instrucciones al prompt de las columnas IA
+//            que cierran venta (aplicarBloqueRetiroAgencia sobre
+//            kanban_columnas.instrucciones). Con marcas, idempotente.
 //         3. guarda configuraciones.retiro_agencia_activo = 1.
 //   OFF → quita el bloque del prompt, desvincula el archivo de las columnas
 //         (queda en la biblioteca para re-encender sin resubir) y guarda 0.
@@ -173,6 +173,40 @@ async function setModalidadPreferida(id_configuracion, modalidad) {
     { replacements: [valor, id_configuracion], type: db.QueryTypes.UPDATE },
   );
   return valor;
+}
+
+/* ¿La columna cierra ventas (cambiar_estado → generar_guia)? Solo ahí aplica
+   el flujo de ofrecer oficinas. En posventa (guía, retiro, novedad...) el
+   pedido ya tiene su entrega: caso cfg 285 (2026-10-29), la columna Retiro
+   en Agencia le preguntaba "¿domicilio u oficina?" a quien ya tenía el
+   paquete esperándolo en la agencia. */
+function columnaCierraVenta(acciones) {
+  return (acciones || []).some((a) => {
+    if (a?.tipo_accion !== 'cambiar_estado') return false;
+    let cfg = a.config;
+    try {
+      while (typeof cfg === 'string') cfg = JSON.parse(cfg);
+    } catch (_) {
+      return false;
+    }
+    return String(cfg?.estado_destino || '').toLowerCase() === 'generar_guia';
+  });
+}
+
+async function accionesDeColumna(id_columna) {
+  return db.query(
+    `SELECT tipo_accion, config FROM kanban_acciones
+      WHERE id_kanban_columna = ? AND activo = 1`,
+    { replacements: [id_columna], type: db.QueryTypes.SELECT },
+  );
+}
+
+/* Switch encendido Y columna de venta: lo que decide si el prompt lleva el
+   bloque. Recibe las acciones (plantilla) o el id de una columna existente. */
+async function retiroAplicaEnColumna(id_configuracion, { id_columna, acciones } = {}) {
+  if (!(await estaActivo(id_configuracion))) return false;
+  if (!acciones && id_columna) acciones = await accionesDeColumna(id_columna);
+  return columnaCierraVenta(acciones);
 }
 
 async function columnasIA(id_configuracion) {
@@ -513,9 +547,12 @@ async function activar(id_configuracion, id_sub_usuario = null) {
       }
     }
 
-    // 3. Inyectar el bloque en el prompt de cada columna IA (lo que lee el bot)
+    // 3. Bloque solo en las columnas de venta; en posventa se quita si quedó
+    // de una activación anterior. El archivo sí queda en todas (sirve para
+    // responder "¿dónde queda la oficina?").
     for (const col of cols) {
-      const nuevo = aplicarBloqueRetiroAgencia(col.instrucciones, true);
+      const venta = columnaCierraVenta(await accionesDeColumna(col.id));
+      const nuevo = aplicarBloqueRetiroAgencia(col.instrucciones, venta);
       await db.query(
         `UPDATE kanban_columnas SET instrucciones = ? WHERE id = ?`,
         { replacements: [nuevo, col.id], type: db.QueryTypes.UPDATE },
@@ -1393,6 +1430,8 @@ module.exports = {
   PILOTO_CONFIGS,
   enPiloto,
   estaActivo,
+  columnaCierraVenta,
+  retiroAplicaEnColumna,
   modalidadPreferida,
   setModalidadPreferida,
   activar,
