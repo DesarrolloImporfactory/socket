@@ -203,6 +203,12 @@ function normalizarFicha(f) {
     pasar_a: pasarA,
     pedir: texto(f.pedir),
     no_decir: listaDe(f.no_decir),
+    // El bot junta él los datos, de uno o dos por mensaje, y pasa al final
+    // con pasar_a_humano + resumen (tramo 3 del 70 %, 27-oct).
+    junta_datos: f.junta_datos === true,
+    // Borrador que espera el visto bueno de Daniel: se valida, pero el
+    // buscador no la usa (objecion-de-precio, 27-oct).
+    borrador: f.borrador === true,
   };
 }
 
@@ -240,7 +246,7 @@ function buscadorDeArchivo(ruta = RUTA_FICHAS) {
 }
 
 function crearBuscador(fichasCrudas) {
-  const fichas = (fichasCrudas || []).map((f) => normalizarFicha(f)).filter(Boolean);
+  const fichas = (fichasCrudas || []).map((f) => normalizarFicha(f)).filter((f) => f && !f.borrador);
   const N = fichas.length;
 
   const indice = fichas.map((f) => {
@@ -475,7 +481,12 @@ function bloqueFichas(resultados, o = {}) {
         f.pasos.forEach((p) => L.push(`  - ${p}`));
       }
       if (f.enlace) L.push(`  Enlace: ${f.enlace}`);
-      if (area) {
+      if (area && f.junta_datos) {
+        L.push(
+          `  Tú juntas los datos: ${f.pedir}. Pídelos de uno o dos por mensaje, sin repetir los que ya dio. ` +
+            'Mientras falte alguno NO va el paso a asesor. Con todos, usa pasar_a_humano (motivo cotizacion) con el resumen.',
+        );
+      } else if (area) {
         // «Responde y pasa» (trae Respuesta) o «solo pasa» (no la trae).
         L.push(
           `  ${f.respuesta_base ? 'Y además lo' : 'Lo'} resuelve una persona: paso a asesor${area === 'un asesor' ? '' : ` para ${area}`}` +

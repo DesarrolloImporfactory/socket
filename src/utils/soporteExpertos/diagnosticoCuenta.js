@@ -32,6 +32,13 @@
        WhatsApp del registro (no el de las conexiones, que es público), y la
        respuesta sale «discreta»: sin nombres de conexión o columna y sin
        cifras. Aun así dice qué falla: el riesgo que queda lo acepta Daniel.
+     · Antes de pedirle un dato se cruza con Imporsuit: si su WhatsApp es
+       EXACTO el de una plataforma suya de alumno y el correo de ese alumno
+       es el del dueño o de un administrador de UNA cuenta de IMPORCHAT, es
+       su cuenta (la registró la misma persona con el mismo correo) y se
+       revisa completa, como por su número. Nada de eso lo escribe el cliente.
+       Si su número está en varias cuentas, el cruce solo desempata cuando la
+       que encuentra es una de ellas.
      · Solo vale la coincidencia 'exacta' (`telefono.comoCoincide`): un número
        guardado sin código de país no prueba de qué país es.
      · Si el número aparece en dos cuentas, no se revisa ninguna.
@@ -45,12 +52,14 @@
 
 const T = require('./textos');
 const { comoCoincide, colaCandidatos, partir, soloDigitos, PAISES } = require('./telefono');
+const { correosDelWhatsapp, consultarImporsuit } = require('./cargaCliente');
 
 const LIMITE_MS = 7000; // la herramienta tiene 8 s de tope (TOPE_HERRAMIENTA_MS)
 const MAX_TEXTO = 1400; // la guardia corta en 1500 (guardia.js, MAX_RESPUESTA)
 const MAX_CONEXIONES = 3;
 const SANO_SI = 0.9; // el bot contestó en al menos el 90 % de los chats
 const MAX_DATOS = 3; // números o correos distintos que un mismo WhatsApp puede probar por día
+const MAX_CORREOS_IMPORSUIT = 3; // alumnos de Imporsuit con el mismo WhatsApp que se cruzan
 const VENTANA_DATOS_MS = 24 * 60 * 60 * 1000;
 
 /* Errores de IA guardados en configuraciones.openai_error_msg. Los de Claude
@@ -176,7 +185,7 @@ async function identificar(telefono, consultar, propia, soloRegistro = false) {
     }
   }
 
-  if (usuarios.size > 1) return { estado: 'ambiguo' };
+  if (usuarios.size > 1) return { estado: 'ambiguo', candidatos: usuarios };
   if (!usuarios.size) return { estado: 'sin_cuenta' };
   // Si solo se le encontró por el número de una conexión, se revisa solo esa:
   // en una agencia, las otras conexiones de la cuenta pueden ser de otra persona.
@@ -238,6 +247,23 @@ async function identificarPorCorreo(correo, consultar) {
   return { estado: 'ok', idUsuario: [...usuarios][0], solo: null };
 }
 
+/* ── 1 ter. Por su plataforma de alumno en Imporsuit ──────────────────────── */
+/** Su WhatsApp → el correo de su plataforma en Imporsuit (exacto) → la cuenta
+    de IMPORCHAT de ese correo. Medido el 27-oct: con esto se encuentra la
+    cuenta del 90 % de los que escriben, contra el 46 % solo con el número. */
+async function identificarPorImporsuit(telefono, consultar, consultarIS) {
+  const correos = (await correosDelWhatsapp(telefono, { consultar: consultarIS })).slice(0, MAX_CORREOS_IMPORSUIT);
+  const usuarios = new Set();
+  for (const correo of correos) {
+    const r = await identificarPorCorreo(correo, consultar);
+    if (r.estado === 'ambiguo') return { estado: 'ambiguo' };
+    if (r.estado === 'ok') usuarios.add(r.idUsuario);
+  }
+  if (usuarios.size > 1) return { estado: 'ambiguo' };
+  if (!usuarios.size) return { estado: 'sin_cuenta' };
+  return { estado: 'ok', idUsuario: [...usuarios][0], solo: null };
+}
+
 /* Datos probados por cada WhatsApp: telefono → Map(dato → cuándo). En memoria
    del proceso: un reinicio lo vacía, y está bien. Si IMPORCHAT corriera en
    varios procesos, el tope valdría por cada uno. */
@@ -270,7 +296,7 @@ const SQL_CONEXIONES = (conPropia) => `
          (c.token IS NOT NULL AND c.token <> '') AS tok,
          (COALESCE(c.id_telefono, '') <> '' AND COALESCE(c.id_whatsapp, '') <> '') AS vinculada,
          c.wa_status, c.metodo_pago,
-         c.openai_activo, c.openai_error_msg, c.ia_ajustes,
+         c.openai_activo, c.openai_error_msg, c.ia_ajustes, c.suspended_reason,
          u.fecha_renovacion
     FROM configuraciones c
     LEFT JOIN usuarios_chat_center u ON u.id_usuario = c.id_usuario
@@ -278,9 +304,8 @@ const SQL_CONEXIONES = (conPropia) => `
    ORDER BY c.id DESC
    LIMIT 50`;
 
-async function elegirConexiones(idUsuario, consultar, propia, solo) {
-  const todas = ((await consultar(SQL_CONEXIONES(Boolean(propia)), propia ? { uid: idUsuario, propia } : { uid: idUsuario })) || [])
-    .filter((c) => !solo || solo.has(Number(c.id)));
+/* De las conexiones de la cuenta (`todas`), las que se revisan. */
+async function elegirDe(todas, consultar) {
   if (!todas.length) return [];
 
   const actividad = await consultar(
@@ -301,6 +326,20 @@ async function elegirConexiones(idUsuario, consultar, propia, solo) {
   // Ninguna tuvo mensajes en 30 días: la más reciente que no esté eliminada.
   const vivas = todas.filter((c) => Number(c.suspendido) !== 1).sort((a, b) => Number(b.id) - Number(a.id));
   return vivas.length ? [vivas[0]] : [];
+}
+
+/* La cuenta entera, como la corta planAcceso: suspendida o cancelada (salvo
+   plan permanente). null si no está bloqueada así. */
+async function cuentaBloqueada(idUsuario, consultar) {
+  const [u] = (await consultar(
+    `SELECT estado, permanente FROM usuarios_chat_center WHERE id_usuario = :uid LIMIT 1`,
+    { uid: idUsuario },
+  )) || [];
+  if (!u || Number(u.permanente) === 1) return null;
+  const e = String(u.estado || '').toLowerCase();
+  if (e === 'suspendido') return 'cuenta_suspendido';
+  if (e === 'cancelado') return 'cuenta_cancelado';
+  return null;
 }
 
 /* ── 3. Las puertas del motor, conexión por conexión ─────────────────────── */
@@ -549,6 +588,9 @@ const textoError = () => `${T.DIAGNOSTICO_FRASES.error} ${T.MENSAJE_ASESOR}`;
  * @param {string} telefono  WhatsApp del que escribe (lo entrega Meta).
  * @param {object} [o]
  * @param {Function} [o.consultar]        (sql, replacements) → filas; por defecto la base de IMPORCHAT.
+ * @param {Function} [o.consultarImporsuit] (sql, [valores]) → filas de Imporsuit, para el cruce. Por
+ *                                        defecto la base real, salvo que `consultar` venga inyectado:
+ *                                        entonces, sin esta, no se cruza.
  * @param {Function} [o.verificarAcceso]  id_configuracion → { permitido, motivo } (planAcceso).
  * @param {Date}     [o.ahora]            para horario y fechas.
  * @param {number}   [o.propia]           conexión de la línea que atiende (la 265): no es del alumno.
@@ -559,7 +601,8 @@ const textoError = () => `${T.DIAGNOSTICO_FRASES.error} ${T.MENSAJE_ASESOR}`;
  * @param {object}   [o.ajustesIA]        { normalizar, dentroDeHorario }
  * @returns {Promise<{estado: string, resultado: string|null, conexiones: object[], texto: string}>}
  *   estado: 'sin_cuenta' | 'ambiguo' | 'pide_dato' | 'limite' | 'error' | 'revisada'
- *   por (solo con 'revisada'): 'numero' (su WhatsApp) | 'dato' (lo que escribió)
+ *   por (solo con 'revisada'): 'numero' (su WhatsApp) | 'imporsuit' (su WhatsApp, por el correo de su
+ *        plataforma de alumno) | 'dato' (lo que escribió)
  *   resultado (solo con 'revisada'): 'con_fallas' | 'sano' | 'sin_causa'
  */
 async function diagnosticarCuenta(telefono, o = {}) {
@@ -570,8 +613,59 @@ async function diagnosticarCuenta(telefono, o = {}) {
   }
 }
 
+/**
+ * ¿De quién es la cuenta de IMPORCHAT del que escribe? Su WhatsApp, el cruce
+ * por su plataforma de Imporsuit y, si no, el número o correo que escribió en
+ * este turno. Lo usan revisar_mi_imporchat y ver_mis_pedidos_dropi.
+ * @returns {Promise<{fijo: object}|{quien: object, por: string, porDato: string|null}>}
+ *   fijo: el texto que hay que responder (no se encontró, ambiguo, pide dato…)
+ */
+async function quienEs(telefono, o = {}) {
+  const consultar = o.consultar || consultarImporchat;
+  const consultarIS = o.consultarImporsuit === undefined ? (o.consultar ? null : consultarImporsuit) : o.consultarImporsuit;
+  const propia = Number(o.propia) || null;
+  const ahora = o.ahora instanceof Date ? o.ahora : new Date();
+  const fijo = (...a) => ({ fijo: FIJO(...a) });
+  const F = T.DIAGNOSTICO_FRASES;
+  const crearCuenta = `Si todavía no tienes cuenta: ${lineaTutorial('cuenta')}`;
+  let quien = await identificar(telefono, consultar, propia);
+  let porDato = null;
+  let por = 'numero';
+  if (quien.estado !== 'ok' && consultarIS) {
+    // Si Imporsuit no contesta, se sigue como si no hubiera cruce.
+    const cruce = await identificarPorImporsuit(telefono, consultar, consultarIS).catch(() => ({ estado: 'error' }));
+    if (cruce.estado === 'ok' && (quien.estado !== 'ambiguo' || quien.candidatos.has(cruce.idUsuario))) {
+      quien = cruce;
+      por = 'imporsuit';
+    }
+  }
+  if (quien.estado === 'ambiguo') return fijo('ambiguo', `${F.ambiguo} ${T.MENSAJE_ASESOR}`);
+  if (quien.estado !== 'ok') {
+    // Sin dato: se le pide el número o el correo con que se registró.
+    if (!String(o.dato || '').trim()) return fijo('sin_cuenta', [F.sin_cuenta, crearCuenta].join('\n'));
+    const leido = leerDato(o.dato, telefono);
+    if (!leido) return fijo('pide_dato', F.dato_invalido);
+    if (!datoEnMensaje(leido, o.mensaje, telefono)) return fijo('pide_dato', F.dato_no_escrito);
+    if (!puedeProbar(String(telefono), leido.valor, ahora.getTime())) {
+      return fijo('limite', `${F.limite_datos} ${T.MENSAJE_ASESOR}`);
+    }
+    quien = leido.tipo === 'correo'
+      ? await identificarPorCorreo(leido.valor, consultar)
+      : await identificar(leido.valor, consultar, propia, true);
+    const tipo = { tipo: leido.tipo };
+    if (quien.estado === 'ambiguo') return fijo('ambiguo', `${llenar(F.ambiguo_dato, tipo)} ${T.MENSAJE_ASESOR}`);
+    if (quien.estado !== 'ok') {
+      return fijo('sin_cuenta', [`${llenar(F.sin_cuenta_dato, tipo)} ${T.MENSAJE_ASESOR}`, crearCuenta].join('\n'));
+    }
+    porDato = llenar(F.encontrada_por_dato, tipo);
+    por = 'dato';
+  }
+  return { quien, por, porDato };
+}
+
 async function revisar(telefono, o) {
   const consultar = o.consultar || consultarImporchat;
+  const consultarIS = o.consultarImporsuit || (o.consultar ? null : consultarImporsuit);
   const propia = Number(o.propia) || null;
   const ctx = {
     ahora: o.ahora instanceof Date ? o.ahora : new Date(),
@@ -581,34 +675,40 @@ async function revisar(telefono, o) {
   };
 
   const F = T.DIAGNOSTICO_FRASES;
-  const crearCuenta = `Si todavía no tienes cuenta: ${lineaTutorial('cuenta')}`;
-  let quien = await identificar(telefono, consultar, propia);
-  let porDato = null;
-  if (quien.estado === 'ambiguo') return FIJO('ambiguo', `${F.ambiguo} ${T.MENSAJE_ASESOR}`);
-  if (quien.estado !== 'ok') {
-    // Sin dato: se le pide el número o el correo con que se registró.
-    if (!String(o.dato || '').trim()) return FIJO('sin_cuenta', [F.sin_cuenta, crearCuenta].join('\n'));
-    const leido = leerDato(o.dato, telefono);
-    if (!leido) return FIJO('pide_dato', F.dato_invalido);
-    if (!datoEnMensaje(leido, o.mensaje, telefono)) return FIJO('pide_dato', F.dato_no_escrito);
-    if (!puedeProbar(String(telefono), leido.valor, ctx.ahora.getTime())) {
-      return FIJO('limite', `${F.limite_datos} ${T.MENSAJE_ASESOR}`);
-    }
-    quien = leido.tipo === 'correo'
-      ? await identificarPorCorreo(leido.valor, consultar)
-      : await identificar(leido.valor, consultar, propia, true);
-    const tipo = { tipo: leido.tipo };
-    if (quien.estado === 'ambiguo') return FIJO('ambiguo', `${llenar(F.ambiguo_dato, tipo)} ${T.MENSAJE_ASESOR}`);
-    if (quien.estado !== 'ok') {
-      return FIJO('sin_cuenta', [`${llenar(F.sin_cuenta_dato, tipo)} ${T.MENSAJE_ASESOR}`, crearCuenta].join('\n'));
-    }
-    porDato = llenar(F.encontrada_por_dato, tipo);
-  }
+  const quienEsElDueno = await quienEs(telefono, { ...o, consultar, consultarImporsuit: consultarIS, propia, ahora: ctx.ahora });
+  if (quienEsElDueno.fijo) return quienEsElDueno.fijo;
+  const { quien, por, porDato } = quienEsElDueno;
 
   const conDato = (texto) => (porDato ? `${porDato} ${texto}`.slice(0, MAX_TEXTO) : texto);
-  const por = porDato ? 'dato' : 'numero';
 
-  const elegidas = await elegirConexiones(quien.idUsuario, consultar, propia, quien.solo);
+  /* La cuenta entera bloqueada va primero: suspendida (el cobro rebotó) o
+     cancelada. Antes se miraba solo conexión por conexión, y si sus
+     conexiones estaban suspendidas y sin mensajes no quedaba ninguna que
+     revisar: le decía «no tienes ningún número conectado» (caso 153, 26-oct).
+     Con `saldoPendiente` (ver_mis_pagos) se suma su saldo. */
+  const bloqueo = await cuentaBloqueada(quien.idUsuario, consultar);
+  if (bloqueo) {
+    const def = T.DIAGNOSTICO[bloqueo];
+    const lineas = [F.inicio, bloqueo === 'cuenta_suspendido' ? `${def.texto} ${F.cuenta_por_pago}` : def.texto];
+    if (bloqueo === 'cuenta_suspendido' && typeof o.saldoPendiente === 'function') {
+      const saldo = await Promise.resolve()
+        .then(o.saldoPendiente)
+        .catch(() => null);
+      if (saldo) lineas.push(llenar(F.cuenta_saldo, { saldo }));
+    }
+    lineas.push(F.cuenta_cierre);
+    return { estado: 'revisada', resultado: 'con_fallas', por, cuenta: bloqueo, conexiones: [], texto: conDato(lineas.join('\n')) };
+  }
+
+  const todas = ((await consultar(SQL_CONEXIONES(Boolean(propia)), propia ? { uid: quien.idUsuario, propia } : { uid: quien.idUsuario })) || [])
+    .filter((c) => !quien.solo || quien.solo.has(Number(c.id)));
+  const elegidas = await elegirDe(todas, consultar);
+  // Tiene conexiones, pero todas suspendidas porque bajó de plan: no es que
+  // nunca conectó un número.
+  if (!elegidas.length && todas.length && todas.every((c) => Number(c.suspendido) === 1 && c.suspended_reason === 'downgrade')) {
+    const def = T.DIAGNOSTICO.conexiones_suspendidas_plan;
+    return { estado: 'revisada', resultado: 'con_fallas', por, conexiones: [], texto: conDato([F.inicio, def.texto].join('\n')) };
+  }
   if (!elegidas.length) {
     const def = T.DIAGNOSTICO.sin_conexion;
     return {
@@ -647,6 +747,7 @@ async function revisar(telefono, o) {
 
 module.exports = {
   diagnosticarCuenta,
+  quienEs,
   consultarImporchat,
   // para las pruebas
   claseErrorIA,

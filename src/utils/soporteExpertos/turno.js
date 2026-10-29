@@ -25,11 +25,13 @@
 const { leerAdjuntos } = require('./adjuntos');
 const { sinTildes } = require('./texto');
 const { hablaDeCarga, pideDatosDeOtro } = require('./intencion');
-const { cargasDelTelefono, bloqueCarga, textoParaCliente, codigosEnMensaje } = require('./cargaCliente');
+const { cargasDelTelefono, cargasDelDueno, bloqueCarga, textoParaCliente, codigosEnMensaje } = require('./cargaCliente');
+const { duenoRecordado } = require('./identidadPorDato');
 const { buscadorDeArchivo, bloqueFichas, buscarConRescate } = require('./fichas');
 const { revisarRespuesta } = require('./guardia');
 const { paisDelTelefono } = require('./telefono');
-const { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad, esMensajeDeBot, noPideNada } = require('./senales');
+const { esSoloSaludo, esReclamo, reclamaPorDemora, objetaPrecio, dioCantidad, esMensajeDeBot, noPideNada } = require('./senales');
+const { FICHAS_OBJECION, pasoDeObjecion, respuestaExplicar, resumenObjecion } = require('./objecionPrecio');
 const T = require('./textos');
 const { equipoAtendiendo, proximaApertura, textoAlHorario } = require('./horario');
 const { esColumnaEcommerce } = require('./escalado');
@@ -97,6 +99,9 @@ function huellasDeCarga(textoCarga) {
  *   deps      { consultar, buscador, ahora, hoy } — solo para pruebas
  *   log       función de log del motor
  */
+/* Lo que escribe el webhook cuando no llegó texto y no trae ningún pedido. */
+const RELLENO_SIN_PEDIDO = ['sticker', 'eliminado', 'desconocido'];
+
 async function prepararTurno(p) {
   const opciones = { cargas: true, fichas: true, guardia: true, ...(p.opciones || {}) };
   const deps = p.deps || {};
@@ -134,6 +139,8 @@ async function prepararTurno(p) {
   const veniaDeCarga = Boolean(previo?.carga) && previo.telefono === String(p.telefono);
   // …y lo leído sigue vigente; si ya venció, se vuelve a leer, no se suelta.
   const cargaFresca = veniaDeCarga && ahora - (previo.cargaTs || 0) <= MINUTOS_MEMORIA * 60 * 1000;
+  // Con herramientas, ver_mi_carga puede buscar con el dato que escriba (tramo 4).
+  const conHerramientas = Boolean(opciones.herramientas);
   if (opciones.cargas && !otro.pide && (hablaDeCarga(dicho) || veniaDeCarga)) {
     if (cargaFresca) {
       carga = previo.carga;
@@ -142,13 +149,24 @@ async function prepararTurno(p) {
       carga = await cargasDelTelefono(p.telefono, { consultar: deps.consultar, hoy: deps.hoy });
       cargaTs = ahora;
     }
-    bloqueDeCarga = bloqueCarga(carga, { codigos: codigosEnMensaje(dicho), mensajeAsesor: T.MENSAJE_ASESOR });
+    /* Con su número no hay nada, pero en esta conversación ya se confirmó su
+       cuenta con el dato que escribió (identidadPorDato.js, 30 min): se lee
+       la de esa cuenta, para no contradecir lo que ver_mi_carga le dijo. */
+    const dueno = conHerramientas && ['sin_carga', 'solo_historicas'].includes(carga?.estado) ? duenoRecordado(String(p.telefono)) : null;
+    if (dueno) carga = await cargasDelDueno(dueno, { consultar: deps.consultar, hoy: deps.hoy });
+    bloqueDeCarga = bloqueCarga(carga, {
+      codigos: codigosEnMensaje(dicho),
+      mensajeAsesor: T.MENSAJE_ASESOR,
+      ...(conHerramientas ? { mensajeSinCargaPideDato: T.MENSAJE_SIN_CARGA_PIDE_DATO, mensajeSinCargaEnCuenta: T.MENSAJE_SIN_CARGA_EN_CUENTA } : {}),
+    });
   }
-  const textoCarga = carga?.estado === 'encontradas' ? textoParaCliente(carga, T.MENSAJE_ASESOR) : null;
+  const textoCarga = carga ? textoParaCliente(carga, T.MENSAJE_ASESOR) : null;
   /* El estado de su carga ya se lo dijo hace menos de 20 minutos y ahora no lo
      vuelve a pedir: no se repite el bloque entero (23-oct: a quien preguntaba
      hasta cuándo recibe la bodega para el contenedor del 30 se le mandó dos
      veces la lista de sus 3 cargas). Lo nuevo que pregunta es para el asesor. */
+  // Se le dijo el estado de su carga hace menos de 20 minutos (pida o no).
+  const cargaDichaReciente = Boolean(previo?.cargaDichaTs) && ahora - previo.cargaDichaTs <= MINUTOS_MEMORIA * 60 * 1000;
   const cargaYaDicha =
     Boolean(textoCarga) &&
     Boolean(previo?.cargaDichaTs) &&
@@ -164,6 +182,29 @@ async function prepararTurno(p) {
     );
   }
 
+  // ── Reclamo y objeción de precio (señales; los bloques van más abajo) ──
+  const reclamo = !otro.pide && esReclamo(dicho);
+  const reclamoPorDemora = !otro.pide && Boolean(carga) && reclamaPorDemora(dicho);
+  /* «Me sale muy caro», «en otro lado me cobran menos» (objecionPrecio.js).
+     Solo con soporte_expertos.objecion_precio y los textos aprobados; si no,
+     queda en el log y el turno sigue como siempre. 1.ª vez: explica; 2.ª (o
+     con enojo): pasa al líder comercial. Nunca ofrece descuento. */
+  const objeta = !otro.pide && !reclamoPorDemora && objetaPrecio(dicho);
+  const flujoObjecion = opciones.objecion_precio === true && T.OBJECION_APROBADO === true;
+  const objecionesPrevias = Number(previo?.objeciones) || 0;
+  const objecionesDichas = objecionesPrevias + (objeta ? 1 : 0);
+  const objecionPrecio = objeta && flujoObjecion ? pasoDeObjecion({ previas: objecionesPrevias, reclamo }) : null;
+  const paisObjecion = objecionPrecio ? paisDelTelefono(p.telefono) : null;
+  const textoObjecion =
+    objecionPrecio === 'explicar'
+      ? respuestaExplicar({ pais: paisObjecion, cotizacion: previo?.cotizacion || null })
+      : objecionPrecio === 'pasar' && !reclamo
+        ? T.OBJECION.pase_comercial
+        : '';
+  const resumenDeObjecion = objecionPrecio
+    ? resumenObjecion({ pais: paisObjecion, cotizacion: previo?.cotizacion || null, veces: objecionesDichas })
+    : null;
+
   // ── Fichas de la base ─────────────────────────────────────────────────
   let fichas = [];
   if (opciones.fichas && dicho.trim()) {
@@ -171,6 +212,8 @@ async function prepararTurno(p) {
       const buscador = deps.buscador || buscadorDeArchivo();
       const pais = paisDelTelefono(p.telefono);
       fichas = buscarConRescate(buscador, dicho, { pais: pais === 'ec' || pais === 'mx' ? pais : null });
+      // Con el flujo de objeción, sus fichas (que pasan a pricing) no se muestran.
+      if (objecionPrecio) fichas = fichas.filter((f) => !FICHAS_OBJECION.includes(f.ficha.id));
       const bloque = bloqueFichas(fichas, { hayCarga: Boolean(textoCarga) });
       if (bloque) bloques.push(bloque);
     } catch (e) {
@@ -183,13 +226,22 @@ async function prepararTurno(p) {
      hablo?») salió a cobranza pidiendo el comprobante, y a quien reclamaba por
      la demora se le repitió el estado. El aviso se lo dice al modelo; si igual
      lo hace, la guardia lo frena con el texto seguro de más abajo. */
-  const reclamo = !otro.pide && esReclamo(dicho);
-  const reclamoPorDemora = !otro.pide && Boolean(carga) && reclamaPorDemora(dicho);
   if (reclamo || reclamoPorDemora) {
     bloques.push(
       '⚠️ RECLAMO: el cliente reclama o está molesto. Va a la persona responsable (no a cobranza ni a otra área) y NO se le pide ningún dato ni comprobante. ' +
         'No discutas, no expliques, no justifiques y no repitas el estado de su carga. ' +
         `Responde exactamente: ${reclamoPorDemora ? T.MENSAJE_RECLAMO_CARGA : T.MENSAJE_RECLAMO}`,
+    );
+  }
+
+  // ── Objeción de precio ────────────────────────────────────────────────
+  if (textoObjecion) {
+    bloques.push(
+      (objecionPrecio === 'explicar'
+        ? '💰 OBJECIÓN DE PRECIO: al cliente le parece caro el precio, el flete o la cotización. Explícale de dónde sale el valor y qué puede hacer; todavía NO pases el caso. '
+        : '💰 OBJECIÓN DE PRECIO (insiste): ya se le explicó el desglose y sigue sintiéndolo caro. Pasa al líder comercial. ') +
+        'NO ofrezcas, insinúes ni calcules descuento, rebaja o precio especial, no ofrezcas igualar otra cotización y no digas que el precio puede bajar. ' +
+        `Responde exactamente: ${textoObjecion}`,
     );
   }
 
@@ -244,34 +296,47 @@ async function prepararTurno(p) {
     dioCantidad: cantidadDicha,
     // Cuándo el bot terminó su respuesta con una pregunta (lo marca revisarTurno).
     preguntoTs: previo?.preguntoTs || null,
+    // Cuántas veces objetó el precio en esta conversación (objecionPrecio.js).
+    objeciones: objecionesDichas,
+    // La cotización de México que armó el bot aquí (la anota anotarCotizacion).
+    cotizacion: previo?.cotizacion || null,
   });
 
   /* Fichas que pasan el caso a una persona (`pasar_a`): no pueden cerrar solas.
      La guardia agrega el paso a asesor si el modelo contestó con una y lo omitió
      (y, si la ficha pide la cantidad, también la pide cuando falta). */
   const fichasConPase = [...fichasVistas.values()]
-    .filter((f) => f.pasar_a && f.respuesta_base)
+    .filter((f) => f.pasar_a && f.respuesta_base && !f.junta_datos)
     .map((f) => ({ id: f.id, partes: [f.respuesta_base, ...f.pasos], pedir: f.pedir || '' }));
 
   const firme = [
     ...Object.values(T.TEXTOS_FIJOS),
     ...Object.values(T.LINKS),
     bloqueDeCarga,
+    textoObjecion,
     ...[...fichasVistas.values()].map(decible),
   ].join('\n');
 
-  /* Con qué se reemplaza una respuesta que la guardia no deja pasar. */
+  /* Con qué se reemplaza una respuesta que la guardia no deja pasar.
+     El estado de la carga solo si el CLIENTE habló de su carga en este
+     mensaje y nunca si ya se le dijo hace menos de 20 minutos (Daniel, 27-oct:
+     a quien preguntaba por una cotización nueva se le mandó otra vez su carga). */
   let textoSeguro = T.MENSAJE_ASESOR;
   if (otro.pide) textoSeguro = T.MENSAJE_SOLO_TU_NUMERO;
   else if (carga && hablaDeCarga(dicho)) {
-    if (cargaYaDicha) textoSeguro = T.MENSAJE_ASESOR;
+    if (cargaYaDicha || cargaDichaReciente) textoSeguro = T.MENSAJE_ASESOR;
     else if (textoCarga) textoSeguro = textoCarga;
-    else if (carga.estado === 'sin_carga' || carga.estado === 'solo_historicas') textoSeguro = T.MENSAJE_SIN_CARGA;
+    else if (carga.estado === 'sin_carga' || carga.estado === 'solo_historicas') {
+      if (carga.por === 'dato') textoSeguro = T.MENSAJE_SIN_CARGA_EN_CUENTA;
+      else textoSeguro = conHerramientas ? T.MENSAJE_SIN_CARGA_PIDE_DATO : T.MENSAJE_SIN_CARGA;
+    }
     else textoSeguro = T.MENSAJE_CARGA_A_LOGISTICA;
   }
   // Un reclamo no se contesta con el estado ni con el paso a cobranza.
   if (reclamoPorDemora) textoSeguro = T.MENSAJE_RECLAMO_CARGA;
   else if (reclamo) textoSeguro = T.MENSAJE_RECLAMO;
+  // Ni descuento ni «un asesor lo revisa» suelto: el texto del paso en que va.
+  if (textoObjecion) textoSeguro = textoObjecion;
 
   /* El primer saludo de la conversación no se queda sin respuesta. «Primero» =
      no hay nada de este cliente en la memoria (20 minutos): si ya venía
@@ -297,6 +362,17 @@ async function prepararTurno(p) {
     // tutorial?») es un sí: se contesta (revisión del 24-oct).
     !(previo?.preguntoTs && ahora - previo.preguntoTs <= MINUTOS_MEMORIA * 60 * 1000) &&
     noPideNada(String(p.mensaje || ''));
+  /* Solo llegó un sticker, un mensaje eliminado o un «Tipo de mensaje no
+     reconocido» (casi siempre una reacción a nuestra plantilla), sin una
+     palabra: tampoco se contesta. Antes salía «Recibí lo que enviaste, pero no
+     lo puedo abrir…» y el bot de la tienda del alumno le respondía (auditoría
+     265 del 27-oct: 9 de 9 casos así). Mismo interruptor: callar_acuses. */
+  const soloRelleno =
+    opciones.callar_acuses !== false &&
+    !otro.pide &&
+    !String(adj.textoCliente || '').trim() &&
+    adj.adjuntos.length > 0 &&
+    adj.adjuntos.every((a) => RELLENO_SIN_PEDIDO.includes(a.tipo));
 
   await log(
     `🎓 soporte_expertos: carga=${carga ? `${carga.estado}${carga.cargas.length ? ` (${carga.cargas.length})` : ''}` : 'no consultada'}` +
@@ -305,9 +381,11 @@ async function prepararTurno(p) {
       (adj.esNotaDeVoz ? ' · nota de voz' : '') +
       (otro.pide ? ` · pide datos ajenos (${otro.motivo})` : '') +
       (reclamoPorDemora ? ' · reclama por la demora' : reclamo ? ' · reclamo' : '') +
+      (objeta ? ` · objeción de precio ${objecionesDichas}.ª${objecionPrecio ? ` (${objecionPrecio})` : ' (flujo apagado)'}` : '') +
       (saludoSinContestar ? ' · primer saludo' : '') +
       (mensajeDeBot ? ' · mensaje de un bot de tienda' : '') +
       (sinPedido ? ' · no pide nada' : '') +
+      (soloRelleno ? ' · solo un sticker o una reacción' : '') +
       (cargaYaDicha ? ' · el estado de la carga ya se dijo' : '') +
       (esEcommerce ? ' · ecommerce' : '') +
       (atendiendo ? ' · equipo atendiendo' : apertura ? ` · abre ${apertura}` : ''),
@@ -324,10 +402,13 @@ async function prepararTurno(p) {
       pideDatosDeOtro: otro.pide,
       reclamo,
       reclamoPorDemora,
+      objecionPrecio,
+      resumenObjecion: resumenDeObjecion,
       saludoSinContestar,
       mensajeDeBot,
-      noPideNada: sinPedido,
+      noPideNada: sinPedido || soloRelleno,
       cargaYaDicha,
+      cargaDichaReciente,
       equipoAtendiendo: atendiendo,
       apertura,
       esEcommerce,
@@ -361,6 +442,8 @@ function hechosDeEmergencia(mensaje = '') {
     pideDatosDeOtro: false,
     reclamo: false,
     reclamoPorDemora: false,
+    objecionPrecio: null,
+    resumenObjecion: null,
     saludoSinContestar: false,
     mensajeDeBot: false,
     noPideNada: false,
@@ -385,10 +468,21 @@ function alHorario(rev, h) {
   return { ...rev, texto: textoAlHorario(rev.texto, h.equipoAtendiendo, h.apertura) };
 }
 
+/* Ante una objeción de precio el bot no ofrece ni insinúa una rebaja: la
+   decide una persona (objecionPrecio.js). */
+const RE_OFRECE_DESCUENTO =
+  /\b(?:descuento|rebaja\w*|precio especial|te (?:bajo|bajamos|bajaremos|dejo en|dejamos en|mejoro|mejoramos)|(?:igualo|igualamos|igualar|mejorar) (?:el precio|la tarifa|la cotizacion))\b/;
+
 /** Pasa la respuesta del modelo por la guardia con los hechos del turno. */
 function revisarTurno(respuesta, hechos, { ahora = Date.now() } = {}) {
   const h = hechos || hechosDeEmergencia();
-  const rev = alHorario(revisarRespuesta(respuesta, h), h);
+  let rev = alHorario(revisarRespuesta(respuesta, h), h);
+  if (h.objecionPrecio && RE_OFRECE_DESCUENTO.test(sinTildes(String(rev.texto || '').toLowerCase()))) {
+    rev = alHorario(
+      { texto: h.textoSeguro, cambiada: true, corregida: false, motivos: [...(rev.motivos || []), 'ofrecía una rebaja ante una objeción de precio'] },
+      h,
+    );
+  }
   /* ¿La respuesta trae el estado de la carga? Si ya se le había dicho y no lo
      volvió a pedir, se cambia por el paso a asesor; si no, se anota que ya se
      le dijo (para el próximo mensaje de esta conversación). */
@@ -413,9 +507,19 @@ function revisarTurno(respuesta, hechos, { ahora = Date.now() } = {}) {
   return rev;
 }
 
+/* La cotización de México que el bot armó en este turno (armar_cotizacion_mexico):
+   se recuerda en la conversación para que una objeción de precio muestre sus
+   cifras (objecionPrecio.js). Si la conversación ya no está en memoria, nada. */
+function anotarCotizacion(clave, cotizacion) {
+  const m = clave && memoria.get(clave);
+  if (!m || !cotizacion) return false;
+  m.cotizacion = { cbm: Number(cotizacion.cbm) || null, flete: Number(cotizacion.flete) || null, total: Number(cotizacion.total) || null };
+  return true;
+}
+
 /** Solo para pruebas. */
 function olvidarTodo() {
   memoria.clear();
 }
 
-module.exports = { prepararTurno, revisarTurno, hechosDeEmergencia, olvidarTodo, pideEstado, MINUTOS_MEMORIA };
+module.exports = { prepararTurno, revisarTurno, hechosDeEmergencia, anotarCotizacion, olvidarTodo, pideEstado, MINUTOS_MEMORIA };

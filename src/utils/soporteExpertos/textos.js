@@ -24,6 +24,8 @@ const LINKS = {
   imporia: 'https://imporfactory.app/imporia',
   checklist: 'https://imporfactory.app/checklist',
   cursoMetodoYuan: 'https://imporfactory.app/cursos/30',
+  // Clase «Medios de contacto» (Sistema 2 - Proveedores, curso 30, 5 min): cómo escribirle a un proveedor.
+  claseContactarProveedor: 'https://imporfactory.app/cursos/30?contenido=383',
 };
 
 /* ── Los de la versión 1 (sin cambios) ── */
@@ -37,7 +39,7 @@ const MENSAJE_RECIBIDO = 'Recibido. Lo sumo a tu caso para el asesor.';
 const MENSAJE_ARCHIVO = 'Recibí lo que enviaste. Un asesor lo revisa y te escribe apenas abramos.';
 const MENSAJE_CLASE = `El enlace para entrar a la clase en vivo es siempre el mismo: ${LINKS.clase}
 Se abre 30 minutos antes de cada clase. Fuera de ese rato te muestra cuándo es la próxima, con la hora de Ecuador y la de México. Las clases anteriores quedan grabadas en la plataforma.`;
-const MENSAJE_ROBOT = 'Soy el asistente automático de IMPORFACTORY. Un asesor te escribe apenas abramos.';
+const MENSAJE_ROBOT = 'Estás hablando con el asistente de IMPORFACTORY y te ayudo ahora mismo. Si prefieres a una persona, dímelo.';
 // Lo que recibe el cliente si OpenAI falla (ia_ajustes → mensaje_fallback).
 const MENSAJE_FALLBACK = 'Recibimos tu mensaje. Un asesor te escribe apenas abramos.';
 
@@ -71,6 +73,37 @@ const MENSAJE_RECLAMO_CARGA = `${FRASE_RECLAMO} ${MENSAJE_CARGA_A_LOGISTICA}`;
    Es la misma frase que trae la ficha `cotizar-producto-del-catalogo`. */
 const PREGUNTA_CANTIDAD = 'Dime cuántas unidades piensas comprar.';
 
+/* Tramo 3 del 70 % (27-oct): el bot junta él los datos de una cotización
+   nueva, de uno o dos por mensaje, y con todos llama pasar_a_humano (motivo
+   cotizacion) con un resumen. Este es el cierre que devuelve la herramienta;
+   el resumen va en la nota interna para el área de precios. */
+const MENSAJE_COTIZACION_LISTA = 'Listo, ya tengo todo. El área de precios te prepara la cotización y te escribe apenas abramos.';
+
+/* Tramo 4 del 70 % (27-oct), PENDIENTES DE APROBACIÓN DE DANIEL.
+   Buscar la carga o los pagos con el N.º de cotización, la marca o el correo
+   que escribe el cliente (identidadPorDato.js). Ninguno dice si un dato
+   existe: el que pide el segundo dato sale igual exista o no el primero. */
+// Sin carga con su número, en una cuenta con herramientas: pide el dato para BUSCAR (no lo deja anotado).
+const MENSAJE_SIN_CARGA_PIDE_DATO =
+  'Con el número desde el que me escribes no encuentro una carga en curso; puede estar registrada con otro teléfono. Escríbeme tu número de cotización o tu marca de envío y la busco.';
+// Dio una cotización o una marca y su número no prueba que es suya: falta el correo.
+const MENSAJE_DATO_PIDE_CORREO =
+  'Para cuidar tus datos necesito confirmar que eres tú: escríbeme también el correo con el que te registraste en IMPORFACTORY.';
+// Dio el correo y su número no prueba que es suyo: falta la cotización o la marca.
+const MENSAJE_DATO_PIDE_CODIGO =
+  'Para cuidar tus datos necesito confirmar que eres tú: escríbeme también tu número de cotización o tu marca de envío.';
+// Los datos no son del mismo cliente, alguno no existe o ya probó demasiados hoy.
+const MENSAJE_DATO_NO_COINCIDE =
+  'Con esos datos no puedo confirmar tu cuenta por este chat. El área de logística lo revisa y un asesor te escribe apenas abramos.';
+const MENSAJE_DATO_NO_COINCIDE_PAGOS =
+  'Con esos datos no puedo confirmar tu cuenta por este chat. Cobranza lo revisa y un asesor te escribe apenas abramos.';
+// Se confirmó su cuenta con el dato y tampoco tiene una carga en curso.
+const MENSAJE_SIN_CARGA_EN_CUENTA =
+  'En tu cuenta no encuentro una carga en curso. El área de logística lo revisa y un asesor te escribe apenas abramos.';
+// «¿Hay novedad de mi caso?» y no hay nada de una persona en los últimos 30 días (novedadCaso.js).
+const MENSAJE_SIN_NOVEDAD =
+  'Todavía no hay una novedad registrada en tu caso: sigue con el equipo y un asesor te escribe apenas abramos.';
+
 const TODOS = {
   MENSAJE_ASESOR,
   MENSAJE_SALUDO,
@@ -85,6 +118,20 @@ const TODOS = {
   MENSAJE_ADJUNTO_SIN_TEXTO,
   MENSAJE_RECLAMO,
   MENSAJE_RECLAMO_CARGA,
+  MENSAJE_COTIZACION_LISTA,
+};
+
+/* Los del tramo 4 van aparte de TODOS / TEXTOS_FIJOS: no están en el prompt
+   instalado (los dicen las herramientas y las secciones que el motor suma en
+   cada turno), y respaldan la guardia solo cuando una herramienta los trajo. */
+const TEXTOS_DATO = {
+  MENSAJE_SIN_CARGA_PIDE_DATO,
+  MENSAJE_DATO_PIDE_CORREO,
+  MENSAJE_DATO_PIDE_CODIGO,
+  MENSAJE_DATO_NO_COINCIDE,
+  MENSAJE_DATO_NO_COINCIDE_PAGOS,
+  MENSAJE_SIN_CARGA_EN_CUENTA,
+  MENSAJE_SIN_NOVEDAD,
 };
 
 /* ── Diagnóstico de la cuenta IMPORCHAT del alumno (pendientes de aprobación) ──
@@ -134,6 +181,8 @@ const DIAGNOSTICO = Object.freeze({
   wa_no_registrado: { texto: 'Tu número dejó de estar registrado en la API de WhatsApp (pasa si lo volviste a verificar en la app de WhatsApp Business). Entra a «Conexiones» → la tarjeta del número → «Reconectar».', tutorial: 'whatsapp', corto: 'el número dejó de estar registrado' },
   wa_baneado: { texto: 'Meta bloqueó tu número de WhatsApp. Reconectar no lo desbloquea: hay que apelar ante Meta.', asesor: true, corto: 'Meta bloqueó el número' },
   meta_pago: { texto: 'Meta marcó un problema con el método de pago de tu cuenta de WhatsApp: sin eso no salen las plantillas. Corrígelo en el administrador de WhatsApp de Meta.', tutorial: 'pago_meta', informativo: true, corto: 'Meta tiene un problema con tu método de pago' },
+  // Tramo 4 del 70 % (pendiente de aprobación): todas sus conexiones las suspendió el cambio a un plan menor.
+  conexiones_suspendidas_plan: { texto: 'Tus números de WhatsApp están suspendidos en IMPORCHAT porque tu plan actual no los incluye, por eso el bot no contesta. Revisa tu plan en «Planes y facturación» (lo hace el administrador de la cuenta).', corto: 'tus números están suspendidos por el plan' },
   sin_conexion: { texto: 'No tienes ningún número de WhatsApp conectado a IMPORCHAT. Entra a «Conexiones» y conecta tu número.', tutorial: 'whatsapp', corto: 'no tienes número conectado' },
   // ── Interruptor (D3)
   interruptor_nunca: { texto: `Tu bot nunca se encendió. Entra a ${RUTA_ASISTENTES} → en la tarjeta «Agente de Ventas» o «Agente de Servicios» toca «Configurar», enciende «Bot activo» y «Guardar».`, tutorial: 'openai', corto: 'el bot nunca se encendió' },
@@ -183,15 +232,20 @@ const DIAGNOSTICO_FRASES = Object.freeze({
   dato_invalido: 'Eso no parece un número de WhatsApp ni un correo. Escríbeme el número con su código de país (por ejemplo +593 98 765 4321) o el correo con el que te registraste en IMPORCHAT.',
   dato_no_escrito: 'Escríbeme aquí el número o el correo con el que te registraste en IMPORCHAT y la reviso.',
   limite_datos: 'Ya probé varios datos y no encuentro tu cuenta.',
+  // Cuenta suspendida (caso 153, 26-oct: le decía «no tienes WhatsApp conectado»).
+  // Tramo 4 del 70 %, pendientes de aprobación. `saldo` lo arma ver_mis_pagos.
+  cuenta_por_pago: 'Suele pasar cuando hay un pago pendiente.',
+  cuenta_saldo: 'En tu cartera, {saldo}',
+  cuenta_cierre: 'Cobranza revisa tu cuenta y un asesor te escribe apenas abramos.',
   error: 'No pude revisar tu cuenta de IMPORCHAT ahora.',
 });
 
 /* ── Seguimiento al cliente que quedó esperando (seguimiento.js) ──
-   PENDIENTES DE APROBACIÓN DE DANIEL. Mientras SEGUIMIENTO_APROBADO sea false,
-   el seguimiento nunca le escribe al cliente (solo cuenta y lista para el
-   equipo). Van aparte de TODOS: no respaldan respuestas en la guardia.
+   ✅ APROBADO POR DANIEL (27-oct, T9 del tramo 5). Aun así solo escribe con
+   soporte_expertos.seguimiento = 'real' en la cuenta y el cron de L-V.
+   Van aparte de TODOS: no respaldan respuestas en la guardia.
    Ninguno promete hora ni día. `{quien}` = QUIEN_SEGUIMIENTO del área. */
-const SEGUIMIENTO_APROBADO = false;
+const SEGUIMIENTO_APROBADO = true;
 const MENSAJE_SEGUIMIENTO = 'Sigo pendiente de tu consulta: ya está con {quien}, que te escribe por este chat.';
 const QUIEN_SEGUIMIENTO = Object.freeze({
   cotizacion: 'el área de cotizaciones',
@@ -238,6 +292,137 @@ const CONSENTIDOS_FECHA = Object.freeze({
   sin: 'Apenas tengamos la fecha de llegada, te la paso.',
 });
 
+/* ── Objeción de precio: «me sale muy caro», «en otro lado me cobran menos»
+   (objecionPrecio.js). ✅ TODOS APROBADOS POR DANIEL (27-oct), con sus reglas:
+   se dice «carga grupal» (no «consolidar»); nadie rebaja (Johan ofrece
+   alternativas y un descuento solo lo autoriza Daniel); si el chat lo tiene
+   Belén, va la nota a Johan y el chat sigue con ella. Aun así el bot solo los
+   usa con soporte_expertos.objecion_precio en la cuenta. Van aparte de TODOS:
+   no respaldan respuestas en la guardia. Tuteo ecuatoriano, sin voseo; ninguno
+   ofrece descuento ni promete hora. 1.ª objeción: desglose + espacio +
+   alternativas; 2.ª: pasa al líder comercial (Johan). espacio_libre no se usa
+   mientras no haya mínimo de CBM en México. */
+const OBJECION_APROBADO = true;
+const OBJECION = Object.freeze({
+  desglose_mx:
+    'Te explico de dónde sale el valor: el flete a México se cobra por el volumen de tu carga (CBM) y ya incluye los impuestos de importación y la entrega en nuestra bodega de México.',
+  desglose_mx_cifras:
+    'Te explico de dónde sale el valor: tu carga ocupa {cbm} CBM y el flete a México es de {flete} USD. Ese flete ya incluye los impuestos de importación y la entrega en nuestra bodega de México.',
+  desglose_ec:
+    'Te explico de dónde sale el valor: la cotización a Ecuador tiene dos partes. El flete, que se cobra por el volumen de tu carga (CBM), y los impuestos de importación (arancel, IVA y otros), que dependen del valor de tu mercadería y los fija la aduana, no nosotros.',
+  desglose_otro:
+    'Te explico de dónde sale el valor: el flete se cobra por el volumen de tu carga (CBM) y aparte están los impuestos de importación del país de destino.',
+  completar_uno:
+    'Lo ideal es completar 1 CBM: te quedan {libre} CBM para sumar más productos en el mismo envío. Si no, no pasa nada: el flete se cobra solo por lo que ocupa tu carga.',
+  espacio_libre: 'Tu carga ocupa {cbm} CBM y el flete se cobra desde {minimo} CBM: te quedan {libre} CBM para sumar productos sin pagar más flete.',
+  paso_siguiente:
+    'Mientras más volumen, menos pagas por cada CBM: si sumas productos hasta completar {hasta} CBM, el flete sube solo {extra} USD (de {flete} a {flete_hasta} USD).',
+  alternativas:
+    'Para bajar el costo por unidad tienes dos caminos: ajustar la cantidad (con más unidades, el flete se reparte entre más productos) o sumar tu mercadería a una carga grupal con otros importadores. ¿Quieres que lo revisemos por alguno de esos caminos?',
+  pase_comercial: 'Entiendo. Tu caso pasa a nuestro líder comercial, que revisa contigo las opciones y te escribe apenas abramos.',
+});
+
+/* Membresía de Imporsuit del que escribe (ver_mi_membresia,
+   membresiaAlumno.js). 🟡 PENDIENTES DE APROBAR por Daniel (27-oct).
+   `instruccion` es para el modelo. */
+const MEMBRESIA = Object.freeze({
+  activa: 'Tu membresía{plan} está activa desde el {desde} hasta el {vence} (te quedan {dias} días).{paquetes}',
+  vencida: 'Tu membresía{plan} empezó el {desde} y venció el {vence}.{paquetes}',
+  sin_fecha: 'Tu número está registrado en la plataforma{plan}, pero no veo la fecha de tu membresía.',
+  sin_membresia:
+    'Con este número no encuentro una membresía en la plataforma. Si te registraste con otro número, escríbeme desde ese o pásame el correo con que te registraste y lo reviso con el equipo.',
+  error: 'Ahora no pude revisar tu membresía. Un asesor lo revisa y te escribe.',
+  instruccion:
+    'Responde con estos datos en 1 o 2 frases. Si no puede entrar y la membresía está activa, dale los pasos de la ficha de acceso; si está vencida, díselo y pásalo a una persona para renovar. ' +
+    'No inventes precios, descuentos ni fechas.',
+});
+
+/* Pedidos de Dropi de la tienda del alumno (ver_mis_pedidos_dropi,
+   pedidosDropi.js). 🟡 PENDIENTES DE APROBAR por Daniel (27-oct): el bot los
+   puede mandar tal cual si la guardia rechaza su respuesta. `instruccion` no
+   le llega al cliente: es para el modelo. */
+const DROPI = Object.freeze({
+  sin_dropi:
+    'No encuentro una tienda de Dropi conectada a tu IMPORCHAT, por eso desde aquí no puedo ver tus pedidos. El estado de cada guía lo ves en tu panel de Dropi; si quieres, pásame el número de guía y lo reviso con el equipo.',
+  integracion_apagada: '(La conexión de Dropi de tu IMPORCHAT está apagada: estos datos pueden estar atrasados.)',
+  no_coincide: 'No encontré un pedido de los últimos 60 días que coincida con «{dato}».',
+  error: 'Ahora no pude revisar tus pedidos de Dropi. Mándame el número de guía o de pedido y lo reviso con el equipo.',
+  instruccion:
+    'Responde con estos datos en 2 a 4 frases: estado, último movimiento y su fecha, y el enlace de rastreo si lo hay. ' +
+    'No prometas fechas de entrega ni digas qué hará la transportadora. ' +
+    'Si hay una novedad que hay que gestionar o un reclamo a la transportadora, dile qué dice la novedad y pásalo a una persona con pasar_a_humano (motivo «reclamo»).',
+});
+
+/* Proveedores de Yiwu (proveedoresYiwu.js, bandera soporte_expertos.proveedores).
+   Aprobados por Daniel el 27-oct. Los contactos son solo para alumnos con
+   membresía activa; a los demás, PROVEEDORES_SIN_MEMBRESIA (Daniel pidió «es
+   parte de la membresía» en una línea, con el mismo tono). */
+const PROVEEDORES_ENCONTRADOS = (n) =>
+  n === 1 ? 'Tengo este proveedor en el mercado de Yiwu:' : `Tengo estos ${n} proveedores en el mercado de Yiwu:`;
+const PROVEEDORES_TARJETAS = (n) => (n === 1 ? 'Te mando su tarjeta por aquí.' : 'Te mando sus tarjetas por aquí.');
+const PROVEEDORES_PEDIR =
+  'Escríbeles a varios a la vez y a cada uno pídele: precio por unidad (EXW más envío a Yiwu), cuántas unidades vienen por caja y las medidas o el CBM de la caja. Cuando te respondan, mándame la captura y el área de precios te arma la cotización.';
+const PROVEEDORES_VIDEO = `Así se le escribe a un proveedor (clase de 5 minutos): ${LINKS.claseContactarProveedor}
+Hay más en el Directorio de Proveedores: ${LINKS.proveedores}`;
+const PROVEEDORES_SIN_RESULTADO = `Para ese producto todavía no tengo un proveedor de Yiwu cargado. Búscalo en el Directorio de Proveedores: ${LINKS.proveedores}
+Si no está, búscalo en YiwuGo (productos de consumo) o en Alibaba (máquinas y materia prima).
+Así se le escribe a un proveedor (clase de 5 minutos): ${LINKS.claseContactarProveedor}
+Cuando te respondan, mándame la captura y el área de precios te arma la cotización.`;
+const PROVEEDORES_SIN_MEMBRESIA =
+  'Los contactos de proveedores de Yiwu son parte de la membresía de IMPORFACTORY. Si ya eres alumno, escríbeme desde el número con el que te registraste en la plataforma.';
+
+/* ── Bot proactivo (proactivo.js, tramo 5). ✅ T1 a T8 APROBADOS POR DANIEL
+   (27-oct), tal como están, con su «sí» a prometer hora (va junto con el
+   seguimiento y el aviso de Jeff a la persona a las 2 h). Solo con
+   soporte_expertos.proactivo en la cuenta. Van aparte de TODOS: no respaldan
+   respuestas en la guardia. Tuteo ecuatoriano, sin voseo.
+   {nombre} = la persona que tiene el chat · {de_area} = «de logística»
+   {cuando} = «hoy hasta las 17:00» | «mañana desde las 8:00» | «el lunes desde las 8:00»
+   {desde} = «las 10:15» | «ayer a las 16:30» */
+const PROACTIVO_APROBADO = true;
+const PROACTIVO = Object.freeze({
+  // P1: pedir lo que falta antes de pasar el chat (una sola vez).
+  pide_garantia: 'Para que {nombre} lo resuelva sin volver a preguntarte, mándame: el número de orden de Dropi, una foto o video del producto y qué falla.',
+  pide_comprobante: 'Para registrar tu pago, mándame la foto del comprobante y, si lo tienes, el número de tu cotización.',
+  pide_guia: 'Mándame el número de guía o de orden y la ciudad de entrega, y lo reviso con {nombre}.',
+  // P2: confirmar en vez de pasar.
+  datos_factura: 'Recibí tus datos para la factura: {datos}. Quedan en tu caso para emitirla después de nacionalizar; no hace falta que los mandes otra vez.',
+  cuentas_cotizacion: 'Sí, a las cuentas que están en tu cotización #{n}. Cuando pagues, mándame el comprobante por aquí y lo registro.',
+  // P3: al pasar el chat, quién y para cuándo.
+  pase: 'Lo pasé a {nombre}, {de_area}. Te escribe por este chat {cuando}.',
+  pase_sin_area: 'Lo pasé a {nombre}. Te escribe por este chat {cuando}.',
+  pase_directo: 'Esto lo atiende {nombre} directamente. Ya tiene tu caso con lo que me contaste y te escribe {cuando}.',
+  // P4: el cliente vuelve a escribir y su pase sigue sin respuesta.
+  sigue_con: 'Tu caso sigue con {nombre} desde {desde}. Ya le avisé que volviste a escribir. Si hay algo nuevo, cuéntame y lo sumo.',
+});
+/* ── Shipping mark (marcaEnvio.js), FAQ de Daniel del 27-oct. ✅ marca,
+   sin_aprobar y sin_marca APROBADOS POR DANIEL (27-oct: «Apruebo los textos
+   (a), (b), (c1), (c2) y (c3) tal como están») y ✅ `varias` también («Apruebo
+   también el texto c1b de varias marcas tal como está»). Con su bandera en
+   false, el que tiene varias marcas vuelve a la ficha marca-de-envio-pedirla.
+   Van dentro del proactivo. sin_aprobar y sin_marca se completan con el pase de P3.
+   {marca} = EC-12345 · {n} = número de cotización · {lista} = listaDeMarcas() */
+const SHIPPING_MARK_APROBADO = true;
+const SHIPPING_MARK_VARIAS_APROBADO = true;
+const SHIPPING_MARK = Object.freeze({
+  marca: 'Lo que te pide tu proveedor es el shipping mark: la marca de envío de tu carga. La tuya es {marca} (cotización N.º {n}). Pásasela para que rotule cada caja con esa marca.',
+  varias: 'Lo que te pide tu proveedor es el shipping mark: la marca de envío de tu carga. Tienes estas: {lista}. Cada proveedor rotula sus cajas con la suya; en la plataforma ves cuál le toca a cada uno.',
+  sin_aprobar: 'Lo que te pide tu proveedor es el shipping mark: la marca de envío. Sale cuando tu cotización está aprobada, y la N.º {n} todavía no lo está.',
+  sin_marca: 'Lo que te pide tu proveedor es el shipping mark: la marca de envío. No la veo registrada todavía.',
+});
+
+// «de {área}» para T6, por el área del caso o por la persona que tiene el chat.
+const DE_AREA = Object.freeze({
+  pago: 'de pagos',
+  factura: 'de pagos',
+  cotizacion: 'de cotizaciones',
+  logistica: 'de logística',
+  ecommerce: 'de ecommerce',
+  objecion_precio: 'del área comercial',
+  reclamo: 'de atención al cliente',
+  otro: 'de atención al cliente',
+});
+
 module.exports = {
   LINKS,
   ...TODOS,
@@ -245,6 +430,8 @@ module.exports = {
   FRASE_RECLAMO,
   PREGUNTA_CANTIDAD,
   TEXTOS_FIJOS: Object.freeze(TODOS),
+  ...TEXTOS_DATO,
+  TEXTOS_DATO: Object.freeze(TEXTOS_DATO),
   DIAGNOSTICO,
   DIAGNOSTICO_FRASES,
   TUTORIALES,
@@ -255,4 +442,21 @@ module.exports = {
   CONSENTIDOS_APROBADO,
   CONSENTIDOS,
   CONSENTIDOS_FECHA,
+  OBJECION_APROBADO,
+  OBJECION,
+
+  DROPI,
+  MEMBRESIA,
+  PROVEEDORES_ENCONTRADOS,
+  PROVEEDORES_TARJETAS,
+  PROVEEDORES_PEDIR,
+  PROVEEDORES_VIDEO,
+  PROVEEDORES_SIN_RESULTADO,
+  PROVEEDORES_SIN_MEMBRESIA,
+  PROACTIVO_APROBADO,
+  PROACTIVO,
+  DE_AREA,
+  SHIPPING_MARK_APROBADO,
+  SHIPPING_MARK_VARIAS_APROBADO,
+  SHIPPING_MARK,
 };

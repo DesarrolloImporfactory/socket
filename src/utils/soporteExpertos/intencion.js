@@ -211,11 +211,29 @@ const PLANEA = new RegExp(
 const OTRO_TEMA =
   /\b(?:pago|pagos|pague|transferencia|transferi|deposito|deposite|comprobante|factura|dinero|plata|reembolso|clases?|cursos?|link|enlace|zoom|grabacion(?:es)?|accesos?|usuario|contrasena|clave|correo|email|mail|certificado|plataforma|modulo|leccion|videos?|profe|profesor[a]?|mentor(?:a|ia)?|taller|webinar|reunion|cotizacion|proforma|catalogo|membresia|suscripcion)\b/;
 const MARCA = /\b(?:ec|mx)[- ]?\d{5,9}\b/;
+/* El shipping mark con los nombres que usa el cliente o su proveedor
+   («shipping mark», «webmarker», «la marca para las cajas»). 27-oct. */
+const SHIPPING_MARK =
+  /\b(?:shipp?ing ?marks?|shipp?ing ?markers?|marks? shipp?ing|web ?mark(?:er)?s?|marcas? de (?:envio|embarque)|marcas? (?:para|de) (?:las|mis|cada) cajas?)\b/;
+// …que se la pide su proveedor, o que la pide él.
+const LA_PIDE =
+  /\b(?:proveedor\w*|fabrica\w*|vendedor\w*|supplier|el chino|la china|me (?:la |lo )?pide\w*|me (?:la |lo )?piden|me (?:la |lo )?solicita\w*|cual es (?:mi|la)|dame|damela|pasame|pasamela|enviame|mandame|necesito|no tengo|donde (?:veo|encuentro|esta))\b/;
+/** ¿Pide su shipping mark para dárselo al proveedor? (proactivo.js, marcaEnvio.js) */
+function pideShippingMark(texto) {
+  const t = limpiar(texto);
+  return SHIPPING_MARK.test(t) && LA_PIDE.test(t);
+}
 
 /* Número de cotización escrito en el mensaje, con la misma regla estricta que
    usa el bloque de carga («cotización de 500 unidades» no es un número). */
 const traeCotizacion = (texto) =>
   codigosEnMensaje(sinTildes(texto).replace(/coti[sz]a[sc]i?on/g, 'cotizacion')).cotizaciones.length > 0;
+
+/* Lo suyo, en un lugar del camino: «mis cosas están en Yiwu», «mis cajas
+   siguen en China». Solo nombrado como propio: «el producto está en China a
+   buen precio» no es su carga. */
+const DONDE_ESTA_LO_MIO =
+  /\b(?:mis?|nuestr[oa]s?) (?:cosas|productos?|pedidos?|compras?|cajas?|paquetes?)\b.{0,25}\b(?:esta|estan|sigue|siguen) (?:todavia |aun |ya )?en (?:yiwu|china|guangzhou|shenzhen|la bodega|bodega|aduana|el puerto|puerto|mexico|ecuador|guayaquil|naucalpan)\b/;
 
 /** ¿El cliente pregunta por el estado de SU carga de importación? */
 function hablaDeCarga(texto) {
@@ -224,6 +242,8 @@ function hablaDeCarga(texto) {
 
   // 1. Un código suyo: la marca de envío o el número de cotización.
   if (MARCA.test(t)) return true;
+  // Pide su shipping mark: se lee la carga para saber cuál es (marcaEnvio.js).
+  if (pideShippingMark(texto)) return true;
   const estado = ESTADO.test(t);
   const soloPago = PAGO.test(t) && !estado;
   if (!soloPago && traeCotizacion(texto)) return true;
@@ -233,6 +253,9 @@ function hablaDeCarga(texto) {
   if (PROPIA.test(t) && !planea) return true;
   const ecommerce = ECOMMERCE.test(t);
   if (PROPIA_GENERICA.test(t) && !ecommerce && !planea && !soloPago) return true;
+
+  // «¿mis cosas están en Yiwu o en México?» (auditoría 265 del 27-oct: 4 en México).
+  if (DONDE_ESTA_LO_MIO.test(t)) return true;
 
   // 3. Una pregunta en general («cuánto demora una importación») no es la suya.
   const u = t.replace(INDEFINIDA, ' ');
@@ -307,4 +330,4 @@ function hablaDeImporchat(texto) {
   return DE_IMPORCHAT.test(limpiar(texto));
 }
 
-module.exports = { hablaDeCarga, hablaDeImporchat, pideDatosDeOtro };
+module.exports = { hablaDeCarga, hablaDeImporchat, pideDatosDeOtro, pideShippingMark };

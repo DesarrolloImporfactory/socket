@@ -90,7 +90,7 @@ if (HERRAMIENTAS && SIN_CARGAS) {
   process.exit(1);
 }
 
-// La pausa vale en la columna donde vive el bot: de 16:00 a 17:30 el equipo
+// La pausa vale en la columna donde vive el bot: de 16:00 a 17:00 el equipo
 // todavía atiende, y si un asesor escribió hace poco el chat es suyo.
 const PAUSA_HUMANO = { minutos: 45, estados: ['contacto_inicial'] };
 

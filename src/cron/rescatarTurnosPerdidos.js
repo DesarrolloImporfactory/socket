@@ -51,6 +51,7 @@
 const cron = require('node-cron');
 const { db } = require('../database/config');
 const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
+const { leerApiKeyClaude } = require('../utils/claude/apiKeyClaude');
 
 const VENTANA_MIN_MINUTOS = 5; // más nuevo = puede estar procesándose aún
 const VENTANA_MAX_MINUTOS = 120; // más viejo = respuesta tardía sin sentido
@@ -141,7 +142,8 @@ async function rescatarPendientes({
     const grupos = await db.query(
       `SELECT g.id_configuracion, g.id_cliente, g.ultimo_cli_id, g.ultimo_cli_at,
               c.celular_cliente, c.estado_contacto,
-              cf.api_key_openai, cf.token, cf.id_telefono
+              cf.api_key_openai, cf.token, cf.id_telefono,
+              cf.proveedor_ia, cf.api_key_claude
          FROM (
            SELECT m.id_configuracion, m.celular_recibe AS id_cliente,
                   MAX(m.id) AS ultimo_cli_id, MAX(m.created_at) AS ultimo_cli_at
@@ -235,6 +237,12 @@ async function rescatarPendientes({
         api_key_openai: leerApiKeyOpenAI(g.api_key_openai),
         token: g.token,
         id_telefono: g.id_telefono,
+        /* Igual que el webhook: la cuenta que responde con Claude tiene que
+           rescatarse con Claude. Sin esto el turno iba a OpenAI con el
+           modelo de Claude, OpenAI lo rechazaba y salía el mensaje de
+           respaldo (265, 26-oct: 20 chats en una mañana). */
+        proveedor_ia: g.proveedor_ia || 'openai',
+        api_key_claude: leerApiKeyClaude(g.api_key_claude),
       };
 
       // Todo lo que el cliente escribió desde la última respuesta del bot:
@@ -281,6 +289,8 @@ async function rescatarPendientes({
           id_cliente: Number(g.id_cliente),
           telefono: cli.celular_cliente,
           api_key_openai: cfg.api_key_openai,
+          proveedor_ia: cfg.proveedor_ia,
+          api_key_claude: cfg.api_key_claude,
           business_phone_id: cfg.id_telefono,
           accessToken: cfg.token,
           estado_contacto: cli.estado_contacto,

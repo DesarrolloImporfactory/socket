@@ -28,7 +28,12 @@ const PARTE_DE_SALUDO =
   'que tal|como (?:estas?|estan|esta|les va|te va|va todo)|espero que (?:estes?|esten) (?:muy )?bien|' +
   'una (?:consulta|pregunta|consultita)|tengo una (?:consulta|pregunta|duda)|necesito ayuda|ayuda|me (?:pueden|puedes|podrian) ayudar|' +
   'disculpen?|disculpa|estimad[oa]s?|amig[oa]s?|senor(?:es|a|ita)?|por favor|porfa|y|' +
-  'comunicarme ahora|continuar conversacion|soy parte del club de importadores|necesito comunicarme con mi asesor';
+  'comunicarme ahora|continuar conversacion|soy parte del club de importadores|necesito comunicarme con mi asesor|' +
+  // El nombre del asesor dentro del saludo («Buenos días Ángel», «Johan buen
+  // día»): sigue sin decir qué necesita. Antes se escalaba el saludo y la
+  // pregunta de verdad llegaba con el chat ya asignado al área equivocada
+  // (automejora 26-oct).
+  'angel|johan|belen|viviana|vivi|beto|juan(?: felipe)?|alejandro|david|daniel|evelyn|eve|ingenier[oa]|inge';
 const RE_SOLO_SALUDO = new RegExp(`^(?:(?:${PARTE_DE_SALUDO})(?: |$))+$`);
 
 function esSoloSaludo(texto) {
@@ -105,6 +110,70 @@ function reclamaPorDemora(texto) {
   return RE_DEMORA.test(t) && !temaAjeno(texto, t) && !soloCodigo(texto);
 }
 
+/* Le parece CARO el precio, el flete o la cotización (objecionPrecio.js).
+   Frases reales de la 265 del 29-sep al 27-oct: «esta super caro el flete»,
+   «está muy caro el envío!!», «me sale más barato comprarlas en México»,
+   «puedes hacerme un descuento en el flete», «revisé la cotización y me
+   preocupa el incremento de los costos». De 152 mensajes con «caro», «precio»
+   o «descuento», solo 22 chats eran contra NUESTRO precio: el resto era el
+   precio de un proveedor, el costo de Meta o de su tienda, Temu, o «por otro
+   lado». Ante la duda, NO: una objeción que se escapa sigue el camino de
+   siempre; una falsa le explicaría el flete a quien no lo preguntó. */
+const RE_CARO = new RegExp(
+  '\\b(?:carisim[oa]s?|' +
+    '(?:muy|super|demasiado|bastante|tan|re|mas) (?:car[oa]s?|costos[oa]s?)|' +
+    '(?:sale|salen|salio|saldra|esta|estan|es|son|resulta|queda|parece) car[oa]s?|' +
+    'car[oa]s? (?:el|la|los|las) (?:flete|envio|transporte|traslado|logistica|cotizacion|importacion)|' +
+    '(?:precio|costo|valor|flete|envio|traslado|transporte|tarifa|cotizacion|logistica)(?: \\w+){0,4} (?:muy |demasiado |super |bastante |tan )?(?:alto|elevado)|' +
+    '(?:muy|demasiado|super|bastante|tan) (?:alto|elevado) (?:el|la) (?:precio|costo|valor|flete|envio|traslado|transporte|tarifa|cotizacion)|' +
+    '(?:incremento|aumento|subio|subieron|subida) (?:de |del |en )?(?:los |las |el |la )?(?:costos?|precios?|flete|tarifas?|metro cubico|cbm|cotizacion)' +
+    ')\\b',
+);
+const RE_DESCUENTO = new RegExp(
+  '\\b(?:' +
+    '(?:hay|habra|habria|tienen|tendran|existe|aplica\\w*)(?: a)? (?:algun tipo de |algun |alguna |un |una )?(?:descuento|rebaja|promocion)|' +
+    '(?:me|nos) (?:pueden |puedes |puede |pueda |podrian |podrias |podria |van a |vas a )?(?:hacer|hace|haces|hacen|hacia|dar|da|das|dan|dejar|deja|dejas|ayudar|ayudan) (?:con )?(?:un |una |algun |alguna )?(?:descuento|rebaja)|' +
+    '(?:hacerme|darme|hacernos|darnos|dejarme) (?:un |una |algun |alguna )?(?:descuento|rebaja)|' +
+    'pedir (?:una |un )?(?:rebaja|descuento)|(?:que|cual) descuento|ofrecido (?:un |una )?(?:descuento|rebaja)|' +
+    'descuento (?:especial )?(?:en|para|del|de) (?:el |la )?(?:flete|envio|transporte|importacion|logistica|cotizacion)|' +
+    '(?:mejorar|mejoran|mejoras|mejoren) (?:el precio|la cotizacion|la tarifa)|' +
+    '(?:igualar|igualan|iguala|igualen) (?:el precio|la tarifa|la cotizacion)|' +
+    '(?:bajar|bajen|bajas|bajan|rebajar|rebajen) (?:el precio|la tarifa|el flete|la cotizacion|el costo)' +
+    ')\\b',
+);
+const OTRO_LADO =
+  '(?:en otro lado|en otra parte|en otro lugar|otra empresa|otra importadora|otro importador|otro agente|otra agencia de carga|otro courier|' +
+  'la competencia|si (?:yo )?pago directamente|compr(?:ar|arlo|arla|arlos|arlas) (?:aca|aqui|aki|en ecuador|en mexico))';
+const MAS_BARATO = '(?:menos|mas barat[oa]s?|mas economic[oa]s?|mejor precio)';
+const RE_OTRO_LADO = new RegExp(
+  `\\b${OTRO_LADO}\\b.{0,60}?\\b${MAS_BARATO}\\b|\\b${MAS_BARATO}\\b.{0,60}?\\b${OTRO_LADO}\\b|` +
+    '\\b(?:tengo|me dieron|me pasaron|me hicieron) (?:una |otra )?cotizacion (?:mejor|mas barata|mas economica)\\b',
+);
+/* No es contra nuestro precio: el de un proveedor, el costo de Meta o de su
+   tienda, otra plataforma, lo que le dicen SUS clientes, o un mensaje que
+   OFRECE un descuento (un proveedor o el bot de su tienda). */
+const RE_PRECIO_AJENO =
+  /\b(?:proveedor\w*|alibaba|1688|yiwugo|fabrica|temu|amazon|shein|meta|facebook|anuncio\w*|campana\w*|publicidad|propaganda|pauta|cpa|ads|dropi|imporchat|tienda|competencia de precios|ofrecemos|activamos|aplicado|precio minimo|el chino|mis clientes|los clientes|dicen que|me dijeron que|me indicaron que)\b/;
+/* «¿Es muy caro traer las muestras?», «¿cuán costoso sería?»: pregunta, no
+   reclama. Cuenta como objeción si la frase con «caro» dice que a ÉL le sale
+   o le parece caro, o lo recalca («demasiado», «súper»). */
+const RE_LE_PARECE = /\b(?:me (?:sale|salio|salen|saldra|parece|parecen|resulta|queda)|esta|estan|demasiado|super|carisim\w*)\b/;
+function caroQueObjeta(crudo) {
+  const frases = String(crudo || '').match(/[^.!?\n]+[.!?\n]*/g) || [];
+  return frases.some((f) => {
+    const t = llano(f);
+    if (!RE_CARO.test(t)) return false;
+    const pregunta = /\?\s*$/.test(f.trim()) || /^(?:y )?(?:que tan|cuan|cuanto)\b/.test(t);
+    return !pregunta || RE_LE_PARECE.test(t);
+  });
+}
+
+function objetaPrecio(texto) {
+  const t = llano(texto);
+  if (!t || RE_PRECIO_AJENO.test(t) || temaAjeno(texto, t) || soloCodigo(texto)) return false;
+  return caroQueObjeta(texto) || RE_DESCUENTO.test(t) || RE_OTRO_LADO.test(t);
+}
+
 /* Ya dijo CUÁNTAS UNIDADES quiere comprar («quiero traer 500», «300 unidades»,
    «unas 50 piezas»). Lo usa la guardia cuando completa una ficha de cotización
    que el modelo mandó sin el paso a asesor: si la cantidad ya está dicha no se
@@ -150,6 +219,18 @@ const RE_BOT_DE_TIENDA = new RegExp(
     // Domingo 25-oct: un bot de IA que le devolvió a nuestro bot su propia
     // pregunta («dime exactamente qué quieres que anote para el asesor…»).
     '\\bque quieres que (?:le )?anote para (?:el|tu|su) asesor\\b',
+    // Lunes 26-oct: el aviso automático de las reglas de optimización de
+    // anuncios («Te contamos que tu anuncio … fue pausado automáticamente por
+    // tus reglas de optimización») llegaba a la línea y el bot lo escalaba.
+    '\\bte contamos que tu anuncio\\b',
+    '\\b(?:fue )?(?:pausad[oa]|activad[oa]|reactivad[oa]) automaticamente por tus reglas\\b',
+    // Auditoría 265 del 27-oct: bots de tienda que contestaron a la plantilla
+    // del «Tip de la semana» y a nuestro «un asesor lo revisa».
+    '\\bcual producto te interesa\\b',
+    '\\bpor (?:cual|que) producto nos escribes\\b',
+    '\\bquedo atent[oa] para ayudarte cuando (?:el|tu|un) asesor te (?:escriba|contacte|responda)\\b',
+    '\\bte refieres al enlace\\b.{0,30}\\bpedido pendiente\\b',
+    '\\bquedo atent[oa] avisame si necesitas algo mas\\b',
   ].join('|'),
 );
 /* Respuesta automática del negocio del alumno (fuera de su horario) y el «ya te
@@ -231,4 +312,4 @@ function noPideNada(texto) {
   return t.length <= 120 && RE_SOLO_ACUSE.test(t) && RE_UN_ACUSE.test(t);
 }
 
-module.exports = { esSoloSaludo, esReclamo, reclamaPorDemora, dioCantidad, esMensajeDeBot, noPideNada };
+module.exports = { esSoloSaludo, esReclamo, reclamaPorDemora, objetaPrecio, dioCantidad, esMensajeDeBot, noPideNada };

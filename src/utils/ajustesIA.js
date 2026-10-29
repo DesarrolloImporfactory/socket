@@ -115,11 +115,20 @@ function normalizarSoporteExpertos(v) {
       diagnostico: false,
       pagos: false,
       agenda: false,
+      cotizacion_mx: false,
+      objecion_precio: false,
+      novedad: false,
+      proveedores: false,
+      dropi: false,
+      membresia: false,
       callar_bots: true,
       callar_acuses: true,
       decir_apertura: false,
       escalar: false,
       seguimiento: false,
+      callar_al_pasar: false,
+      proactivo: false,
+      pausa_persona: null,
     };
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   return {
@@ -139,6 +148,28 @@ function normalizarSoporteExpertos(v) {
     // (ver_mi_reunion, solo lee): solo con herramientas y pedido explícito.
     // Ver soporteExpertos/reunionCliente.js.
     agenda: v.herramientas === true && v.agenda === true,
+    // Cotización nueva a México armada por el bot, en BORRADOR para el asesor
+    // (armar_cotizacion_mexico): solo con herramientas y pedido explícito.
+    // Ver soporteExpertos/cotizacionMexico.js.
+    cotizacion_mx: v.herramientas === true && v.cotizacion_mx === true,
+    // «Me sale muy caro»: explica el desglose y, si insiste, pasa al líder
+    // comercial; nunca baja el precio. Solo con pedido explícito y con los
+    // textos aprobados (textos.OBJECION_APROBADO). Ver soporteExpertos/objecionPrecio.js.
+    objecion_precio: v.objecion_precio === true,
+    // «¿Hay novedad de mi caso?» (ver_novedad_de_mi_caso, solo lee las notas y
+    // mensajes del equipo en ese chat): solo con herramientas y pedido
+    // explícito. Ver soporteExpertos/novedadCaso.js.
+    novedad: v.herramientas === true && v.novedad === true,
+    // Proveedores de Yiwu con su tarjeta (buscar_proveedor, solo lee el
+    // directorio): solo con herramientas y pedido explícito.
+    // Ver soporteExpertos/proveedoresYiwu.js.
+    proveedores: v.herramientas === true && v.proveedores === true,
+    // Pedidos de Dropi de la tienda del alumno, del caché de IMPORCHAT (no
+    // consulta Dropi en vivo). Ver soporteExpertos/pedidosDropi.js.
+    dropi: v.herramientas === true && v.dropi === true,
+    // Membresía de Imporsuit del que escribe (ver_mi_membresia, solo lee y
+    // solo de su número). Ver soporteExpertos/membresiaAlumno.js.
+    membresia: v.herramientas === true && v.membresia === true,
     // No contestarle al bot de la tienda del alumno ni a un «ok / gracias»:
     // encendidos salvo que la cuenta los apague (senales.js).
     callar_bots: v.callar_bots !== false,
@@ -153,7 +184,28 @@ function normalizarSoporteExpertos(v) {
     escalar: v.escalar === 'simulado' || v.escalar === 'real' ? v.escalar : false,
     // Seguimiento al que quedó esperando (soporteExpertos/seguimiento.js): igual.
     seguimiento: v.seguimiento === 'simulado' || v.seguimiento === 'real' ? v.seguimiento : false,
+    // Al pasar el chat a una persona, el bot se calla ahí hasta «Devolver al
+    // bot» en Team (escalado.js): solo con escalar 'real' y pedido explícito.
+    callar_al_pasar: v.escalar === 'real' && v.callar_al_pasar === true,
+    // Bot proactivo (soporteExpertos/proactivo.js, tramo 5): pide el dato que
+    // falta, no pasa lo que ya resolvió, dice quién y cuándo, y no vuelve a
+    // pasar un caso que ya espera. Solo con escalar 'real' (nombra a la persona
+    // que recibe el chat) y pedido explícito.
+    proactivo: v.escalar === 'real' && v.proactivo === true,
+    // Una persona ya contesta el chat (pedido de Johan, 28-oct;
+    // soporteExpertos/pausaYAcuse.js): el bot calla en oficina y, si el
+    // cliente espera `minutos` de oficina sin respuesta, manda un solo T8.
+    pausa_persona: normalizarPausaPersona(v.pausa_persona),
   };
+}
+
+/* true → 60 min de oficina y una persona en las últimas 24 h. Un objeto puede
+   cambiar los dos, dentro de un rango sensato. Sin el campo: apagado. */
+function normalizarPausaPersona(v) {
+  if (v === true) return { minutos: 60, horas: 24 };
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const n = (x, def, min, max) => (Number.isFinite(Number(x)) && Number(x) > 0 ? Math.min(Math.max(Math.round(Number(x)), min), max) : def);
+  return { minutos: n(v.minutos, 60, 15, 480), horas: n(v.horas, 24, 1, 72) };
 }
 
 function normalizar(raw) {

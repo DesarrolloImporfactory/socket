@@ -642,10 +642,12 @@ async function ajustesLlamadas(id_configuracion) {
   }
 }
 
-/** { cfgChat, cfgLlama }: la conexión del chat y la que hace la llamada. */
-async function conexionQueLlama(id_configuracion) {
+/** { cfgChat, cfgLlama }: la conexión del chat y la que hace la llamada.
+ *  `puente` fuerza el número puente sin tocar la configuración de la conexión
+ *  (las llamadas desde Team, mientras se prueban: ver equipo_llamadas). */
+async function conexionQueLlama(id_configuracion, puente = null) {
   const cfgChat = await cargarConfig(id_configuracion);
-  const { id_configuracion_llamadas: idPuente } = await ajustesLlamadas(id_configuracion);
+  const idPuente = puente || (await ajustesLlamadas(id_configuracion)).id_configuracion_llamadas;
   if (!idPuente || idPuente === Number(cfgChat.id)) return { cfgChat, cfgLlama: cfgChat };
   const cfgLlama = await Configuraciones.findOne({
     where: { id: idPuente, id_usuario: cfgChat.id_usuario, suspendido: 0 },
@@ -816,8 +818,8 @@ async function clienteDeConexion(id_configuracion, id_cliente) {
 }
 
 /** Estado del permiso del cliente (GET /{PHONE_NUMBER_ID}/call_permissions). */
-async function estadoPermiso(id_configuracion, id_cliente) {
-  const { cfgLlama: cfg } = await conexionQueLlama(id_configuracion);
+async function estadoPermiso(id_configuracion, id_cliente, puente = null) {
+  const { cfgLlama: cfg } = await conexionQueLlama(id_configuracion, puente);
   const cliente = await clienteDeConexion(id_configuracion, id_cliente);
   const desde =
     Number(cfg.id) !== Number(id_configuracion)
@@ -855,8 +857,8 @@ async function estadoPermiso(id_configuracion, id_cliente) {
 }
 
 /** Manda al cliente el mensaje interactivo de "¿podemos llamarte?". */
-async function solicitarPermiso({ id_configuracion, id_cliente, id_sub_usuario, texto }) {
-  const { cfgChat, cfgLlama: cfg } = await conexionQueLlama(id_configuracion);
+async function solicitarPermiso({ id_configuracion, id_cliente, id_sub_usuario, texto, puente = null }) {
+  const { cfgChat, cfgLlama: cfg } = await conexionQueLlama(id_configuracion, puente);
   const cliente = await clienteDeConexion(id_configuracion, id_cliente);
   const nombreNegocio = await nombrePresentacion(cfgChat);
   const abierta = await ventanaAbierta(cfg, cliente.celular_cliente);
@@ -1099,8 +1101,8 @@ async function reflejarEnConexionesQueLlaman({ id_configuracion, telefono, tipo_
 }
 
 /** El asesor llama al cliente: POST /calls action connect con su oferta. */
-async function llamar({ id_configuracion, id_cliente, id_sub_usuario, sdp_offer }) {
-  const { cfgChat: cfg, cfgLlama } = await conexionQueLlama(id_configuracion);
+async function llamar({ id_configuracion, id_cliente, id_sub_usuario, sdp_offer, puente = null }) {
+  const { cfgChat: cfg, cfgLlama } = await conexionQueLlama(id_configuracion, puente);
   const cliente = await clienteDeConexion(id_configuracion, id_cliente);
   const data = await accionGraph(cfgLlama, {
     to: cliente.celular_cliente,
@@ -1142,6 +1144,15 @@ async function llamar({ id_configuracion, id_cliente, id_sub_usuario, sdp_offer 
   return payloadPublico(call_id);
 }
 
+/** Estado de una saliente para quien la hizo, sin socket (Team pregunta cada
+ *  segundo): la fase en memoria y la respuesta de audio de Meta cuando llega.
+ *  null si ya no está viva (el cierre queda en la fila de BD). */
+function estadoSaliente(call_id, id_sub_usuario) {
+  const c = activas.get(call_id);
+  if (!c || Number(c.tomada_por) !== Number(id_sub_usuario)) return null;
+  return { estado: c.estado, sdp_answer: c.sdp_answer || null };
+}
+
 module.exports = {
   emitirA,
   notificarEnChat,
@@ -1157,6 +1168,7 @@ module.exports = {
   solicitarPermiso,
   avisarRespuestaPermiso,
   llamar,
+  estadoSaliente,
   leerAjustes,
   guardarAjustes,
   reflejarEnConexionesQueLlaman,

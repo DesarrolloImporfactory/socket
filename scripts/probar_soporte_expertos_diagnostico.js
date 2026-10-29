@@ -154,7 +154,8 @@ const VOSEO = /\b(Tocá|Tenés|Podés|Hacé|Mirá|Andá|Fijate|Dale|Entrá|Escri
     const marca = def.informativo ? ' (informativo)' : `${def.tutorial ? ` (clase ${def.tutorial})` : ''}${def.asesor ? ' (asesor)' : ''}`;
     prueba(`${clave}${marca}`, bien, `${r.estado} · ${r.resultado} · ${primera} · ${r.texto.slice(0, 160)}`);
   }
-  const cubiertas = new Set([...Object.keys(CASOS), 'sin_conexion']);
+  // conexiones_suspendidas_plan no sale de una conexión revisada: tiene su prueba en «Cuenta suspendida» (caso 153).
+  const cubiertas = new Set([...Object.keys(CASOS), 'sin_conexion', 'conexiones_suspendidas_plan']);
   const sinCaso = Object.keys(T.DIAGNOSTICO).filter((k) => !cubiertas.has(k));
   prueba('cada clave del catálogo tiene su caso', !sinCaso.length, sinCaso.join(', '));
   {
@@ -451,7 +452,8 @@ const VOSEO = /\b(Tocá|Tenés|Podés|Hacé|Mirá|Andá|Fijate|Dale|Entrá|Escri
     prueba('D13. el esquema ofrece solo el campo «dato», opcional', JSON.stringify(Object.keys(herr.definicion.input_schema.properties)) === '["dato"]' && !herr.definicion.input_schema.required);
     const t = await herr.ejecutar({ dato: '0987123456' });
     prueba('D13. la herramienta revisa con el dato del mensaje', t.startsWith('Encontré tu cuenta con ese número.') && h.diagnosticoConsultado().por === 'dato', t.slice(0, 60));
-    prueba('D13. ver_mi_carga sigue sin ningún campo', JSON.stringify(h.lista[0].definicion.input_schema.properties) === '{}');
+    // Tramo 4: ver_mi_carga recibe solo el dato que escribió (cotización, marca o correo); nunca un teléfono.
+    prueba('D13. ver_mi_carga solo recibe «dato», opcional', JSON.stringify(Object.keys(h.lista[0].definicion.input_schema.properties)) === '["dato"]' && !h.lista[0].definicion.input_schema.required);
     olvidarDatosProbados();
 
     // Revisión independiente (24-oct): privacidad del camino del dato.
@@ -489,6 +491,70 @@ const VOSEO = /\b(Tocá|Tenés|Podés|Hacé|Mirá|Andá|Fijate|Dale|Entrá|Escri
     r = await conDato('x@x.com', 'x@x.com', {}, { telefono: '593911111111', ahora: new Date(AHORA.getTime() + 25 * 3600 * 1000) });
     prueba('P8. con más de mil teléfonos guardados se barren los vencidos y sigue funcionando', r.estado === 'sin_cuenta', r.estado);
     olvidarDatosProbados();
+  }
+
+  /* ───────────────────────────────────────────────────────────────────── */
+  console.log('\nI1-I12. Su cuenta, por su plataforma de alumno en Imporsuit (27-oct)');
+  {
+    const OTRO = '593991827364'; // su WhatsApp no es el del registro de IMPORCHAT
+    const ANA = { email: 'Ana.Perez@Gmail.com', whatsapp: '+593 99 182 7364' };
+    const DE_ANA = { id_usuario: 7, email: 'ana.perez@gmail.com', sub: false };
+    const conCruce = (cambios = {}, o = {}) => {
+      const b = baseFalsa(escenario(cambios));
+      return diagnosticarCuenta(o.telefono || OTRO, {
+        consultar: b.consultar,
+        consultarImporsuit: b.consultarImporsuit,
+        verificarAcceso: PERMITIDO,
+        ahora: AHORA,
+        propia: 265,
+        ...(o.dato ? { dato: o.dato, mensaje: o.dato } : {}),
+      }).then((r) => ({ ...r, llamadas: b.llamadas }));
+    };
+    const deImporsuit = (r) => r.llamadas.filter((l) => l.imporsuit);
+    olvidarDatosProbados();
+    let r = await conCruce({ alumnos: [ANA], correos: [DE_ANA] });
+    prueba('I1. su WhatsApp es el de su plataforma y ese correo es el de la cuenta → la revisa', r.estado === 'revisada' && r.por === 'imporsuit', `${r.estado} ${r.por}`);
+    const porNumero = await revisar();
+    prueba('I1. completa, como por su número: el mismo texto, con cifras', r.texto === porNumero.texto && /14 chats/.test(r.texto), r.texto.slice(0, 120));
+    const conFalla = await conCruce({
+      alumnos: [ANA], correos: [DE_ANA],
+      conexiones: [conexion(), conexion({ id: 102, nombre_configuracion: 'Tienda Dos' })],
+      chats: [chats(14, 3), chats(6, 1, { id_configuracion: 102 })],
+      columnas: [columna(), columna({ id: 2, id_configuracion: 102 })],
+      asistentes: [{ id_configuracion: 101, activo: 1 }, { id_configuracion: 102, activo: 0 }],
+      actividad: [{ id_configuracion: 101, n: 40 }, { id_configuracion: 102, n: 9 }],
+    });
+    prueba('I1. con una falla, nombra su conexión (no es el modo discreto)', conFalla.resultado === 'con_fallas' && /«Tienda Dos»/.test(conFalla.texto), conFalla.texto.slice(0, 120));
+    prueba('I1. a Imporsuit solo va la cola del número, en una consulta SELECT', deImporsuit(r).length === 1 && /^\s*select\b/i.test(deImporsuit(r)[0].sql) && JSON.stringify(deImporsuit(r)[0].r) === '["991827364"]');
+    r = await conCruce({ alumnos: [{ ...ANA, whatsapp: '0991827364' }], correos: [DE_ANA] });
+    prueba('I2. el WhatsApp de la plataforma sin código de país no prueba nada → pide el dato', r.estado === 'sin_cuenta' && r.texto.includes(T.DIAGNOSTICO_FRASES.sin_cuenta), r.estado);
+    r = await conCruce({ alumnos: [{ ...ANA, email: 'desarrollo1@imporfactoryusa.com' }], correos: [{ ...DE_ANA, email: 'desarrollo1@imporfactoryusa.com' }] });
+    prueba('I3. una cuenta de prueba de Imporsuit no abre nada', r.estado === 'sin_cuenta', r.estado);
+    r = await conCruce({ alumnos: [ANA], correos: [DE_ANA, { id_usuario: 8, email: 'ana.perez@gmail.com', sub: true }] });
+    prueba('I4. ese correo está en dos cuentas → no revisa ninguna, pide el dato', r.estado === 'sin_cuenta' && !r.llamadas.some((l) => /FROM configuraciones c/.test(l.sql)), r.estado);
+    r = await conCruce({ alumnos: [ANA, { email: 'socio@x.com', whatsapp: ANA.whatsapp }], correos: [DE_ANA, { id_usuario: 8, email: 'socio@x.com', sub: false }] });
+    prueba('I5. dos alumnos con ese WhatsApp y cuentas distintas → no revisa ninguna', r.estado === 'sin_cuenta', r.estado);
+    r = await conCruce({ alumnos: [ANA, { email: 'ana.perez@gmail.com', whatsapp: ANA.whatsapp }], correos: [DE_ANA] });
+    prueba('I5. dos plataformas con el mismo correo → una sola cuenta, la revisa', r.estado === 'revisada' && r.por === 'imporsuit', r.estado);
+    const dos = { usuarios: [{ id_usuario: 7, pais: '+593', lead: '0987123456' }, { id_usuario: 8, pais: '+593', lead: '987123456' }] };
+    r = await conCruce({ ...dos, alumnos: [{ ...ANA, whatsapp: TEL }], correos: [DE_ANA] }, { telefono: TEL });
+    prueba('I6. su número en 2 cuentas y el cruce da una de ellas → desempata y la revisa', r.estado === 'revisada' && r.por === 'imporsuit', `${r.estado} ${r.por}`);
+    r = await conCruce({ ...dos, alumnos: [{ ...ANA, whatsapp: TEL }], correos: [{ ...DE_ANA, id_usuario: 9 }] }, { telefono: TEL });
+    prueba('I7. el cruce da una cuenta que NO es de las que comparten el número → sigue al asesor', r.estado === 'ambiguo' && r.texto.includes(T.MENSAJE_ASESOR) && !r.llamadas.some((l) => /FROM configuraciones c/.test(l.sql)), r.estado);
+    r = await conCruce({ alumnos: [ANA], correos: [DE_ANA], imporsuitFalla: 'ETIMEDOUT' });
+    prueba('I8. si Imporsuit no contesta, sigue como antes: pide el dato', r.estado === 'sin_cuenta' && r.texto.includes(T.DIAGNOSTICO_FRASES.sin_cuenta), r.estado);
+    r = await conCruce({ alumnos: [{ ...ANA, whatsapp: TEL }], correos: [{ ...DE_ANA, id_usuario: 9 }] }, { telefono: TEL });
+    prueba('I9. si su WhatsApp ya tiene cuenta, ni se pregunta a Imporsuit', r.estado === 'revisada' && r.por === 'numero' && !deImporsuit(r).length, `${r.estado} ${r.por}`);
+    r = await conCruce({ alumnos: [ANA], correos: [DE_ANA, { id_usuario: 8, email: 'otra@x.com', sub: false }] }, { dato: 'otra@x.com' });
+    prueba('I10. con el cruce encontrado, un correo escrito no lo cambia (vale el que entrega WhatsApp)', r.estado === 'revisada' && r.por === 'imporsuit', `${r.estado} ${r.por}`);
+    r = await conCruce({ alumnos: [], correos: [DE_ANA] }, { dato: 'ana.perez@gmail.com' });
+    prueba('I11. sin cruce, el dato escrito sigue igual: modo discreto', r.estado === 'revisada' && r.por === 'dato' && r.texto.startsWith('Encontré tu cuenta con ese correo.'), `${r.estado} ${r.por}`);
+    olvidarDatosProbados();
+    const b = baseFalsa(escenario({ alumnos: [ANA], correos: [DE_ANA] }));
+    const h = crearHerramientas({ telefono: OTRO, mensaje: 'mi bot no contesta', canalVerificable: true, diagnostico: true, idConfiguracionPropia: 265,
+      deps: { consultarImporchat: b.consultar, consultar: b.consultarImporsuit, verificarAcceso: PERMITIDO, ahora: AHORA } });
+    await h.lista.find((x) => x.definicion.name === 'revisar_mi_imporchat').ejecutar({});
+    prueba('I12. la herramienta cruza con la base de Imporsuit que ya usa ver_mi_carga', h.diagnosticoConsultado().por === 'imporsuit', h.diagnosticoConsultado().estado);
   }
 
   /* ───────────────────────────────────────────────────────────────────── */

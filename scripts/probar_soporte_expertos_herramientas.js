@@ -168,7 +168,9 @@ const correr = (client, herramientas, extra = {}) =>
     const nombres = h.lista.map((x) => x.definicion.name);
     prueba('son ver_mi_carga y pasar_a_humano', nombres.join() === 'ver_mi_carga,pasar_a_humano');
     const esq = JSON.stringify(h.lista.map((x) => x.definicion.input_schema));
-    prueba('🔒 ningún esquema pide teléfono, correo ni id', !/telefono|phone|correo|email|id_users|numero/i.test(esq));
+    // Tramo 4: el único campo es «dato» (cotización, marca o correo que escribió); ninguno es un teléfono o un id.
+    const campos = h.lista.flatMap((x) => Object.keys(x.definicion.input_schema.properties || {}));
+    prueba('🔒 ningún esquema pide teléfono ni id (solo «dato» en ver_mi_carga)', !/telefono|phone|id_users|numero|email/i.test(campos.join()) && JSON.stringify(Object.keys(h.lista[0].definicion.input_schema.properties)) === '["dato"]', esq.slice(0, 80));
     const verCarga = h.lista[0];
     const r = await verCarga.ejecutar({ telefono: TEL.dos_cargas });
     prueba('🔒 un «telefono» en lo que pide el modelo se ignora: consulta el del remitente', /📦 CARGA DE ESTE CLIENTE/.test(r) && h.cargaConsultada()?.estado === 'encontradas' && /EC-PRUEBA-OCT-A/.test(r));
@@ -202,6 +204,20 @@ const correr = (client, herramientas, extra = {}) =>
     prueba('pasar_a_humano devuelve el texto exacto del asesor', (await p.ejecutar({ motivo: 'pago' })) === `Responde exactamente: ${T.MENSAJE_ASESOR}`);
     prueba('…y el de reclamo si es un reclamo', (await p.ejecutar({ motivo: 'reclamo' })) === `Responde exactamente: ${T.MENSAJE_RECLAMO}`);
   }
+  {
+    // Tramo 3 del 70 % (27-oct): con los datos juntos, la cotización pasa con su resumen.
+    const h = crearHerramientas({ telefono: TEL.aduana, canalVerificable: true });
+    const p = h.lista[1];
+    prueba('el esquema de pasar_a_humano acepta un `resumen` opcional', p.definicion.input_schema.properties.resumen?.type === 'string' && !(p.definicion.input_schema.required || []).includes('resumen'));
+    prueba('sin resumen, la cotización recibe el texto de siempre', (await p.ejecutar({ motivo: 'cotizacion' })) === `Responde exactamente: ${T.MENSAJE_ASESOR}` && h.resumenPase() === null);
+    const largo = 'Ecuador; lámparas LED; 500 u; 2,10 USD EXW + envío a Yiwu; 50 por caja; 0,08 CBM   por caja ' + 'x'.repeat(900);
+    const r = await p.ejecutar({ motivo: 'cotizacion', resumen: largo });
+    prueba('con resumen: «Listo, ya tengo todo…» y el resumen queda guardado (espacios juntos, 600 como máximo)', r === `Responde exactamente: ${T.MENSAJE_COTIZACION_LISTA}` && h.resumenPase().startsWith('Ecuador; lámparas LED') && h.resumenPase().length === 600 && !/\s{2}/.test(h.resumenPase()));
+    prueba('un pago con resumen sigue con el texto del asesor', (await p.ejecutar({ motivo: 'pago', resumen: 'pagó 300' })) === `Responde exactamente: ${T.MENSAJE_ASESOR}`);
+    prueba('«Listo, ya tengo todo» está en tuteo y no promete hora', /apenas abramos\.$/.test(T.MENSAJE_COTIZACION_LISTA) && Object.values(T.TEXTOS_FIJOS).includes(T.MENSAJE_COTIZACION_LISTA));
+    const { textoAlHorario } = require('../src/utils/soporteExpertos/horario');
+    prueba('con el equipo atendiendo dice «te escribe en breve»', textoAlHorario(T.MENSAJE_COTIZACION_LISTA, true).endsWith('te escribe en breve.'));
+  }
 
   /* ───────────────────────────────────────────────────────────────────── */
   console.log('\n4. La guardia con lo que trajo la herramienta (la misma función que usa el motor en el 9.5)');
@@ -211,7 +227,7 @@ const correr = (client, herramientas, extra = {}) =>
       opciones: { cargas: false, fichas: true, guardia: true, herramientas: true }, deps: { consultar: baseDeMentira().consultar, hoy: HOY, buscador: real } });
   {
     olvidarTodo();
-    const msg = 'y lo mío cuándo?';
+    const msg = 'y mi carga cuándo llega?';
     const h = crearHerramientas({ telefono: TEL.transito_con_fecha, mensaje: msg, canalVerificable: true, deps: { consultar: baseDeMentira().consultar, hoy: HOY } });
     const bloque = await h.lista[0].ejecutar({});
     const respuesta = textoParaCliente(h.cargaConsultada(), T.MENSAJE_ASESOR);
@@ -230,6 +246,27 @@ const correr = (client, herramientas, extra = {}) =>
     const inventada = 'Tu contenedor está en tránsito y llega el 3 de diciembre.';
     const revInv = revisarTurno(inventada, t.hechos);
     prueba('una fecha que la herramienta no trajo se sigue frenando', revInv.cambiada === true, revInv.motivos.join('; '));
+  }
+
+  {
+    // E2 (Daniel, 27-oct): el estado de la carga como texto seguro solo si el
+    // CLIENTE habló de su carga, y nunca si se le dijo hace pocos minutos.
+    olvidarTodo();
+    const msg = 'quiero cotizar unas mochilas nuevas';
+    const h = crearHerramientas({ telefono: TEL.transito_con_fecha, mensaje: msg, canalVerificable: true, deps: { consultar: baseDeMentira().consultar, hoy: HOY } });
+    const bloque = await h.lista[0].ejecutar({});
+    const t = await turnoSinCarga(msg, TEL.transito_con_fecha);
+    sumarHechosHerramientas(t.hechos, [bloque], h.cargaConsultada(), { mensaje: msg, respuesta: 'Tu carga está en tránsito. Para las mochilas te ayuda el asesor.' });
+    prueba('E2: si el cliente no habló de su carga, el texto seguro NO es el estado de la carga (aunque el modelo la nombre)', t.hechos.textoSeguro === T.MENSAJE_ASESOR, t.hechos.textoSeguro);
+
+    olvidarTodo();
+    const msg2 = 'y mi carga cuándo llega?';
+    const h2 = crearHerramientas({ telefono: TEL.transito_con_fecha, mensaje: msg2, canalVerificable: true, deps: { consultar: baseDeMentira().consultar, hoy: HOY } });
+    const bloque2 = await h2.lista[0].ejecutar({});
+    const t2 = await turnoSinCarga(msg2, TEL.transito_con_fecha);
+    t2.hechos.cargaDichaReciente = true;
+    sumarHechosHerramientas(t2.hechos, [bloque2], h2.cargaConsultada(), { mensaje: msg2, respuesta: 'x' });
+    prueba('E2: si el estado se le dijo hace pocos minutos, el texto seguro NO lo repite', t2.hechos.textoSeguro === T.MENSAJE_ASESOR, t2.hechos.textoSeguro);
   }
 
   {

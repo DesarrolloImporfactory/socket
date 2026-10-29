@@ -11,9 +11,13 @@
 
    SEGURIDAD — de quién es la carga:
      · La búsqueda entra por el número de WhatsApp del remitente, que lo
-       entrega Meta. Nunca por un número, una marca de envío o una cotización
-       que alguien ESCRIBA en el chat: quien pide «la carga del 099…» o «la
-       marca EC-…» de otra persona no recibe nada.
+       entrega Meta. Un número, una marca de envío o una cotización que
+       alguien ESCRIBA en el chat no se busca aquí: quien pide «la carga del
+       099…» o «la marca EC-…» de otra persona no recibe nada.
+     · La única otra entrada es `cargasDelDueno`: un alumno que
+       identidadPorDato.js ya probó que es el que escribe (su WhatsApp es uno
+       de los teléfonos del alumno, o dio su correo y una cotización o marca
+       del mismo alumno). Tramo 4 del 70 %, 27-oct.
      · La cola de 9 dígitos solo trae candidatos; cada uno se confirma con
        `mismoTelefono` (número completo, con su código de país).
      · Si el mismo número aparece en cotizaciones de dos clientes distintos, no
@@ -82,6 +86,18 @@ const SQL_USUARIOS_POR_WHATSAPP = (conRegexp) => `
      AND u.id_rol IN (${ROLES_ALUMNO.join(', ')})
      AND up.id_plataforma = (SELECT MIN(x.id_plataforma) FROM usuario_plataforma x
                               WHERE x.id_usuario = up.id_usuario)
+   LIMIT 20`;
+
+/* El correo de alumno detrás de un WhatsApp: el de CUALQUIERA de sus
+   plataformas (como P1 de identidadPorDato). Lo usa revisar_mi_imporchat
+   para hallar la cuenta de IMPORCHAT registrada con otro número. */
+const SQL_CORREOS_POR_WHATSAPP = (conRegexp) => `
+  SELECT u.email_users AS email, p.whatsapp
+    FROM plataformas p
+    INNER JOIN usuario_plataforma up ON up.id_plataforma = p.id_plataforma
+    INNER JOIN users u ON u.id_users = up.id_usuario
+   WHERE ${COLA_SQL('p.whatsapp', conRegexp)} = ?
+     AND u.id_rol IN (${ROLES_ALUMNO.join(', ')})
    LIMIT 20`;
 
 const SQL_MARCAS = `
@@ -164,6 +180,22 @@ function esCorreoDePrueba(correo) {
   );
 }
 
+/** Correos de alumno (en minúsculas, sin cuentas de prueba) cuya plataforma
+    tiene EXACTO este WhatsApp. Un número guardado sin código de país no vale. */
+async function correosDelWhatsapp(telefono, { consultar = consultarImporsuit } = {}) {
+  const cola = colaCandidatos(telefono);
+  if (!cola) return [];
+  const filas = await consultar(SQL_CORREOS_POR_WHATSAPP(true), [cola]).catch((e) => {
+    if (!/regexp_replace|function .* does not exist/i.test(String(e.message))) throw e;
+    return consultar(SQL_CORREOS_POR_WHATSAPP(false), [cola]);
+  });
+  const correos = (filas || [])
+    .filter((f) => comoCoincide(telefono, f.whatsapp) === 'exacto')
+    .map((f) => String(f.email || '').trim().toLowerCase())
+    .filter((c) => c && !esCorreoDePrueba(c));
+  return [...new Set(correos)];
+}
+
 const conLimite = (promesa, ms) =>
   Promise.race([
     promesa,
@@ -231,8 +263,26 @@ const VACIO = (estado, motivo) => ({
   motivo,
   cargas: [],
   hay_mas: 0,
+  preparacion: [],
   propias: { cotizaciones: [], marcas: [] },
 });
+
+/* Cotizaciones que todavía NO viajan (paso 1, de los últimos 60 días): no son
+   una carga, pero «¿en qué va mi importación?» tiene respuesta. Tramo 2 del
+   70 % (27-oct): 13 de las 117 escalas del lunes eran de cotizaciones así.
+   Solo dos casos con texto; lo demás no se informa. */
+const MAX_PREPARACION = 3;
+function enPreparacion(cot, estado) {
+  const st = String(cot.estado || '').trim().toLowerCase();
+  const n = `Tu cotización N.º ${cot.id_cotizacion}`;
+  if (st === 'generado') return `${n} está lista y falta que la apruebes para avanzar.`;
+  if (ACEPTADAS.includes(st) && estado.recepcion.recibidas === 0) {
+    return estado.recepcion.marcas > 0
+      ? `${n} está aprobada y todavía no llega nada a nuestra bodega de Yiwu (China). Confirma con tu proveedor que envíe las cajas con tu marca de envío.`
+      : `${n} está aprobada y todavía no llega nada a nuestra bodega de Yiwu (China).`;
+  }
+  return null;
+}
 
 /**
  * Las cargas en curso del número de WhatsApp que escribe.
@@ -258,6 +308,27 @@ async function cargasDelTelefono(telefono, o = {}) {
     return await conLimite(buscar(telefono, cola, consultar, hoy), o.limite_ms || LIMITE_MS);
   } catch (err) {
     return VACIO('error', `no se pudo consultar: ${err.message}`);
+  }
+}
+
+/**
+ * Las cargas en curso de un alumno ya identificado por identidadPorDato.js
+ * (nunca un id que venga del modelo o del chat). Mismo resultado que
+ * `cargasDelTelefono`, con `por: 'dato'`.
+ */
+async function cargasDelDueno(idUsuario, o = {}) {
+  const consultar = o.consultar || consultarImporsuit;
+  const hoy = o.hoy || hoyEcuador();
+  const id = Number(idUsuario);
+  if (!id) return { ...VACIO('error', 'sin alumno identificado'), por: 'dato' };
+  try {
+    const r = await conLimite(
+      (async () => armar(await consultar(SQL_COTIZACIONES('d.id_users = ?'), [id]), consultar, hoy))(),
+      o.limite_ms || LIMITE_MS,
+    );
+    return { ...r, por: 'dato' };
+  } catch (err) {
+    return { ...VACIO('error', `no se pudo consultar: ${err.message}`), por: 'dato' };
   }
 }
 
@@ -297,10 +368,15 @@ async function buscar(telefono, cola, consultar, hoy) {
     const vale = como === 'exacto' || (como === 'nacional' && paisDeDestino(f.pais_destino) === paisDelQueEscribe);
     if (vale) propias.set(Number(f.id_cotizacion), f);
   }
-  let filas = [...propias.values()].filter(
+  return armar([...propias.values()], consultar, hoy);
+}
+
+/* Pasos 3 a 6 con las cotizaciones que ya se sabe que son del que escribe. */
+async function armar(propiasFilas, consultar, hoy) {
+  let filas = (propiasFilas || []).filter(
     (f) => !esCorreoDePrueba(f.email_asesor) && !esCorreoDePrueba(f.email_cliente),
   );
-  if (!filas.length) return VACIO('sin_carga', 'ninguna cotización con este número');
+  if (!filas.length) return VACIO('sin_carga', 'ninguna cotización suya');
 
   // 3. Un mismo número en cotizaciones de dos clientes distintos: no se informa.
   const personas = new Map();
@@ -321,7 +397,15 @@ async function buscar(telefono, cola, consultar, hoy) {
     .filter((f) => !SIN_CARGA.includes(String(f.estado || '').trim().toLowerCase()))
     .slice(0, MAX_CANDIDATAS);
   if (!filas.length) {
-    return { ...VACIO('sin_carga', 'solo cotizaciones en borrador, anuladas o rechazadas'), propias: { cotizaciones: todasLasPropias, marcas: [] } };
+    // El borrador todavía puede aprobarse: cuenta para el shipping mark («aún no está aprobada»).
+    const borradores = (propiasFilas || [])
+      .filter((f) => String(f.estado || '').trim().toLowerCase() === 'borrador' && todasLasPropias.includes(Number(f.id_cotizacion)))
+      .map((f) => ({ id_cotizacion: Number(f.id_cotizacion), fecha_creacion: fecha(f.fecha_creacion), estado: 'borrador', aprobada: false, marcas: [] }))
+      .sort((a, b) => String(b.fecha_creacion || '').localeCompare(String(a.fecha_creacion || '')) || b.id_cotizacion - a.id_cotizacion);
+    return {
+      ...VACIO('sin_carga', 'solo cotizaciones en borrador, anuladas o rechazadas'),
+      propias: { cotizaciones: todasLasPropias, marcas: [], detalle: borradores },
+    };
   }
   const ids = filas.map((f) => Number(f.id_cotizacion));
 
@@ -348,6 +432,8 @@ async function buscar(telefono, cola, consultar, hoy) {
   const activas = [];
   let historicas = 0;
   let fueraDeFlujo = 0;
+  const preparacion = [];
+  const detalle = [];
   for (const f of filas) {
     const id = Number(f.id_cotizacion);
     const susContenedores = contDe.get(id) || [];
@@ -368,8 +454,18 @@ async function buscar(telefono, cola, consultar, hoy) {
       historicas++;
       continue;
     }
+    // Para el shipping mark (marcaEnvio.js): estado y marcas de cada una que sigue viva.
+    detalle.push({
+      id_cotizacion: id,
+      fecha_creacion: fecha(f.fecha_creacion),
+      estado: String(f.estado || '').trim().toLowerCase(),
+      aprobada: ACEPTADAS.includes(String(f.estado || '').trim().toLowerCase()),
+      marcas: cot.marcas.map((m) => String(m.codigo).toUpperCase()),
+    });
     if (!enFlujo(cot, e)) {
       fueraDeFlujo++;
+      const texto = enPreparacion(cot, e);
+      if (texto) preparacion.push({ id_cotizacion: id, fecha_creacion: fecha(f.fecha_creacion), estado: String(f.estado || ''), texto_cliente: texto });
       continue;
     }
 
@@ -418,15 +514,19 @@ async function buscar(telefono, cola, consultar, hoy) {
   const propiasOut = {
     cotizaciones: todasLasPropias,
     marcas: [...new Set((marcas || []).map((m) => String(m.codigo).toUpperCase()))],
+    detalle: detalle.sort((a, b) => String(b.fecha_creacion || '').localeCompare(String(a.fecha_creacion || '')) || b.id_cotizacion - a.id_cotizacion),
   };
+  preparacion.sort((a, b) => String(b.fecha_creacion || '').localeCompare(String(a.fecha_creacion || '')) || b.id_cotizacion - a.id_cotizacion);
+  const prep = preparacion.slice(0, MAX_PREPARACION);
   if (!activas.length) {
     /* Nada en curso. Para el cliente es lo mismo («no encuentro una carga en
        curso» y pasa a logística); el estado solo distingue si lo que hay es
        historia o son cotizaciones que todavía no viajan. */
     return historicas
-      ? { ...VACIO('solo_historicas', 'solo cargas entregadas o cotizaciones antiguas'), propias: propiasOut }
+      ? { ...VACIO('solo_historicas', 'solo cargas entregadas o cotizaciones antiguas'), preparacion: prep, propias: propiasOut }
       : {
           ...VACIO('sin_carga', `solo cotizaciones que todavía no están en el flujo de carga (${fueraDeFlujo}): sin nada recibido en China y sin contenedor`),
+          preparacion: prep,
           propias: propiasOut,
         };
   }
@@ -447,6 +547,7 @@ async function buscar(telefono, cola, consultar, hoy) {
     motivo: `${activas.length} carga(s) en curso`,
     cargas: activas.slice(0, MAX_CARGAS),
     hay_mas: Math.max(0, activas.length - MAX_CARGAS),
+    preparacion: prep,
     propias: propiasOut,
   };
 }
@@ -463,9 +564,24 @@ const sinSaludo = (t) => {
 };
 
 /** Un solo texto para el cliente con todas sus cargas, armado en código. */
+const minuscula = (t) => t.charAt(0).toLowerCase() + t.slice(1);
+
+/** Las cotizaciones que todavía no viajan, solas o detrás de las cargas. */
+function textoPreparacion(prep, { conCargas, donde = 'con este número' }) {
+  const ls = prep.map((p) => p.texto_cliente);
+  if (!ls.length) return null;
+  if (conCargas) return ls.length === 1 ? `Además, ${minuscula(ls[0])}` : `Además:\n${ls.map((l) => `- ${l}`).join('\n')}`;
+  return ls.length === 1
+    ? `Hola, ${minuscula(ls[0])}`
+    : `Hola, ${donde} tienes ${ls.length} cotizaciones que todavía no viajan:\n${ls.map((l) => `- ${l}`).join('\n')}`;
+}
+
 function textoParaCliente(resultado, mensajeAsesor) {
-  const cs = resultado.cargas;
-  if (!cs.length) return null;
+  const cs = resultado.cargas || [];
+  const prep = resultado.preparacion || [];
+  // Encontrado con el dato que escribió (no con su número): «en tu cuenta».
+  const donde = resultado.por === 'dato' ? 'en tu cuenta' : 'con este número';
+  if (!cs.length) return textoPreparacion(prep, { conCargas: false, donde });
   const pendiente = `el área de logística confirma su estado. ${mensajeAsesor}`;
   let texto;
   if (cs.length === 1) {
@@ -478,8 +594,8 @@ function textoParaCliente(resultado, mensajeAsesor) {
     const total = cs.length + (resultado.hay_mas || 0);
     texto =
       (resultado.hay_mas > 0
-        ? `Hola, con este número tienes ${total} cargas; estas son las ${cs.length} más avanzadas:\n`
-        : `Hola, con este número tienes ${cs.length} cargas registradas:\n`) +
+        ? `Hola, ${donde} tienes ${total} cargas; estas son las ${cs.length} más avanzadas:\n`
+        : `Hola, ${donde} tienes ${cs.length} cargas registradas:\n`) +
       cs
         .map((c) => {
           if (!c.informable) return `- Cotización N.º ${c.id_cotizacion}: ${pendiente}`;
@@ -492,6 +608,8 @@ function textoParaCliente(resultado, mensajeAsesor) {
   if (resultado.hay_mas > 0) {
     texto += `\n${resultado.hay_mas === 1 ? 'De la otra carga' : `De las otras ${resultado.hay_mas}`}, el área de logística te confirma su estado.`;
   }
+  const extra = textoPreparacion(prep, { conCargas: true });
+  if (extra) texto += `\n${extra}`;
   return texto;
 }
 
@@ -500,18 +618,27 @@ function textoParaCliente(resultado, mensajeAsesor) {
  * números de cotización que el cliente ESCRIBIÓ: los que no son de este número
  * se señalan, para que el bot no confirme nada sobre la carga de otro.
  */
-function bloqueCarga(resultado, { codigos = { marcas: [], cotizaciones: [] }, mensajeAsesor = '' } = {}) {
+function bloqueCarga(
+  resultado,
+  { codigos = { marcas: [], cotizaciones: [] }, mensajeAsesor = '', mensajeSinCargaEnCuenta = '', mensajeSinCargaPideDato = '' } = {},
+) {
   const L = [];
-  const cab = '📦 CARGA DE ESTE CLIENTE — leída ahora del sistema de cargas, buscando SOLO por el número de WhatsApp desde el que escribe';
+  const porDato = resultado.por === 'dato';
+  const cab = porDato
+    ? '📦 CARGA DE ESTE CLIENTE — leída ahora del sistema de cargas, buscando con el dato que escribió (ya se confirmó que es suyo)'
+    : '📦 CARGA DE ESTE CLIENTE — leída ahora del sistema de cargas, buscando SOLO por el número de WhatsApp desde el que escribe';
+  const conEste = porDato ? 'en su cuenta' : 'con este número';
 
-  const ajenasMarcas = codigos.marcas.filter((m) => !resultado.propias.marcas.includes(String(m).toUpperCase()));
+  // «MX-002026» puede ser como escribe su cotización N.º 2026: si es suya, no es ajena.
+  const esSuCotizacion = (m) => resultado.propias.cotizaciones.includes(Number(String(m).split('-')[1]));
+  const ajenasMarcas = codigos.marcas.filter((m) => !resultado.propias.marcas.includes(String(m).toUpperCase()) && !esSuCotizacion(m));
   const ajenasCot = codigos.cotizaciones.filter((n) => !resultado.propias.cotizaciones.includes(Number(n)));
   const ajenos = [...ajenasMarcas, ...ajenasCot.map((n) => `cotización ${n}`)];
 
   if (resultado.estado === 'encontradas') {
     const cs = resultado.cargas;
     L.push(`${cab}:`);
-    L.push(`Tiene ${cs.length === 1 ? '1 carga' : `${cs.length} cargas`} en curso con este número${resultado.hay_mas ? ` (y ${resultado.hay_mas} más que no se listan)` : ''}.`);
+    L.push(`Tiene ${cs.length === 1 ? '1 carga' : `${cs.length} cargas`} en curso ${conEste}${resultado.hay_mas ? ` (y ${resultado.hay_mas} más que no se listan)` : ''}.`);
     cs.forEach((c, i) => {
       L.push('');
       L.push(`CARGA ${i + 1} — ${rotulo(c)}${c.destino ? ` · destino ${c.destino}` : ''}`);
@@ -541,12 +668,28 @@ function bloqueCarga(resultado, { codigos = { marcas: [], cotizaciones: [] }, me
     }
   } else if (resultado.estado === 'sin_carga' || resultado.estado === 'solo_historicas') {
     L.push(`${cab}:`);
-    L.push(
-      resultado.estado === 'sin_carga'
-        ? 'NO hay ninguna carga registrada con este número. Puede estar registrada con otro teléfono.'
-        : 'NO hay ninguna carga EN CURSO con este número (solo cargas ya entregadas o cotizaciones antiguas).',
-    );
-    L.push('No digas ni supongas ningún estado. Si pregunta por su carga, aplica el caso «SIN CARGA CON ESTE NÚMERO» de tus instrucciones.');
+    const texto = textoParaCliente(resultado, mensajeAsesor);
+    if (texto) {
+      L.push(`NO hay ninguna carga viajando ${conEste}, pero tiene cotizaciones que todavía no viajan:`);
+      (resultado.preparacion || []).forEach((p) => L.push(`- Cotización N.º ${p.id_cotizacion} (estado ${p.estado}): ${p.texto_cliente}`));
+      L.push('');
+      L.push('TEXTO PARA EL CLIENTE (si pregunta por su carga, su importación o su cotización, respóndele con esto, tal cual; si ya saludaste, quita el «Hola,»). No agregues fechas, plazos ni montos:');
+      L.push(`«${texto}»`);
+    } else if (porDato) {
+      L.push('NO hay ninguna carga EN CURSO en su cuenta (ni con el dato que escribió).');
+      L.push(`No digas ni supongas ningún estado y no le pidas más datos. Si pregunta por su carga, responde exactamente: ${mensajeSinCargaEnCuenta}`);
+    } else {
+      L.push(
+        resultado.estado === 'sin_carga'
+          ? 'NO hay ninguna carga registrada con este número. Puede estar registrada con otro teléfono.'
+          : 'NO hay ninguna carga EN CURSO con este número (solo cargas ya entregadas o cotizaciones antiguas).',
+      );
+      L.push(
+        mensajeSinCargaPideDato
+          ? `No digas ni supongas ningún estado. Si pregunta por su carga, responde exactamente: ${mensajeSinCargaPideDato} Cuando escriba su número de cotización, su marca de envío o su correo, usa ver_mi_carga con ese dato (esto reemplaza el caso «SIN CARGA CON ESTE NÚMERO»).`
+          : 'No digas ni supongas ningún estado. Si pregunta por su carga, aplica el caso «SIN CARGA CON ESTE NÚMERO» de tus instrucciones.',
+      );
+    }
   } else {
     L.push(`${cab}:`);
     L.push('NO SE PUEDE INFORMAR por este chat en este momento. No digas ningún estado ni expliques por qué: va el paso a asesor para el área de logística, sin pedirle datos.');
@@ -555,7 +698,7 @@ function bloqueCarga(resultado, { codigos = { marcas: [], cotizaciones: [] }, me
   if (ajenos.length) {
     L.push('');
     L.push(
-      `⚠️ El cliente escribió ${ajenos.join(', ')}. ${ajenos.length > 1 ? 'Esos códigos NO figuran' : 'Ese código NO figura'} entre las cargas de este número: ` +
+      `⚠️ El cliente escribió ${ajenos.join(', ')}. ${ajenos.length > 1 ? 'Esos códigos NO figuran' : 'Ese código NO figura'} entre las cargas ${porDato ? 'de su cuenta' : 'de este número'}: ` +
         `no confirmes ni niegues nada sobre ${ajenos.length > 1 ? 'ellos' : 'él'} y no des ningún estado para ${ajenos.length > 1 ? 'esos códigos' : 'ese código'}. Va el paso a asesor para el área de logística.`,
     );
   }
@@ -584,11 +727,14 @@ function codigosEnMensaje(texto) {
 }
 
 module.exports = {
+  enPreparacion,
   cargasDelTelefono,
+  cargasDelDueno,
   bloqueCarga,
   textoParaCliente,
   codigosEnMensaje,
   esCorreoDePrueba,
+  correosDelWhatsapp,
   esHistorica,
   enFlujo,
   consultarImporsuit,
