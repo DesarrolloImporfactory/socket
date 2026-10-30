@@ -647,6 +647,7 @@ module.exports = function attachUnifiedGateway(io, services) {
           const k = String(picked.kind || '').toLowerCase();
           finalTipo =
             k === 'image' ? 'image' : k === 'video' ? 'video' : 'document';
+          if (k === 'audio') finalTipo = 'audio';
           finalRuta = picked.url;
         }
 

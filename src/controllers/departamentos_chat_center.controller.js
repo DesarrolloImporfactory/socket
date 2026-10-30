@@ -928,10 +928,60 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
     });
   }
 
+  if (String(req.chat?.id_configuracion) !== String(id_configuracion)) {
+    return res.status(403).json({
+      status: 'fail',
+      message: 'El chat no pertenece a esa conexión.',
+    });
+  }
+
+  const actor = req.sessionUser;
+  const [configPropietaria, usuarioDestino] = await Promise.all([
+    Configuraciones.findByPk(id_configuracion, { attributes: ['id_usuario'] }),
+    Sub_usuarios_chat_center.findByPk(id_encargado, { attributes: ['id_usuario'] }),
+  ]);
+  if (
+    !configPropietaria ||
+    !usuarioDestino ||
+    String(configPropietaria.id_usuario) !== String(usuarioDestino.id_usuario)
+  ) {
+    return res.status(403).json({
+      status: 'fail',
+      message: 'El usuario asignado no pertenece a esta cuenta.',
+    });
+  }
+  const esAdmin = ['administrador', 'admin_limitado', 'super_administrador'].includes(
+    String(actor?.rol).toLowerCase(),
+  );
+  if (!esAdmin && String(id_encargado) !== String(actor?.id_sub_usuario)) {
+    return res.status(403).json({
+      status: 'fail',
+      message: 'Solo puedes asignarte el chat a ti mismo.',
+    });
+  }
+
+  if (
+    req.chat?.id_encargado != null &&
+    String(req.chat.id_encargado) === String(id_encargado)
+  ) {
+    return res.status(200).json({
+      status: 'success',
+      changed: false,
+      message: 'Este chat ya está asignado a ese usuario.',
+    });
+  }
+
+  const encargadoAnterior = req.chat?.id_encargado ?? null;
+  if (encargadoAnterior != null && !esAdmin) {
+    return res.status(409).json({
+      status: 'fail',
+      message: 'Este chat ya fue asignado a otra persona.',
+    });
+  }
+
   const Departamento = await DepartamentosChatCenter.findOne({
     where: { id_configuracion },
   });
-
   const id_departamento = Departamento?.id_departamento ?? null;
 
   /* Tomar un chat CERRADO lo reabre: si alguien lo retoma es porque lo va a
@@ -939,22 +989,36 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
      en req.chat desde requireChatPropietario, que ya lo leyó. */
   const estabaCerrado = Number(req.chat?.chat_cerrado) === 1;
 
+  const [actualizados] = await Clientes_chat_center.update(
+    estabaCerrado ? { id_encargado, chat_cerrado: 0 } : { id_encargado },
+    {
+      where: {
+        id: id_cliente_chat_center,
+        id_configuracion,
+        id_encargado: encargadoAnterior,
+      },
+    },
+  );
+  if (!actualizados) {
+    return res.status(409).json({
+      status: 'fail',
+      message: 'Alguien más acaba de asignarse este chat.',
+    });
+  }
+
   await crearHistorial(
     {
       id_cliente_chat_center,
-      id_encargado_anterior: req.chat?.id_encargado ?? null,
+      id_encargado_anterior: encargadoAnterior,
       id_encargado_nuevo: id_encargado,
       motivo: estabaCerrado
         ? 'Chat cerrado retomado por otro asesor'
-        : 'Auto-asignacion de chat',
+        : encargadoAnterior == null
+          ? 'Auto-asignacion de chat'
+          : 'Reasignación de chat por administrador',
       id_departamento_asginado: id_departamento,
     },
-    req.sessionUser?.id_sub_usuario,
-  );
-
-  await Clientes_chat_center.update(
-    estabaCerrado ? { id_encargado, chat_cerrado: 0 } : { id_encargado },
-    { where: { id: id_cliente_chat_center } },
+    actor?.id_sub_usuario,
   );
 
   /* Nota dentro de la conversación, igual que la de las transferencias: así
@@ -1003,7 +1067,7 @@ exports.asignar_encargado = catchAsync(async (req, res, next) => {
 
   return res
     .status(200)
-    .json({ status: 'success', message: 'Chat asignado correctamente' });
+    .json({ status: 'success', changed: true, message: 'Chat asignado correctamente' });
 });
 
 // GET /historial-encargados/:id_cliente_chat_center
