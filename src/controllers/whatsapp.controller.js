@@ -31,6 +31,13 @@ const {
 } = require('../utils/whatsappTemplate.helpers');
 
 const {
+  hashDe,
+  esUrlPropia,
+  mediaIdRecordado,
+  recordarMediaId,
+} = require('../utils/archivosSubidos');
+
+const {
   resolverParametrosEncuestaTemplate,
   forzarLinkEnComponents,
   registrarEnvioEncuestaManual,
@@ -3184,10 +3191,19 @@ exports.prepararHeaderMasivo = async (req, res) => {
     }
 
     // ── 5) Subir a Meta y obtener el media_id que se reparte al lote ──
-    const upMeta = await uploadMediaToMeta(
-      { ACCESS_TOKEN: cfg.ACCESS_TOKEN, PHONE_NUMBER_ID: cfg.PHONE_NUMBER_ID },
-      { buffer: finalBuffer, mimetype: finalMime, originalname: finalName },
-    );
+    // El mismo archivo (mismo sha256) ya subido a este número reutiliza su
+    // media_id: repetir una campaña con el mismo adjunto no lo resube.
+    const claveHashLote = `sha256:${hashDe(finalBuffer)}`;
+    const recordadoLote = mediaIdRecordado(cfg.PHONE_NUMBER_ID, claveHashLote);
+    const upMeta = recordadoLote
+      ? { ok: true, mediaId: recordadoLote.mediaId, reutilizado: true }
+      : await uploadMediaToMeta(
+          {
+            ACCESS_TOKEN: cfg.ACCESS_TOKEN,
+            PHONE_NUMBER_ID: cfg.PHONE_NUMBER_ID,
+          },
+          { buffer: finalBuffer, mimetype: finalMime, originalname: finalName },
+        );
 
     if (!upMeta.ok) {
       return res.status(200).json({
@@ -3199,9 +3215,18 @@ exports.prepararHeaderMasivo = async (req, res) => {
       });
     }
 
+    if (!upMeta.reutilizado) {
+      recordarMediaId(cfg.PHONE_NUMBER_ID, claveHashLote, {
+        mediaId: upMeta.mediaId,
+        filename: finalName,
+        fileUrl,
+      });
+    }
+
     // Meta procesa el video de forma asíncrona: si se manda el media_id al
-    // instante, los primeros envíos del lote pueden fallar.
-    if (fmt === 'VIDEO') {
+    // instante, los primeros envíos del lote pueden fallar. Un media_id
+    // reutilizado ya está procesado.
+    if (fmt === 'VIDEO' && !upMeta.reutilizado) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
@@ -3524,18 +3549,28 @@ exports.enviarTemplateMasivo = async (req, res) => {
         }
       }
 
-      // 2.3) Subir a Meta para obtener media_id (esto NO cambia — Meta siempre necesita su propio upload)
-      const upMeta = await uploadMediaToMeta(
-        {
-          ACCESS_TOKEN: cfg.ACCESS_TOKEN,
-          PHONE_NUMBER_ID: cfg.PHONE_NUMBER_ID,
-        },
-        {
-          buffer: processedBuffer,
-          mimetype: processedMimetype,
-          originalname: processedFilename,
-        },
+      // 2.3) Subir a Meta para obtener media_id. El mismo archivo (mismo
+      // sha256) ya subido a este número en las últimas horas reutiliza su
+      // media_id: Meta lo conserva 30 días, así que mandar la misma plantilla
+      // a varios clientes no vuelve a subir el adjunto.
+      const claveHashArchivo = `sha256:${hashDe(processedBuffer)}`;
+      const recordadoArchivo = mediaIdRecordado(
+        cfg.PHONE_NUMBER_ID,
+        claveHashArchivo,
       );
+      const upMeta = recordadoArchivo
+        ? { ok: true, mediaId: recordadoArchivo.mediaId, reutilizado: true }
+        : await uploadMediaToMeta(
+            {
+              ACCESS_TOKEN: cfg.ACCESS_TOKEN,
+              PHONE_NUMBER_ID: cfg.PHONE_NUMBER_ID,
+            },
+            {
+              buffer: processedBuffer,
+              mimetype: processedMimetype,
+              originalname: processedFilename,
+            },
+          );
 
       if (!upMeta.ok) {
         return res.status(200).json({
@@ -3548,9 +3583,17 @@ exports.enviarTemplateMasivo = async (req, res) => {
       }
 
       meta_media_id = upMeta.mediaId;
+      if (!upMeta.reutilizado) {
+        recordarMediaId(cfg.PHONE_NUMBER_ID, claveHashArchivo, {
+          mediaId: meta_media_id,
+          filename: processedFilename,
+          fileUrl,
+        });
+      }
 
-      // 2.3.1) Para videos: dar tiempo y verificar estado
-      if (fmt === 'VIDEO') {
+      // 2.3.1) Para videos: dar tiempo y verificar estado (solo si se acaba
+      // de subir; un media_id reutilizado ya está procesado)
+      if (fmt === 'VIDEO' && !upMeta.reutilizado) {
         console.log(
           '[VIDEO] Esperando procesamiento de Meta (mediaId:',
           meta_media_id,
@@ -3606,127 +3649,100 @@ exports.enviarTemplateMasivo = async (req, res) => {
         header_default_asset.format || '',
       ).toUpperCase();
 
-      try {
-        // 1) Descargar archivo desde URL predeterminada
-        const rawDefaultUrl = String(header_default_asset.url || '').trim();
-        const decodedDefaultUrl = rawDefaultUrl
-          .replace(/&amp;/g, '&')
-          .replace(/&#38;/g, '&');
+      const decodedAssetUrl = String(header_default_asset.url || '')
+        .trim()
+        .replace(/&amp;/g, '&')
+        .replace(/&#38;/g, '&');
 
-        console.log('[DEFAULT_HEADER] raw URL:', rawDefaultUrl);
-        console.log('[DEFAULT_HEADER] decoded URL:', decodedDefaultUrl);
+      // El adjunto predeterminado de la plantilla es el mismo en cada envío:
+      // si ya se subió a Meta para este número (memoria de 6 h; el media_id
+      // vive 30 días) no se descarga, ni se guarda otra copia en S3, ni se
+      // resube. Antes cada envío individual desde el chat hacía las tres
+      // cosas, y así el bucket acumuló cientos de copias del mismo archivo.
+      const recordadoAsset = mediaIdRecordado(
+        cfg.PHONE_NUMBER_ID,
+        decodedAssetUrl,
+      );
 
-        const dl = await axios.get(decodedDefaultUrl, {
-          responseType: 'arraybuffer',
-          timeout: 30000,
-          validateStatus: () => true,
-        });
+      if (recordadoAsset) {
+        meta_media_id = recordadoAsset.mediaId;
+        fileUrl = recordadoAsset.fileUrl || decodedAssetUrl;
+        fmt = fmtDefault;
 
-        if (dl.status < 200 || dl.status >= 300 || !dl.data) {
-          return res.status(200).json({
-            success: false,
-            step: 'download_default_header_asset',
-            message:
-              'No se pudo descargar el adjunto predeterminado del template',
-            http_status: dl.status,
-            url: decodedDefaultUrl,
-            raw_url: rawDefaultUrl,
-          });
-        }
+        const compsRec = Array.isArray(payload.template.components)
+          ? payload.template.components
+          : [];
 
-        const downloadedBuffer = Buffer.from(dl.data);
-
-        const responseMime = String(dl.headers?.['content-type'] || '')
-          .split(';')[0]
-          .trim();
-
-        let defaultMime = responseMime;
-        if (!defaultMime) {
-          if (fmtDefault === 'IMAGE') defaultMime = 'image/jpeg';
-          if (fmtDefault === 'VIDEO') defaultMime = 'video/mp4';
-          if (fmtDefault === 'DOCUMENT') defaultMime = 'application/pdf';
-        }
-
-        const extByFmt =
-          fmtDefault === 'IMAGE'
-            ? 'jpg'
-            : fmtDefault === 'VIDEO'
-              ? 'mp4'
-              : 'pdf';
-
-        const defaultFilename =
-          (header_default_asset?.name &&
-            String(header_default_asset.name).trim()) ||
-          `template_header_default.${extByFmt}`;
-
-        // 2) Validar límites
+        payload.template.components = injectHeaderMediaId(
+          compsRec,
+          fmtDefault,
+          meta_media_id,
+        );
+      } else {
         try {
-          validateMetaMediaOrThrow({
-            file: {
-              buffer: downloadedBuffer,
-              mimetype: defaultMime,
-              originalname: defaultFilename,
-              size: downloadedBuffer.length,
-            },
-            format: fmtDefault,
-            // Para VIDEO la validación real corre después de convertir: el
-            // asset guardado puede pesar >16MB y aun así ser enviable.
-            stage: 'pre',
-          });
-        } catch (err) {
-          return res.status(err.statusCode || 400).json({
-            success: false,
-            step: 'validate_default_header_asset',
-            code: err.code || null,
-            message: err.message || 'Adjunto predeterminado inválido',
-          });
-        }
+          // 1) Descargar archivo desde URL predeterminada
+          const rawDefaultUrl = String(header_default_asset.url || '').trim();
+          const decodedDefaultUrl = decodedAssetUrl;
 
-        // 3) Guardar histórico: VIDEO → Video API | IMAGE/DOCUMENT → S3
-        if (fmtDefault === 'VIDEO') {
-          // ── VIDEO → Video API chunked ──
-          const jwtToken = extractBearerToken(req);
+          console.log('[DEFAULT_HEADER] raw URL:', rawDefaultUrl);
+          console.log('[DEFAULT_HEADER] decoded URL:', decodedDefaultUrl);
 
-          if (!jwtToken) {
-            return res.status(401).json({
+          const dl = await axios.get(decodedDefaultUrl, {
+            responseType: 'arraybuffer',
+            timeout: 30000,
+            validateStatus: () => true,
+          });
+
+          if (dl.status < 200 || dl.status >= 300 || !dl.data) {
+            return res.status(200).json({
               success: false,
-              step: 'upload_video_api_default_asset',
-              message: 'Se requiere JWT para subir video a la Video API.',
+              step: 'download_default_header_asset',
+              message:
+                'No se pudo descargar el adjunto predeterminado del template',
+              http_status: dl.status,
+              url: decodedDefaultUrl,
+              raw_url: rawDefaultUrl,
             });
           }
 
-          // Antes se subía el asset TAL CUAL: si ese video nunca se convirtió
-          // (o su conversión falló al guardarlo), llegaba crudo a WhatsApp.
-          // convertVideoForWhatsApp NO re-encodea si el video ya es compatible.
-          let bufDefault = downloadedBuffer;
-          let mimeDefault = defaultMime;
-          let nameDefault = defaultFilename;
-          try {
-            const buf = await convertVideoForWhatsApp(
-              downloadedBuffer,
-              defaultFilename,
-            );
-            if (buf !== downloadedBuffer) {
-              bufDefault = buf;
-              mimeDefault = 'video/mp4';
-              nameDefault = defaultFilename.replace(/\.[^.]+$/, '.mp4');
-            }
-          } catch (convErr) {
-            console.warn(
-              '[TEMPLATE][VIDEO][default_asset] No se pudo convertir. Se sube original:',
-              convErr.message,
-            );
+          const downloadedBuffer = Buffer.from(dl.data);
+
+          const responseMime = String(dl.headers?.['content-type'] || '')
+            .split(';')[0]
+            .trim();
+
+          let defaultMime = responseMime;
+          if (!defaultMime) {
+            if (fmtDefault === 'IMAGE') defaultMime = 'image/jpeg';
+            if (fmtDefault === 'VIDEO') defaultMime = 'video/mp4';
+            if (fmtDefault === 'DOCUMENT') defaultMime = 'application/pdf';
           }
 
+          const extByFmt =
+            fmtDefault === 'IMAGE'
+              ? 'jpg'
+              : fmtDefault === 'VIDEO'
+                ? 'mp4'
+                : 'pdf';
+
+          const defaultFilename =
+            (header_default_asset?.name &&
+              String(header_default_asset.name).trim()) ||
+            `template_header_default.${extByFmt}`;
+
+          // 2) Validar límites
           try {
             validateMetaMediaOrThrow({
               file: {
-                buffer: bufDefault,
-                mimetype: mimeDefault,
-                originalname: nameDefault,
-                size: bufDefault.length,
+                buffer: downloadedBuffer,
+                mimetype: defaultMime,
+                originalname: defaultFilename,
+                size: downloadedBuffer.length,
               },
               format: fmtDefault,
+              // Para VIDEO la validación real corre después de convertir: el
+              // asset guardado puede pesar >16MB y aun así ser enviable.
+              stage: 'pre',
             });
           } catch (err) {
             return res.status(err.statusCode || 400).json({
@@ -3737,96 +3753,162 @@ exports.enviarTemplateMasivo = async (req, res) => {
             });
           }
 
-          try {
-            videoApiResult = await uploadVideoToVideoAPI({
-              buffer: bufDefault,
-              originalname: nameDefault,
-              mimetype: mimeDefault,
-              jwtToken,
-            });
+          // 3) Guardar histórico: VIDEO → Video API | IMAGE/DOCUMENT → S3
+          if (fmtDefault === 'VIDEO') {
+            // ── VIDEO → Video API chunked ──
+            const jwtToken = extractBearerToken(req);
 
-            fileUrl = videoApiResult.fileUrl;
-          } catch (err) {
-            return res.status(err.statusCode || 502).json({
-              success: false,
-              step: 'upload_video_api_default_asset',
-              code: err.code || null,
-              message:
-                err.message ||
-                'No se pudo subir video del default asset a la Video API',
-            });
+            if (!jwtToken) {
+              return res.status(401).json({
+                success: false,
+                step: 'upload_video_api_default_asset',
+                message: 'Se requiere JWT para subir video a la Video API.',
+              });
+            }
+
+            // Antes se subía el asset TAL CUAL: si ese video nunca se convirtió
+            // (o su conversión falló al guardarlo), llegaba crudo a WhatsApp.
+            // convertVideoForWhatsApp NO re-encodea si el video ya es compatible.
+            let bufDefault = downloadedBuffer;
+            let mimeDefault = defaultMime;
+            let nameDefault = defaultFilename;
+            try {
+              const buf = await convertVideoForWhatsApp(
+                downloadedBuffer,
+                defaultFilename,
+              );
+              if (buf !== downloadedBuffer) {
+                bufDefault = buf;
+                mimeDefault = 'video/mp4';
+                nameDefault = defaultFilename.replace(/\.[^.]+$/, '.mp4');
+              }
+            } catch (convErr) {
+              console.warn(
+                '[TEMPLATE][VIDEO][default_asset] No se pudo convertir. Se sube original:',
+                convErr.message,
+              );
+            }
+
+            try {
+              validateMetaMediaOrThrow({
+                file: {
+                  buffer: bufDefault,
+                  mimetype: mimeDefault,
+                  originalname: nameDefault,
+                  size: bufDefault.length,
+                },
+                format: fmtDefault,
+              });
+            } catch (err) {
+              return res.status(err.statusCode || 400).json({
+                success: false,
+                step: 'validate_default_header_asset',
+                code: err.code || null,
+                message: err.message || 'Adjunto predeterminado inválido',
+              });
+            }
+
+            try {
+              videoApiResult = await uploadVideoToVideoAPI({
+                buffer: bufDefault,
+                originalname: nameDefault,
+                mimetype: mimeDefault,
+                jwtToken,
+              });
+
+              fileUrl = videoApiResult.fileUrl;
+            } catch (err) {
+              return res.status(err.statusCode || 502).json({
+                success: false,
+                step: 'upload_video_api_default_asset',
+                code: err.code || null,
+                message:
+                  err.message ||
+                  'No se pudo subir video del default asset a la Video API',
+              });
+            }
+          } else if (esUrlPropia(decodedDefaultUrl)) {
+            // Ya está en nuestro S3: la URL sirve tal cual, no hace falta
+            // "guardar en histórico" una copia más.
+            fileUrl = decodedDefaultUrl;
+          } else {
+            // ── IMAGE / DOCUMENT → S3 (reutiliza si el contenido ya se subió) ──
+            const folder =
+              fmtDefault === 'IMAGE'
+                ? 'whatsapp/templates/header/images'
+                : 'whatsapp/templates/header/documents';
+
+            try {
+              const upHist = await uploadToUploader({
+                buffer: downloadedBuffer,
+                originalname: defaultFilename,
+                mimetype: defaultMime,
+                folder,
+              });
+
+              fileUrl = upHist?.fileUrl || decodedDefaultUrl || null;
+            } catch (err) {
+              return res.status(err.statusCode || 502).json({
+                success: false,
+                step: 'upload_history_s3_default_asset',
+                message:
+                  err.message ||
+                  'No se pudo subir a histórico (S3) el asset predeterminado',
+                raw: err.raw || null,
+              });
+            }
           }
-        } else {
-          // ── IMAGE / DOCUMENT → S3 como antes ──
-          const folder =
-            fmtDefault === 'IMAGE'
-              ? 'whatsapp/templates/header/images'
-              : 'whatsapp/templates/header/documents';
 
-          try {
-            const upHist = await uploadToUploader({
+          // 4) Subir a Meta y obtener media_id
+          const upMeta = await uploadMediaToMeta(
+            {
+              ACCESS_TOKEN: cfg.ACCESS_TOKEN,
+              PHONE_NUMBER_ID: cfg.PHONE_NUMBER_ID,
+            },
+            {
               buffer: downloadedBuffer,
-              originalname: defaultFilename,
               mimetype: defaultMime,
-              folder,
-            });
+              originalname: defaultFilename,
+            },
+          );
 
-            fileUrl = upHist?.fileUrl || decodedDefaultUrl || null;
-          } catch (err) {
-            return res.status(err.statusCode || 502).json({
+          if (!upMeta.ok) {
+            return res.status(200).json({
               success: false,
-              step: 'upload_history_s3_default_asset',
-              message:
-                err.message ||
-                'No se pudo subir a histórico (S3) el asset predeterminado',
-              raw: err.raw || null,
+              step: 'upload_media_meta_default_asset',
+              meta_status: upMeta.meta_status,
+              error: upMeta.error,
+              fileUrl,
             });
           }
-        }
 
-        // 4) Subir a Meta y obtener media_id
-        const upMeta = await uploadMediaToMeta(
-          {
-            ACCESS_TOKEN: cfg.ACCESS_TOKEN,
-            PHONE_NUMBER_ID: cfg.PHONE_NUMBER_ID,
-          },
-          {
-            buffer: downloadedBuffer,
-            mimetype: defaultMime,
-            originalname: defaultFilename,
-          },
-        );
+          meta_media_id = upMeta.mediaId;
+          fmt = fmtDefault;
 
-        if (!upMeta.ok) {
-          return res.status(200).json({
-            success: false,
-            step: 'upload_media_meta_default_asset',
-            meta_status: upMeta.meta_status,
-            error: upMeta.error,
+          recordarMediaId(cfg.PHONE_NUMBER_ID, decodedDefaultUrl, {
+            mediaId: meta_media_id,
+            filename: defaultFilename,
             fileUrl,
           });
+
+          // 5) Inyectar HEADER media
+          const comps = Array.isArray(payload.template.components)
+            ? payload.template.components
+            : [];
+
+          payload.template.components = injectHeaderMediaId(
+            comps,
+            fmtDefault,
+            meta_media_id,
+          );
+        } catch (err) {
+          return res.status(500).json({
+            success: false,
+            step: 'process_default_header_asset',
+            message: 'Error procesando adjunto predeterminado del template',
+            error: err.message,
+          });
         }
-
-        meta_media_id = upMeta.mediaId;
-        fmt = fmtDefault;
-
-        // 5) Inyectar HEADER media
-        const comps = Array.isArray(payload.template.components)
-          ? payload.template.components
-          : [];
-
-        payload.template.components = injectHeaderMediaId(
-          comps,
-          fmtDefault,
-          meta_media_id,
-        );
-      } catch (err) {
-        return res.status(500).json({
-          success: false,
-          step: 'process_default_header_asset',
-          message: 'Error procesando adjunto predeterminado del template',
-          error: err.message,
-        });
       }
     }
 
