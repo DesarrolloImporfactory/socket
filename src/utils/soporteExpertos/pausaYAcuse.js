@@ -130,6 +130,11 @@ const primerNombre = (resp) => {
   return /^[A-Za-zÁÉÍÓÚÑáéíóúñ]{2,}$/.test(n) ? n : null;
 };
 
+const esCortesia = (t) => {
+  const n = llano(t);
+  return !/\?/.test(String(t || '')) && n.length <= 60 && /^(ok|okay|oki|okey|vale|listo|gracias|muchas gracias|mil gracias|perfecto|dale|bueno|entendido|de acuerdo|genial|excelente)\b/.test(n);
+};
+
 /**
  * ¿El bot calla porque una persona del equipo ya atiende el chat?
  * @param {{ mensajes: {rol:number, resp?:string, tx?:string, t:number}[],
@@ -152,10 +157,10 @@ function decidirPausaPersona({ mensajes = [], humano = null, ahora = Date.now(),
   const espera = minutosHabiles(primero ? primero.t : ahora, ahora, horario || undefined);
   if (espera < minutos) return { accion: 'callar', espera };
   if (tras.some((m) => esDelBot(m) && llano(m.tx).startsWith(PREFIJO_T8))) return { accion: 'callar', espera, t8Enviado: true };
-  const nombre = primerNombre(humano.resp);
-  // Sin nombre no hay T8 que valga: pasado el plazo, el bot contesta como hoy.
-  if (!nombre) return null;
-  return { accion: 't8', nombre, desde: humano.t, espera };
+  // Pasado el plazo: a un «ok» o «gracias» no se le contesta; a lo demás responde el bot, no un aviso de «sigue con».
+  const ultimo = tras.filter((m) => Number(m.rol) === 0).pop();
+  if (ultimo && esCortesia(ultimo.tx)) return { accion: 'callar', espera };
+  return null;
 }
 
 module.exports = { humanoQuePausa, decidirPausaPersona, cuentaComoPersona, esAcuse, acuseRepetido, SQL_DESTINOS, DESTINOS_MASIVO, HORAS_MASIVO, MIN_LETRAS_MASIVO };

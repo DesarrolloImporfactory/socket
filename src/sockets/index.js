@@ -1056,12 +1056,13 @@ class Sockets {
               id_encargado,
               id_cliente_chat_center,
               id_configuracion,
+              socket.user,
             );
 
             // respuesta al que lo pidió
             socket.emit('ASIGNAR_ENCARGADO_RESPONSE', result);
 
-            if (result.status !== 'success') return;
+            if (result.status !== 'success' || result.changed === false) return;
 
             const payload = result.data; // ultimoMensaje + clientePorCelular + nombre_encargado
 

@@ -34,7 +34,8 @@ const { esSoloSaludo, esReclamo, reclamaPorDemora, objetaPrecio, dioCantidad, es
 const { FICHAS_OBJECION, pasoDeObjecion, respuestaExplicar, resumenObjecion } = require('./objecionPrecio');
 const T = require('./textos');
 const { equipoAtendiendo, proximaApertura, textoAlHorario } = require('./horario');
-const { esColumnaEcommerce } = require('./escalado');
+const { esColumnaEcommerce, esPase, pidePersona } = require('./escalado');
+const { normalizarParaBucle } = require('../antiBucle');
 
 const MINUTOS_MEMORIA = 20; // la carga leída y las fichas mostradas siguen valiendo para los mensajes que siguen
 const MAX_MEMORIA = 3000;
@@ -296,6 +297,8 @@ async function prepararTurno(p) {
     dioCantidad: cantidadDicha,
     // Cuándo el bot terminó su respuesta con una pregunta (lo marca revisarTurno).
     preguntoTs: previo?.preguntoTs || null,
+    // Lo último que contestó el bot aquí (sinFalsoResuelto).
+    respuestas: previo?.respuestas || [],
     // Cuántas veces objetó el precio en esta conversación (objecionPrecio.js).
     objeciones: objecionesDichas,
     // La cotización de México que armó el bot aquí (la anota anotarCotizacion).
@@ -396,6 +399,7 @@ async function prepararTurno(p) {
     mensaje: adj.mensajeParaModelo, // null = el motor usa el suyo
     hechos: {
       carga,
+      dicho,
       fichas: fichas.map((f) => f.ficha.id),
       fichasConPase,
       adjuntos: adj.adjuntos,
@@ -504,7 +508,47 @@ function revisarTurno(respuesta, hechos, { ahora = Date.now() } = {}) {
     const m = h.clave && memoria.get(h.clave);
     if (m) m.cargaDichaTs = ahora;
   }
-  return rev;
+  return sinFalsoResuelto(rev, h);
+}
+
+/* Casos que parecían resueltos y no lo estaban (auditoría 28-oct, Kathy): el
+   reclamo que recibía «Recibí tu mensaje» sin pasar a nadie, quien pedía a una
+   persona y la misma respuesta dicha dos veces (435632: tres veces «escríbeme
+   desde tu número» a quien ya dijo que es ese). Los tres terminan en una
+   persona: `forzarPase` lo escala aunque el proactivo hubiera dicho que no. */
+const RE_PIDE_DANIEL = /\b(?:audio|mensaje|hablar|escribir\w*|queja) (?:a|con) daniel\b/;
+const SIMILITUD_REPETIDA = 0.7;
+
+function palabrasDe(texto) {
+  return new Set(normalizarParaBucle(texto).split(' ').filter((p) => p.length > 3));
+}
+
+function seRepite(texto, previas) {
+  const a = palabrasDe(texto);
+  if (a.size < 4) return false;
+  return previas.some((b) => {
+    const comunes = [...a].filter((p) => b.has(p)).length;
+    return comunes / new Set([...a, ...b]).size >= SIMILITUD_REPETIDA;
+  });
+}
+
+function sinFalsoResuelto(rev, h) {
+  const texto = String(rev.texto || '');
+  if (!texto.trim() || !h.clave) return rev;
+  const m = memoria.get(h.clave);
+  const yaPasa = esPase(texto);
+  const dicho = normalizarParaBucle(h.dicho || '');
+  let motivo = null;
+  if (!yaPasa) {
+    if (h.reclamo || h.reclamoPorDemora) motivo = 'reclamo sin pase a una persona';
+    else if (pidePersona(h.dicho) || RE_PIDE_DANIEL.test(dicho)) motivo = 'pidió a una persona';
+    else if (m && seRepite(texto, m.respuestas || [])) motivo = 'iba a repetir la misma respuesta';
+  }
+  if (m) m.respuestas = [...(m.respuestas || []), palabrasDe(texto)].slice(-5);
+  if (!motivo) return rev;
+  h.forzarPase = true;
+  const seguro = h.reclamoPorDemora ? T.MENSAJE_RECLAMO_CARGA : h.reclamo ? T.MENSAJE_RECLAMO : T.MENSAJE_ASESOR;
+  return alHorario({ texto: seguro, cambiada: true, corregida: false, motivos: [...(rev.motivos || []), motivo] }, h);
 }
 
 /* La cotización de México que el bot armó en este turno (armar_cotizacion_mexico):
