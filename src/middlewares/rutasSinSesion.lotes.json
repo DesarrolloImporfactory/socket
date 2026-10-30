@@ -164,7 +164,6 @@
   "POST /api/v1/kanban_plantillas/aplicar",
   "POST /api/v1/kanban_plantillas/aplicar_global",
   "POST /api/v1/kanban_plantillas/reiniciar",
-  "POST /api/v1/media/upload",
   "POST /api/v1/messenger/facebook/connect",
   "POST /api/v1/openai_assistants/enviar_mensaje_gpt",
   "POST /api/v1/openai_assistants/mensaje_assistant",

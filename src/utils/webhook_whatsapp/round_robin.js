@@ -410,6 +410,7 @@ async function asignarRoundRobinClienteExistente({
   id_configuracion,
   id_usuario_dueno,
   permiso_round_robin,
+  preservarEncargado = false,
   motivo = 'auto_round_robin_reopen',
 }) {
   // Si no tiene permiso, no hacer nada
@@ -419,14 +420,24 @@ async function asignarRoundRobinClienteExistente({
     permiso_round_robin === false;
 
   if (rrDisabled) {
+    const [clienteActual] = preservarEncargado
+      ? await db.query(
+          `SELECT id_encargado FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+          { replacements: [id_cliente], type: db.QueryTypes.SELECT },
+        )
+      : [];
     await ClientesChatCenter.update(
-      { chat_cerrado: 0, id_encargado: null },
+      preservarEncargado
+        ? { chat_cerrado: 0 }
+        : { chat_cerrado: 0, id_encargado: null },
       { where: { id: id_cliente } },
     );
     await log(
-      `⚠️ RR deshabilitado. Chat reabierto sin encargado (espera). id_cliente=${id_cliente}`,
+      preservarEncargado
+        ? `⚠️ RR deshabilitado. Chat reabierto conservando encargado=${clienteActual?.id_encargado ?? 'sin asignar'}. id_cliente=${id_cliente}`
+        : `⚠️ RR deshabilitado. Chat reabierto sin encargado (espera). id_cliente=${id_cliente}`,
     );
-    return null;
+    return preservarEncargado ? clienteActual?.id_encargado ?? null : null;
   }
 
   const lockKey = `rr:${id_configuracion}`;

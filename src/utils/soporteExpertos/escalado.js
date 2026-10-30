@@ -546,6 +546,7 @@ module.exports = {
   porQueEscala,
   pidePersona,
   esPase,
+  pidePersona,
   quienAtiende,
   escalarCaso,
 };
