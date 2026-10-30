@@ -4827,7 +4827,7 @@ async function procesarMensajeKanban(params) {
       const { escalarCaso, esPase } = require('../utils/soporteExpertos/escalado');
       // El bot proactivo decide si este turno se pasa: 'no' (contestó, pidió
       // el dato o el caso ya espera) o 'forzar' (datos de factura, sin frase de pase).
-      const escalarAhora = proactivo?.escalar === 'forzar' || (esPase(soloTexto) && proactivo?.escalar !== 'no');
+      const escalarAhora = turnoExpertos?.hechos?.forzarPase === true || proactivo?.escalar === 'forzar' || (esPase(soloTexto) && proactivo?.escalar !== 'no');
       if (escalarAhora) {
         const { crearHistorial } = require('../utils/historialEncargados');
         await escalarCaso({

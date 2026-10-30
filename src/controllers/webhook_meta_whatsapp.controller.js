@@ -686,6 +686,13 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           mensaje_error: statusMsg,
         });
 
+        // Keep failed sends visible instead of leaving a pending gray tick.
+        await MensajeCliente.update(
+          { estado_meta: 3 },
+          { where: { id_wamid_mensaje: wamid, id_configuracion } },
+        );
+        await enviarEstadoMetaAPI(id_configuracion, wamid, 3);
+
         // Inicializa log local opcional
         let debugLogMsg = '';
 
@@ -831,6 +838,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   id_configuracion,
                   id_usuario_dueno: configuracion.id_usuario,
                   permiso_round_robin: configuracion.permiso_round_robin,
+                  preservarEncargado: Number(id_configuracion) === 265,
                   motivo: 'auto_round_robin_reopen_media_failed',
                 });
               }
@@ -1357,6 +1365,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
           id_configuracion,
           id_usuario_dueno: configuracion.id_usuario,
           permiso_round_robin: configuracion.permiso_round_robin,
+          preservarEncargado: Number(id_configuracion) === 265,
           motivo: 'auto_round_robin_reopen',
         });
       }
