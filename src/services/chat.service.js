@@ -572,6 +572,16 @@ class ChatService {
         },
       );
 
+      // Esta consulta marca los mensajes entrantes como vistos. Refleja el
+      // cambio en la misma respuesta para que el cliente no muestre el estado
+      // anterior hasta que vuelva a abrir la conversación.
+      chatsPlain.forEach((chat) => {
+        if (!Array.isArray(chat.mensajes)) return;
+        chat.mensajes.forEach((mensaje) => {
+          if (Number(mensaje.rol_mensaje) === 0) mensaje.visto = 1;
+        });
+      });
+
       return chatsPlain;
     } catch (error) {
       console.error('Error al obtener los chats 1:', error.message);
