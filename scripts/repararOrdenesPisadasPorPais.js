@@ -31,6 +31,7 @@ const { decryptToken } = require('../src/utils/cryptoToken');
 const { upsertOrders } = require('../src/services/dropi_notifier.service');
 const {
   dropiDateToLocal,
+  buildOrderFromWebhook,
 } = require('../src/services/dropi_webhook_processor.service');
 
 const args = process.argv.slice(2);
@@ -67,6 +68,20 @@ const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
         )
       WHERE ${SQL_PAIS_ORDEN} IS NOT NULL
         AND ${SQL_PAIS_ORDEN} <> UPPER(IFNULL(di.country_code, 'EC'))
+        /* Si la entidad tuvo alguna vez una integración del país que dice
+           la orden (aunque hoy esté borrada), la orden es suya: la cuenta
+           cambió de país, no fue pisada. Caso NOVASHOP (1517): pasó de EC a
+           CO el 29-10 y sus órdenes ecuatorianas no son un error. */
+        AND NOT EXISTS (
+          SELECT 1 FROM dropi_integrations dx
+           WHERE UPPER(IFNULL(dx.country_code, 'EC')) = ${SQL_PAIS_ORDEN}
+             AND (
+               (c.id_configuracion > 0 AND dx.id_configuracion = c.id_configuracion)
+               OR (IFNULL(c.id_configuracion, 0) = 0
+                   AND IFNULL(dx.id_configuracion, 0) = 0
+                   AND dx.id_usuario = c.id_usuario)
+             )
+        )
         ${CFG ? 'AND c.id_configuracion = :cfg' : ''}
       GROUP BY c.id
       ORDER BY c.id_configuracion, c.dropi_order_id`,
@@ -157,6 +172,50 @@ const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
         ultimoError = e?.message || String(e);
       }
       await dormir(300);
+    }
+
+    /* Respaldo sin Dropi: si la API no devuelve la orden (pasa con las
+       REEMPLAZADAS, que Dropi ya no entrega), se reconstruye desde el último
+       evento del webhook del país de la cuenta. Caso 6064341 en la 360: en
+       Ecuador fue REEMPLAZADA en julio y en octubre México la pisó con una
+       ENTREGADO. Este camino no llama a Dropi, así que también sirve desde
+       local. */
+    if (!ok) {
+      const evento = await db.query(
+        `SELECT payload FROM dropi_webhook_events
+          WHERE dropi_order_id = :id
+            AND CASE UPPER(country)
+                  WHEN 'ECUADOR' THEN 'EC' WHEN 'EC' THEN 'EC'
+                  WHEN 'MEXICO' THEN 'MX' WHEN 'MX' THEN 'MX'
+                  WHEN 'COLOMBIA' THEN 'CO' WHEN 'CO' THEN 'CO'
+                  WHEN 'GUATEMALA' THEN 'GT' WHEN 'GT' THEN 'GT'
+                END = :pais
+          ORDER BY created_at DESC
+          LIMIT 1`,
+        {
+          replacements: { id: f.dropi_order_id, pais: f.pais_cuenta },
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      let payload = evento[0]?.payload;
+      if (typeof payload === 'string') {
+        try {
+          payload = JSON.parse(payload);
+        } catch {
+          payload = null;
+        }
+      }
+      if (payload?.id && payload?.status) {
+        const order = buildOrderFromWebhook(payload, null, f.pais_cuenta);
+        await upsertOrders(cacheInsertFields, [order]);
+        console.log(
+          `✔ cfg ${f.id_configuracion}/u${f.id_usuario} orden ${f.dropi_order_id}: ` +
+            `${f.status} (${f.pais_orden}) → ${order.status} (${f.pais_cuenta}) ` +
+            `desde el último evento del webhook (${ultimoError})`,
+        );
+        ok = true;
+        reparadas++;
+      }
     }
     if (!ok) {
       sinDetalle.push({
