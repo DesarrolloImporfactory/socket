@@ -37,7 +37,7 @@ exports.latest = catchAsync(async (req, res) => {
     return res.status(404).json({
       status: 'fail',
       code: 'MOBILE_RELEASE_NOT_PUBLISHED',
-      message: 'Todavía no se publicó una versión de ChatCenter para Android.',
+      message: 'Todavía no se publicó una versión de Imporchat para Android.',
     });
   }
 
@@ -133,7 +133,7 @@ exports.publish = catchAsync(async (req, res, next) => {
 
     return res.status(201).json({
       status: 'success',
-      message: `ChatCenter ${versionName} quedó publicada.`,
+      message: `Imporchat ${versionName} quedó publicada.`,
       data: manifest,
     });
   } finally {

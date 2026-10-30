@@ -657,6 +657,7 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             { estado_meta: 1 },
             { where: { id_wamid_mensaje: wamid, id_configuracion } },
           );
+          await enviarEstadoMetaAPI(id_configuracion, wamid, 1);
           continue;
         }
 
