@@ -58,6 +58,13 @@ const {
   interpretarRespuestaColchon,
   mensajeParaIaColchon,
 } = require('../utils/webhook_whatsapp/colchonMensajeIlegible');
+// Remarketing por producto: botones «Ver opiniones» / «Sí, lo quiero» del
+// recordatorio y registro de la respuesta libre para las métricas.
+const {
+  interpretarBotonProducto,
+  atenderBotonProducto,
+  registrarRespuestaProducto,
+} = require('../services/remarketing_producto.service');
 const {
   sembrarProductoEnJuego,
 } = require('../services/producto_wizard_runtime.service');
@@ -2721,6 +2728,38 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
                   texto_mensaje,
                 });
               }
+            }
+
+            // 1.45 Botón del remarketing por producto («⭐ Ver opiniones» /
+            // «✅ Sí, lo quiero»). Se atiende antes del wizard y de la IA:
+            // el bloque de opiniones sale tal cual (0 tokens); «Sí, lo
+            // quiero» arranca el flujo por pasos del producto si lo tiene o
+            // le dice a la IA que el cliente ya decidió y vaya al cierre.
+            // Cualquier otra respuesta a un recordatorio por producto solo
+            // se anota para las métricas.
+            const botonProducto =
+              tipo_mensaje === 'interactive' && !saltarIA
+                ? interpretarBotonProducto(mensaje_recibido?.interactive)
+                : null;
+            if (botonProducto) {
+              const rp = await atenderBotonProducto({
+                ...botonProducto,
+                id_configuracion,
+                id_cliente,
+                telefono: phone_whatsapp_from,
+                business_phone_id,
+                accessToken,
+                estado_contacto,
+                log: logWizard,
+              });
+              if (rp.manejado) {
+                if (rp.saltarIA) saltarIA = true;
+                else if (rp.mensaje_para_ia) mensaje_para_ia = rp.mensaje_para_ia;
+              }
+            } else {
+              registrarRespuestaProducto({ id_cliente, id_configuracion }).catch(
+                () => {},
+              );
             }
 
             try {

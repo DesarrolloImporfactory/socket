@@ -72,6 +72,7 @@ const profesionales_chat_centerRouter = require('./routes/profesionales_chat_cen
 
 const productos_chat_centerRouter = require('./routes/productos_chat_center.routes');
 const producto_wizardRouter = require('./routes/producto_wizard.routes');
+const remarketing_productoRouter = require('./routes/remarketing_producto.routes');
 const consumo_iaRouter = require('./routes/consumo_ia.routes');
 const pruebas_webhookRouter = require('./routes/pruebas_webhook.routes');
 
@@ -321,6 +322,9 @@ app.use((req, res, next) => {
     // llevan "$" en los precios ("💵 1 por $45,00") y el sanitizador noSQL lo
     // borraba al guardar (quedaba "1 por 45,00"). Todo va con protect + plan.
     '/api/v1/producto-wizard',
+    // Remarketing por producto: los mensajes y remates llevan "$" en los
+    // precios igual que el wizard. Todo va con protect + plan.
+    '/api/v1/remarketing-producto',
     '/api/v1/pruebas_webhook',
     // Lanzador de campañas Meta: los copys del anuncio llevan "$" en los
     // precios y el sanitizador noSQL los borraría. Todo el grupo va con
@@ -406,6 +410,7 @@ app.use('/api/v1/citas_solicitudes', citas_solicitudesRouter);
 app.use('/api/v1/profesionales', profesionales_chat_centerRouter);
 app.use('/api/v1/productos', productos_chat_centerRouter);
 app.use('/api/v1/producto-wizard', producto_wizardRouter);
+app.use('/api/v1/remarketing-producto', remarketing_productoRouter);
 app.use('/api/v1/consumo_ia', consumo_iaRouter);
 app.use('/api/v1/pruebas_webhook', pruebas_webhookRouter);
 app.use('/api/v1/catalogos', catalogos_chat_centerRouter);

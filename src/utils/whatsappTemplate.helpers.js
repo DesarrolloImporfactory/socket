@@ -8,6 +8,12 @@ const { exec } = require('child_process');
 const execAsync = promisify(exec);
 const fs = require('fs').promises;
 const os = require('os');
+const {
+  hashDe,
+  buscarSubida,
+  registrarSubida,
+  esUrlPropia,
+} = require('./archivosSubidos');
 
 /**
  * Obtiene la config de la tabla 'configuraciones' según el id.
@@ -169,6 +175,17 @@ async function uploadToUploader({
   mimetype,
   folder = 'media',
 }) {
+  // El uploader crea un objeto nuevo por llamada: el mismo contenido (mismo
+  // sha256) ya subido se reutiliza en vez de llenar el bucket de copias.
+  const hash = hashDe(buffer);
+  const previo = await buscarSubida(hash, 's3');
+  if (previo?.url) {
+    return {
+      fileUrl: previo.url,
+      data: { ...(previo.respuesta || {}), url: previo.url, reutilizado: true },
+    };
+  }
+
   const form = new FormData();
 
   const safeName = (originalname || `file-${Date.now()}`).replace(
@@ -202,6 +219,16 @@ async function uploadToUploader({
     err.raw = json;
     throw err;
   }
+
+  await registrarSubida({
+    hash,
+    destino: 's3',
+    url: json.data.url,
+    respuesta: json.data,
+    bytes: buffer.length,
+    mimetype,
+    nombre: safeName,
+  });
 
   return { fileUrl: json.data.url, data: json.data };
 }
@@ -237,6 +264,15 @@ async function uploadVideoToVideoAPI({
   const ext = extFromName || extFromMime || 'mp4';
 
   const safeOriginalName = extFromName ? originalname : `video.${ext}`;
+
+  // El mismo video (mismo sha256) ya subido devuelve lo que respondió la Video
+  // API la primera vez, sin volver a mandar los chunks.
+  const hashVideo = hashDe(buffer);
+  const previoVideo = await buscarSubida(hashVideo, 'video_api');
+  if (previoVideo?.respuesta?.fileUrl) {
+    console.log(`[VIDEO_API] ♻️ Reutilizado: ${previoVideo.respuesta.fileUrl}`);
+    return { ...previoVideo.respuesta, reutilizado: true };
+  }
 
   // Fingerprint: md5(nombre + "_" + tamaño + "_" + timestamp)
   const fingerprint = crypto
@@ -376,11 +412,23 @@ async function uploadVideoToVideoAPI({
 
   console.log(`[VIDEO_API] ✅ Video listo: ${complete.stream_url}`);
 
-  return {
+  const resultado = {
     video_id: complete.video_id,
     stream_url: complete.stream_url,
     fileUrl: complete.stream_url,
   };
+
+  await registrarSubida({
+    hash: hashVideo,
+    destino: 'video_api',
+    url: complete.stream_url,
+    respuesta: resultado,
+    bytes: fileSize,
+    mimetype: mimetype || `video/${ext}`,
+    nombre: safeOriginalName,
+  });
+
+  return resultado;
 }
 
 async function uploadMediaToMeta({ ACCESS_TOKEN, PHONE_NUMBER_ID }, file) {
@@ -1000,6 +1048,10 @@ async function prepareHeaderAssetForScheduling({
       });
 
       fileUrl = videoApiResult.fileUrl;
+    } else if (esUrlPropia(decodedDefaultUrl)) {
+      // Ya está en nuestro S3: "guardarlo en histórico" era subir una copia
+      // más del mismo archivo en cada programación.
+      fileUrl = decodedDefaultUrl;
     } else {
       const folder =
         fmtDefault === 'IMAGE'

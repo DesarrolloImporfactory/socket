@@ -103,8 +103,10 @@ function pruneTemplateCache() {
    todos los envíos de la misma plantilla.
    ================================================================ */
 
-const MEDIA_ID_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6h (el id vive 30 días)
-const mediaIdCache = new Map(); // `${phone_number_id}::${path}` → { media, cachedAt }
+// La memoria de media_id (6 h, por número + archivo sin querystring) vive en
+// utils/archivosSubidos.js para compartirla con el controlador de plantillas y
+// el cron de remarketing.
+const { mediaIdRecordado, recordarMediaId } = require('../utils/archivosSubidos');
 
 /**
  * ¿La URL es un handle efímero de Meta y no un link propio?
@@ -122,16 +124,6 @@ function esHandleEfimeroDeMeta(url) {
     );
   } catch {
     return false;
-  }
-}
-
-/** Clave de cache sin querystring: la firma cambia, el archivo no. */
-function mediaCacheKey(business_phone_id, url) {
-  try {
-    const u = new URL(String(url));
-    return `${business_phone_id}::${u.hostname}${u.pathname}`;
-  } catch {
-    return `${business_phone_id}::${url}`;
   }
 }
 
@@ -160,15 +152,14 @@ async function resolverMediaIdDeHeader({
   nombre_template,
   header_media_name,
 }) {
-  const cacheKey = mediaCacheKey(business_phone_id, url);
-  const cached = mediaIdCache.get(cacheKey);
+  const cached = mediaIdRecordado(business_phone_id, url);
 
-  if (cached && Date.now() - cached.cachedAt < MEDIA_ID_CACHE_TTL_MS) {
+  if (cached) {
     console.log('💾 [headerMedia] CACHE HIT', {
       nombre_template,
-      mediaId: cached.media.mediaId,
+      mediaId: cached.mediaId,
     });
-    return cached.media;
+    return cached;
   }
 
   try {
@@ -222,7 +213,7 @@ async function resolverMediaIdDeHeader({
     }
 
     const media = { mediaId: subida.mediaId, filename: originalname };
-    mediaIdCache.set(cacheKey, { media, cachedAt: Date.now() });
+    recordarMediaId(business_phone_id, url, media);
 
     console.log('✅ [headerMedia] Handle resubido a /media', {
       nombre_template,

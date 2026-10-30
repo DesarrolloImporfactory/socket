@@ -1,7 +1,8 @@
 const express = require('express');
-const axios = require('axios');
 const multer = require('multer');
-const FormData = require('form-data');
+const {
+  uploadToUploader: subirAlUploader,
+} = require('../utils/whatsappTemplate.helpers');
 
 const router = express.Router();
 
@@ -14,44 +15,29 @@ function safeName(name = 'file') {
   return String(name).replace(/[^\w.\-() ]+/g, '_');
 }
 
+// Misma subida que el resto del backend (con reutilización por hash), solo
+// que aquí no lanza: devuelve { ok:false } como hacía la copia local.
 async function uploadToUploader({
   buffer,
   originalname,
   mimetype,
   folder = 'media',
 }) {
-  const form = new FormData();
-
-  const fileName = safeName(originalname || `file-${Date.now()}`);
-  form.append('file', buffer, {
-    filename: `${folder}/${Date.now()}-${fileName}`,
-    contentType: mimetype || 'application/octet-stream',
-  });
-
-  const uploaderResp = await axios.post(
-    'https://uploader.imporfactory.app/api/files/upload',
-    form,
-    { headers: form.getHeaders(), timeout: 30000, validateStatus: () => true },
-  );
-
-  if (uploaderResp.status < 200 || uploaderResp.status >= 300) {
+  try {
+    const r = await subirAlUploader({
+      buffer,
+      originalname: safeName(originalname || `file-${Date.now()}`),
+      mimetype,
+      folder,
+    });
+    return { ok: true, url: r.fileUrl, data: r.data };
+  } catch (err) {
     return {
       ok: false,
-      status: uploaderResp.status,
-      data: uploaderResp.data,
+      status: err.statusCode || 502,
+      data: err.raw || { message: err.message },
     };
   }
-
-  const json = uploaderResp.data;
-  if (!json?.success || !json?.data?.url) {
-    return {
-      ok: false,
-      status: 502,
-      data: json,
-    };
-  }
-
-  return { ok: true, url: json.data.url, data: json.data };
 }
 
 /**

@@ -26,6 +26,17 @@ const {
   processBucHeader,
 } = require('../utils/wabaThrottleGuard');
 const { esConexionCerrada } = require('../utils/conexionCerrada');
+const {
+  mediaIdRecordado,
+  recordarMediaId,
+} = require('../utils/archivosSubidos');
+// Remarketing por producto: filas con id_remarketing_producto. Dentro de la
+// ventana de 24 h salen como texto + botones (intento 0); si la ventana está
+// cerrada caen a la plantilla de respaldo de la columna como cualquier otra.
+const {
+  enviarPasoProducto,
+  programarSiguientePasoProducto,
+} = require('../services/remarketing_producto.service');
 
 /* ================================================================
    Detectores de tipo de error
@@ -80,6 +91,12 @@ async function uploadMediaToMeta(
     DOCUMENT: 'application/pdf',
   };
   const EXT = { IMAGE: 'jpg', VIDEO: 'mp4', DOCUMENT: 'pdf' };
+
+  // El mismo header de la misma plantilla sale a cientos de clientes: Meta
+  // conserva el media_id 30 días, así que se descarga y se sube UNA vez por
+  // número (memoria de 6 h) en vez de en cada registro del cron.
+  const recordado = mediaIdRecordado(business_phone_id, mediaUrl);
+  if (recordado?.mediaId) return recordado.mediaId;
 
   const fmt = String(headerFormat || '').toUpperCase();
   const mimeType = MIME[fmt] || 'application/octet-stream';
@@ -148,6 +165,7 @@ async function uploadMediaToMeta(
     throw err;
   }
 
+  recordarMediaId(business_phone_id, mediaUrl, { mediaId: uploadRes.data.id });
   return uploadRes.data.id;
 }
 
@@ -945,10 +963,54 @@ cron.schedule('*/1 * * * *', async () => {
           const telefonoLimpio = onlyDigits(record.telefono || '');
 
           // ══════════════════════════════════════════════════════
+          // Intento 0: REMARKETING POR PRODUCTO (texto + botones)
+          // Solo con la ventana de 24 h abierta: es un mensaje libre, no
+          // una plantilla. Cerrada → sigue el camino normal con la
+          // plantilla de respaldo que trae la fila.
+          // ══════════════════════════════════════════════════════
+          let envioPorProducto = false;
+          if (record.id_remarketing_producto) {
+            const ventanaProducto = await verificarVentana24h(
+              record.id_configuracion,
+              telefonoLimpio,
+            );
+            if (ventanaProducto) {
+              try {
+                const rp = await enviarPasoProducto({
+                  record,
+                  cfg,
+                  telefonoLimpio,
+                });
+                if (rp.ok) {
+                  envioPorProducto = true;
+                  mensajeEnviado = true;
+                  console.log(
+                    `🛍️ [producto] id=${record.id} paso ${record.paso_producto || 1} enviado (producto ${record.id_producto})`,
+                  );
+                } else {
+                  console.log(
+                    `🛍️ [producto] id=${record.id} no salió (${rp.motivo}) → camino normal`,
+                  );
+                }
+              } catch (eProd) {
+                if (!isWindowClosedError(eProd)) throw eProd;
+                console.log(
+                  `🛍️ [producto] id=${record.id} Meta dice ventana cerrada → plantilla de respaldo`,
+                );
+              }
+            } else {
+              console.log(
+                `🛍️ [producto] id=${record.id} ventana 24h cerrada → plantilla de respaldo`,
+              );
+            }
+          }
+
+          // ══════════════════════════════════════════════════════
           // Detectar método dentro de 24h (con compat legacy)
           // ══════════════════════════════════════════════════════
-          const metodo24h =
-            record.metodo_dentro_24h && record.metodo_dentro_24h !== 'ninguno'
+          const metodo24h = envioPorProducto
+            ? 'ninguno'
+            : record.metodo_dentro_24h && record.metodo_dentro_24h !== 'ninguno'
               ? record.metodo_dentro_24h
               : record.usar_respuesta_rapida
                 ? 'respuesta_rapida'
@@ -1421,7 +1483,7 @@ cron.schedule('*/1 * * * *', async () => {
           // ══════════════════════════════════════════════════════
           // Intento 3: TEMPLATE META (si no fue por RR ni IA)
           // ══════════════════════════════════════════════════════
-          if (!envioPorRR && !envioPorIA) {
+          if (!envioPorRR && !envioPorIA && !envioPorProducto) {
             console.log(`🟦 [DEBUG] >>> FALLBACK a template Meta`);
 
             // Sin plantilla configurada → no hay fallback de pago posible.
@@ -1833,6 +1895,21 @@ cron.schedule('*/1 * * * *', async () => {
           // ══════════════════════════════════════════════════════
           // Lógica de secuencia
           // ══════════════════════════════════════════════════════
+          // Por producto NO hay mezcla con la columna: un producto con
+          // remarketing propio manda SOLO sus pasos (1, 2 o 3) y al terminar
+          // se cierra el ciclo igual que la columna (enviar_remarketing=0).
+          // Vale también si este paso salió por la plantilla de respaldo
+          // (ventana cerrada): el siguiente sigue siendo el del producto.
+          const esProducto = !!record.id_remarketing_producto;
+          let hayOtroPasoProducto = false;
+          if (esProducto) {
+            hayOtroPasoProducto = await programarSiguientePasoProducto(record);
+            console.log(
+              hayOtroPasoProducto
+                ? `🛍️ [producto] paso ${Number(record.paso_producto || 1) + 1} agendado para cliente=${record.id_cliente_chat_center}`
+                : `🛍️ [producto] pasos del producto terminados (no se mezcla con la columna)`,
+            );
+          }
           const secuenciaActual = Number(record.secuencia || 1);
 
           console.log(
@@ -1848,22 +1925,24 @@ cron.schedule('*/1 * * * *', async () => {
             `🟩 [SEQ]     estado_destino_actual="${record.estado_destino || 'NULL'}"`,
           );
 
-          const [siguienteConfig] = await db.query(
-            `SELECT * FROM configuracion_remarketing
-             WHERE id_configuracion = ? 
-               AND estado_contacto = ? 
-               AND secuencia = ? 
+          const [siguienteConfig] = esProducto
+            ? [null]
+            : await db.query(
+                `SELECT * FROM configuracion_remarketing
+             WHERE id_configuracion = ?
+               AND estado_contacto = ?
+               AND secuencia = ?
                AND activo = 1
              LIMIT 1`,
-            {
-              replacements: [
-                record.id_configuracion,
-                record.estado_contacto_origen,
-                secuenciaActual + 1,
-              ],
-              type: db.QueryTypes.SELECT,
-            },
-          );
+                {
+                  replacements: [
+                    record.id_configuracion,
+                    record.estado_contacto_origen,
+                    secuenciaActual + 1,
+                  ],
+                  type: db.QueryTypes.SELECT,
+                },
+              );
 
           console.log(
             `🟩 [SEQ] siguienteConfig=${siguienteConfig ? `ENCONTRADA (id=${siguienteConfig.id}, tiempo=${siguienteConfig.tiempo_espera_horas}h)` : 'NO ENCONTRADA'}`,
@@ -1895,8 +1974,15 @@ cron.schedule('*/1 * * * *', async () => {
               },
             );
 
+            // Mismo cálculo que programarRemarketingKanban: si el paso tiene
+            // tiempo_espera_minutos manda ese; antes se usaban solo las horas
+            // redondeadas y un paso de 30 min salía a las 0 h (al minuto).
+            const minutosSiguiente =
+              siguienteConfig.tiempo_espera_minutos != null
+                ? Number(siguienteConfig.tiempo_espera_minutos)
+                : Number(siguienteConfig.tiempo_espera_horas || 0) * 60;
             const tiempoDisparo = new Date(
-              Date.now() + siguienteConfig.tiempo_espera_horas * 60 * 60 * 1000,
+              Date.now() + minutosSiguiente * 60 * 1000,
             );
 
             console.log(
@@ -1951,7 +2037,7 @@ cron.schedule('*/1 * * * *', async () => {
             console.log(
               `🟩 [SEQ] ✅ INSERT completado para secuencia=${secuenciaActual + 1}`,
             );
-          } else {
+          } else if (!hayOtroPasoProducto) {
             console.log(
               `🟩 [SEQ] ❌ NO se programó siguiente (query no encontró config para secuencia=${secuenciaActual + 1})`,
             );
@@ -2016,7 +2102,13 @@ cron.schedule('*/1 * * * *', async () => {
             { replacements: [record.id], type: db.QueryTypes.UPDATE },
           );
 
-          const tipoEnvio = envioPorIA ? 'IA' : envioPorRR ? 'RR' : 'template';
+          const tipoEnvio = envioPorProducto
+            ? 'producto'
+            : envioPorIA
+              ? 'IA'
+              : envioPorRR
+                ? 'RR'
+                : 'template';
           console.log(
             `✅ [remarketing] id=${record.id} enviado (${tipoEnvio})`,
           );

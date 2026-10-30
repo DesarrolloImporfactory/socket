@@ -1391,7 +1391,12 @@ async function historialCasos(id_usuario) {
 // ── Resultados ──────────────────────────────────────────────────────────
 async function resultados({ dias = 30 }) {
   await ensureTablas();
-  const d = Math.min(Math.max(Number(dias) || 30, 7), 365);
+  // dias=0 es «hoy»: lo registrado desde las 00:00 del servidor (-05:00), para
+  // que cada asesor vea su jornada y el admin lo que se hizo en el día.
+  const n = Number(dias);
+  const d = n === 0 ? 0 : Math.min(Math.max(n || 30, 7), 365);
+  // d ya es un entero validado, por eso puede ir interpolado en el SQL.
+  const DESDE = d === 0 ? 'CURDATE()' : `DATE_SUB(NOW(), INTERVAL ${d} DAY)`;
 
   const [totales, porAsesorCasos, porAsesorSeg, serie, motivos, resultadosSeg, recientes, porCohorte] =
     await Promise.all([
@@ -1400,17 +1405,17 @@ async function resultados({ dias = 30 }) {
                 SUM(estado_final = 'pago') AS pagaron,
                 SUM(estado_final = 'prueba') AS a_prueba
            FROM recuperacion_casos_chat_center
-          WHERE estado = 'abierto' OR cerrado_en >= DATE_SUB(NOW(), INTERVAL :d DAY)
+          WHERE estado = 'abierto' OR cerrado_en >= ${DESDE}
           GROUP BY estado`,
         { replacements: { d }, type: db.QueryTypes.SELECT },
       ),
       db.query(
         `SELECT asignado_a_id, asignado_a_nombre,
                 SUM(estado = 'abierto') AS abiertos,
-                SUM(estado = 'recuperado' AND cerrado_en >= DATE_SUB(NOW(), INTERVAL :d DAY)) AS recuperados,
-                SUM(estado = 'perdido'    AND cerrado_en >= DATE_SUB(NOW(), INTERVAL :d DAY)) AS perdidos,
-                SUM(estado = 'descartado' AND cerrado_en >= DATE_SUB(NOW(), INTERVAL :d DAY)) AS descartados,
-                COALESCE(SUM(CASE WHEN estado = 'recuperado' AND cerrado_en >= DATE_SUB(NOW(), INTERVAL :d DAY)
+                SUM(estado = 'recuperado' AND cerrado_en >= ${DESDE}) AS recuperados,
+                SUM(estado = 'perdido'    AND cerrado_en >= ${DESDE}) AS perdidos,
+                SUM(estado = 'descartado' AND cerrado_en >= ${DESDE}) AS descartados,
+                COALESCE(SUM(CASE WHEN estado = 'recuperado' AND cerrado_en >= ${DESDE}
                                   THEN monto_plan END), 0) AS monto_recuperado
            FROM recuperacion_casos_chat_center
           GROUP BY asignado_a_id, asignado_a_nombre`,
@@ -1424,7 +1429,7 @@ async function resultados({ dias = 30 }) {
                 SUM(resultado = 'promesa_pago') AS promesas,
                 SUM(resultado IN ('retenido','convertido','pago_confirmado')) AS exitos
            FROM seguimiento_clientes_chat_center
-          WHERE fecha_seguimiento >= DATE_SUB(NOW(), INTERVAL :d DAY)
+          WHERE fecha_seguimiento >= ${DESDE}
           GROUP BY ejecutado_por_id, ejecutado_por_nombre`,
         { replacements: { d }, type: db.QueryTypes.SELECT },
       ),
@@ -1442,14 +1447,14 @@ async function resultados({ dias = 30 }) {
         `SELECT motivo_cancelacion AS motivo, COUNT(*) AS n
            FROM seguimiento_clientes_chat_center
           WHERE motivo_cancelacion IS NOT NULL AND TRIM(motivo_cancelacion) <> ''
-            AND fecha_seguimiento >= DATE_SUB(NOW(), INTERVAL :d DAY)
+            AND fecha_seguimiento >= ${DESDE}
           GROUP BY motivo_cancelacion ORDER BY n DESC LIMIT 10`,
         { replacements: { d }, type: db.QueryTypes.SELECT },
       ),
       db.query(
         `SELECT resultado, COUNT(*) AS n
            FROM seguimiento_clientes_chat_center
-          WHERE fecha_seguimiento >= DATE_SUB(NOW(), INTERVAL :d DAY)
+          WHERE fecha_seguimiento >= ${DESDE}
           GROUP BY resultado ORDER BY n DESC`,
         { replacements: { d }, type: db.QueryTypes.SELECT },
       ),
@@ -1463,7 +1468,7 @@ async function resultados({ dias = 30 }) {
                   WHERE e.id_usuario = c.id_usuario AND e.estado = 'enviado') AS automatizaciones_enviadas
            FROM recuperacion_casos_chat_center c
            JOIN usuarios_chat_center u ON u.id_usuario = c.id_usuario
-          WHERE c.estado <> 'abierto' AND c.cerrado_en >= DATE_SUB(NOW(), INTERVAL :d DAY)
+          WHERE c.estado <> 'abierto' AND c.cerrado_en >= ${DESDE}
           ORDER BY c.cerrado_en DESC LIMIT 100`,
         { replacements: { d }, type: db.QueryTypes.SELECT },
       ),
@@ -1472,11 +1477,11 @@ async function resultados({ dias = 30 }) {
       db.query(
         `SELECT cohorte,
                 SUM(estado = 'abierto') AS abiertos,
-                SUM(estado = 'recuperado' AND cerrado_en >= DATE_SUB(NOW(), INTERVAL :d DAY)) AS recuperados,
-                SUM(estado = 'perdido'    AND cerrado_en >= DATE_SUB(NOW(), INTERVAL :d DAY)) AS perdidos,
-                SUM(estado_final = 'pago'   AND cerrado_en >= DATE_SUB(NOW(), INTERVAL :d DAY)) AS pagaron,
-                SUM(estado_final = 'prueba' AND cerrado_en >= DATE_SUB(NOW(), INTERVAL :d DAY)) AS a_prueba,
-                COALESCE(SUM(CASE WHEN estado = 'recuperado' AND cerrado_en >= DATE_SUB(NOW(), INTERVAL :d DAY)
+                SUM(estado = 'recuperado' AND cerrado_en >= ${DESDE}) AS recuperados,
+                SUM(estado = 'perdido'    AND cerrado_en >= ${DESDE}) AS perdidos,
+                SUM(estado_final = 'pago'   AND cerrado_en >= ${DESDE}) AS pagaron,
+                SUM(estado_final = 'prueba' AND cerrado_en >= ${DESDE}) AS a_prueba,
+                COALESCE(SUM(CASE WHEN estado = 'recuperado' AND cerrado_en >= ${DESDE}
                                   THEN monto_plan END), 0) AS monto_recuperado
            FROM recuperacion_casos_chat_center
           GROUP BY cohorte`,

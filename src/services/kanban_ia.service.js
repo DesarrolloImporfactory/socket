@@ -6154,7 +6154,23 @@ async function programarRemarketingKanban({
       },
     );
 
-    if (!configRM) return;
+    /* Remarketing por producto (solo en contacto_inicial y cuentas piloto):
+       si el producto en juego del cliente tiene su propio recordatorio
+       activo, se agenda ese paso en vez del de la columna. La fila lleva la
+       plantilla de la columna como respaldo por si al disparar la ventana
+       de 24 h ya se cerró. Sin producto configurado, todo sigue igual. */
+    const rmkProducto = require('./remarketing_producto.service');
+    let productoEnJuego = null;
+    if (estado_contacto === rmkProducto.COLUMNA) {
+      productoEnJuego = await rmkProducto
+        .remarketingDelProductoEnJuego(id_configuracion, id_cliente)
+        .catch((e) => {
+          log(`⚠️ remarketing producto: ${e.message}`);
+          return null;
+        });
+    }
+
+    if (!configRM && !productoEnJuego) return;
 
     // Si quien reagenda no trae parámetros (el bot, que no conoce el pedido)
     // se heredan los del último pendiente de ESTA MISMA columna. Sin esto, una
@@ -6199,6 +6215,49 @@ async function programarRemarketingKanban({
         type: db.QueryTypes.UPDATE,
       },
     );
+
+    if (productoEnJuego) {
+      const paso = await rmkProducto.pasoQueToca(
+        productoEnJuego.config,
+        id_cliente,
+      );
+      if (paso) {
+        let paramsProducto = null;
+        if (Array.isArray(template_parameters) && template_parameters.length) {
+          paramsProducto = template_parameters;
+        } else if (paramsHeredados) {
+          try {
+            paramsProducto = JSON.parse(paramsHeredados);
+          } catch (_) {
+            paramsProducto = null;
+          }
+        }
+        const r = await rmkProducto.programarPasoProducto({
+          id_configuracion,
+          id_cliente,
+          telefono,
+          estado_contacto,
+          config: productoEnJuego.config,
+          producto: productoEnJuego.producto,
+          paso,
+          respaldo: configRM || null,
+          template_parameters: paramsProducto,
+        });
+        if (r) {
+          await log(
+            `🛍️ Remarketing por producto programado en ${r.minutos}min — producto=${productoEnJuego.producto.id} paso=${paso} respaldo=${configRM?.nombre_template || 'sin plantilla'}`,
+          );
+          return;
+        }
+      } else {
+        // Sin mezcla: el producto ya mandó todos sus pasos en las últimas
+        // 48 h; no se agenda nada (tampoco el de la columna).
+        await log(
+          `🛍️ Remarketing por producto agotado (producto=${productoEnJuego.producto.id}) → no se agenda más`,
+        );
+      }
+      return;
+    }
 
     const [cfg] = await db.query(
       `SELECT telefono FROM configuraciones WHERE id = ? LIMIT 1`,
