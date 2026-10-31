@@ -2,6 +2,9 @@ const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 
 const { db, db_2 } = require('../database/config');
+const {
+  resincronizarPendientesRemarketing,
+} = require('../utils/resincronizarPendientesRemarketing');
 const axios = require('axios');
 const { QueryTypes } = require('sequelize');
 const OpenaiAssistants = require('../models/openai_assistants.model');
@@ -1508,7 +1511,32 @@ exports.configurar_remarketing = catchAsync(async (req, res, next) => {
       );
     }
 
-    res.status(200).json({ status: '200', message: 'Remarketing configurado' });
+    /* Los recordatorios YA agendados de esta columna llevan la copia de la
+       configuración anterior y el cron manda lo que dice la fila: sin esto,
+       la tienda cambia la secuencia y durante horas siguen saliendo los
+       mensajes viejos (Express Store 1549, 31-10-2026). Se les copia el paso
+       nuevo de su misma posición (misma hora de disparo) o se cancelan si la
+       secuencia se acortó. Si falla, la configuración ya quedó guardada y
+       solo se informa. */
+    let pendientes = { actualizados: 0, cancelados: 0 };
+    try {
+      pendientes = await resincronizarPendientesRemarketing(
+        id_configuracion,
+        estado_contacto,
+      );
+    } catch (e) {
+      console.error(
+        `[configurar_remarketing] no se pudieron resincronizar los pendientes cfg=${id_configuracion} ${estado_contacto}:`,
+        e.message,
+      );
+    }
+
+    res.status(200).json({
+      status: '200',
+      message: 'Remarketing configurado',
+      pendientes_actualizados: pendientes.actualizados,
+      pendientes_cancelados: pendientes.cancelados,
+    });
   } catch (error) {
     console.error(error);
     return next(new AppError('Error configurando remarketing', 500));
