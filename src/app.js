@@ -147,6 +147,7 @@ const webhookTriveRouter = require('./routes/webhook_trive.routes');
 
 const adminDashboardRouter = require('./routes/admin_dashboard.routes');
 const adminBotSaludRouter = require('./routes/admin_bot_salud.routes');
+const espiaMercadoRouter = require('./routes/espia_mercado.routes');
 const adminAvisosRouter = require('./routes/admin_avisos.routes');
 const mobileAppRouter = require('./routes/mobile_app.routes');
 
@@ -338,6 +339,10 @@ app.use((req, res, next) => {
     // firma sobre los campos; el sanitizador los cambiaría y la firma
     // fallaría. Las demás rutas van con protect.
     '/api/v1/telefonia',
+    // Espía de mercado: la extensión manda textos de anuncios de Meta con "$",
+    // emojis y HTML escapado; el sanitizador los mutilaría. Todo el grupo va
+    // con protect + requireSuperAdmin (ver espia_mercado.routes.js).
+    '/api/v1/espia',
     // Asistente de comentarios: los datos del negocio y el prompt avanzado
     // llevan precios ("Envío gratis desde $30") y el sanitizador noSQL borraba
     // el "$" al guardar, dejando "desde 30". Eso no se queda en la pantalla:
@@ -462,6 +467,7 @@ app.use('/api/v1/referidos', referidosRouter);
 app.use('/api/v1/trive_cart', webhookTriveRouter);
 app.use('/api/v1/admin_dashboard', adminDashboardRouter);
 app.use('/api/v1/admin_bot_salud', adminBotSaludRouter);
+app.use('/api/v1/espia', espiaMercadoRouter);
 app.use('/api/v1/admin_avisos', adminAvisosRouter);
 app.use('/api/v1/seguimientos', seguimientosRouter);
 app.use('/api/v1/recuperacion', recuperacionRouter);

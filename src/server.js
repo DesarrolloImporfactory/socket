@@ -116,6 +116,9 @@ async function startServer() {
       // freno por rate limit. Sin esto /conexiones dice "Conectado" a números
       // que Meta ya tiene DISCONNECTED o sin acceso (cfg 1071, 2026-09-16).
       require('./cron/whatsappNumerosHealth.js');
+      // Espía de mercado (Dropkiller propio): foto del catálogo de Dropi dos
+      // veces al día por país, reporte 07:30 y mantenimiento de anuncios.
+      require('./cron/espiaMercado.js');
       // Telefonía por saldo: cada 10 min cierra y cobra las llamadas cuyo
       // aviso de Zadarma se perdió (por ejemplo en un deploy), trae las
       // grabaciones pendientes y termina los análisis de IA a medias.

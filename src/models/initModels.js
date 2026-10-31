@@ -23,6 +23,8 @@ const TikTokWebhookSubscription = require('./tiktok_webhook_subscription.model')
 const TikTokNotification = require('./tiktok_notification.model');
 const TikTokWebhookLog = require('./tiktok_webhook_log.model');
 const DropiIntegrations = require('./dropi_integrations.model');
+// Espía de mercado: tablas de mercado por país (sin asociaciones).
+require('./espia_mercado.model');
 const ImporsuitCursos = require('./imporsuit/cursos.model');
 const ProductosChatCenter = require('./productos_chat_center.model');
 const ProductosWizard = require('./productos_wizard.model');
