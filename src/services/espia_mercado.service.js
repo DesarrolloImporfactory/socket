@@ -861,7 +861,10 @@ const RELLENO = new Set([
   'mas', 'super', 'premium', 'calidad', 'alta', 'importado', 'importada', 'tipo', 'estilo', 'modelo', 'version', 'edicion',
   'ml', 'gr', 'g', 'kg', 'cm', 'mm', 'm', 'lt', 'l', 'oz', 'w', 'v', 'mah', 'gb', 'tb', 'pulgadas', 'pulg',
 ]);
+// Fichas de servicio que Dropi lista como productos: nunca se buscan.
+const RE_SERVICIO = /^\s*(caja|cajas)\s+(de\s+)?env[ií]os?\s*$|producto\s+privado|producto\s+gratis|env[ií]o\s+prioritario|diferencia\s+de\s+precio|^\s*flete|^\s*recargo|^\s*garant[ií]a\s*$/i;
 function terminoBusqueda(nombre) {
+  if (RE_SERVICIO.test(String(nombre || ''))) return '';
   const base = String(nombre || '')
     .toLowerCase()
     .normalize('NFD')
@@ -873,10 +876,19 @@ function terminoBusqueda(nombre) {
     .filter((w) => w && !RELLENO.has(w) && !/^\d+[a-z]*$/.test(w) && w.length >= 3);
   // Sin repetidas, en el orden del nombre (lo primero suele ser lo que define el producto).
   const palabras = [...new Set(base)].slice(0, 3);
-  if (palabras.length) return palabras.join(' ');
-  // Nombres sin palabras «con peso» (p. ej. «X2 Pack 500 ml»): se manda algo antes que nada.
-  return String(nombre || '').trim().split(/\s+/).slice(0, 3).join(' ');
+  // Una sola palabra solo si es un nombre propio largo (ASTAXANTHIN, SHILAJIT); «privado»,
+  // «prioritario» o «entrenamiento» solas traen cualquier anuncio que use esa palabra.
+  if (palabras.length === 1 && (palabras[0].length < 7 || GENERICAS_SOLAS.has(palabras[0]))) return '';
+  return palabras.join(' ');
 }
+// Fichas de servicio de Dropi y nombres sin producto: no se buscan en Meta (el 31-10 «PRODUCTO
+// PRIVADO», «ENVIO PRIORITARIO», «PRODUCTO GRATIS» y «Caja Envíos» trajeron 200+ vínculos falsos).
+const GENERICAS_SOLAS = new Set([
+  'privado', 'privados', 'prioritario', 'entrenamiento', 'importado', 'importados', 'servicio', 'servicios', 'garantia',
+  'diferencia', 'recarga', 'muestra', 'muestras', 'repuesto', 'repuestos', 'accesorio', 'accesorios', 'regalo', 'regalos',
+  'sorpresa', 'variado', 'variados', 'surtido', 'surtidos', 'especial', 'exclusivo', 'generico', 'generica', 'articulo', 'articulos',
+]);
+const esBuscable = (nombre) => Boolean(terminoBusqueda(nombre));
 
 /**
  * Cola de productos para que la extensión los busque en la Biblioteca de Meta:
@@ -901,25 +913,54 @@ async function radarCola(params = {}, sessionUser = {}) {
           { pais, idSub, pref: `${pais}:%`, dias },
         )
       : Promise.resolve([]),
+    // Se piden de más porque las fichas no buscables (servicios, nombres genéricos) se filtran aquí.
     q(
       `SELECT ${campos} FROM espia_producto p
         WHERE p.pais = :pais AND p.nombre IS NOT NULL AND p.nombre <> '' AND ${pendiente}
-        ORDER BY p.ventas_7d DESC, p.ventas_30d DESC, p.ventas_total DESC LIMIT :limit`,
-      { pais, dias, limit },
+        ORDER BY p.ventas_7d DESC, p.ventas_30d DESC, p.ventas_total DESC LIMIT :limitAmplio`,
+      { pais, dias, limitAmplio: Math.round(limit * 1.4) + 50 },
     ),
     q(`SELECT COUNT(*) AS n FROM espia_producto p WHERE p.pais = :pais`, { pais }),
     q(`SELECT COUNT(*) AS n FROM espia_producto p WHERE p.pais = :pais AND ${pendiente}`, { pais, dias }),
   ]);
   const vistos = new Set();
   const items = [];
+  let noBuscables = 0;
   for (const p of [...seguidos, ...top]) {
     const id = String(p.dropi_product_id);
     if (vistos.has(id)) continue;
     vistos.add(id);
-    items.push({ ...p, dropi_product_id: Number(p.dropi_product_id), termino: terminoBusqueda(p.nombre), seguido: vistos.size <= seguidos.length });
+    const termino = terminoBusqueda(p.nombre);
+    if (!termino) { noBuscables++; continue; }
+    items.push({ ...p, dropi_product_id: Number(p.dropi_product_id), termino, seguido: vistos.size <= seguidos.length });
     if (items.length >= limit) break;
   }
-  return { pais, dias, total_productos: Number(tot?.n || 0), pendientes: Number(pend?.n || 0), items };
+  return { pais, dias, total_productos: Number(tot?.n || 0), pendientes: Number(pend?.n || 0), no_buscables: noBuscables, items };
+}
+
+/**
+ * Deshace los vínculos de productos que no debieron buscarse (nombres de servicio o genéricos):
+ * borra sus filas en espia_anuncio_producto, pone n_anuncios en 0 y radar_en en NULL. Los
+ * anuncios se quedan: siguen valiendo en la pestaña Anuncios y Tiendas.
+ */
+async function limpiarVinculosNoBuscables(paisCrudo) {
+  const pais = validarPais(paisCrudo);
+  const filas = await q(`SELECT dropi_product_id, nombre FROM espia_producto WHERE pais = :pais AND radar_en IS NOT NULL`, { pais });
+  const malos = filas.filter((f) => !esBuscable(f.nombre));
+  if (!malos.length) return { pais, revisados: filas.length, limpiados: [], vinculos_borrados: 0 };
+  const ids = malos.map((m) => Number(m.dropi_product_id));
+  // BULKDELETE devuelve el número de filas afectadas directo (ver nota sequelize-raw-update-delete-affected-rows).
+  const borrados = Number(
+    await db.query(`DELETE FROM espia_anuncio_producto WHERE pais = :pais AND dropi_product_id IN (:ids)`, {
+      replacements: { pais, ids },
+      type: QueryTypes.BULKDELETE,
+    }),
+  ) || 0;
+  await db.query(`UPDATE espia_producto SET n_anuncios = 0, radar_en = NULL WHERE pais = :pais AND dropi_product_id IN (:ids)`, {
+    replacements: { pais, ids },
+    type: QueryTypes.UPDATE,
+  });
+  return { pais, revisados: filas.length, limpiados: malos.map((m) => ({ id: Number(m.dropi_product_id), nombre: m.nombre })), vinculos_borrados: borrados };
 }
 
 // Vincula anuncios ya guardados con un producto y refresca su conteo + radar_en.
@@ -1366,6 +1407,8 @@ module.exports = {
   radarCola,
   radarMarcar,
   terminoBusqueda,
+  esBuscable,
+  limpiarVinculosNoBuscables,
   registrarVistaTienda,
   perfilarTienda,
   perfilarPendientes,
