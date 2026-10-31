@@ -612,6 +612,7 @@ exports.transferir = catchAsync(async (req, res, next) => {
 
 const dashboardEmitter = require('./dashboardEmitter');
 const { getKanbanConfigCuenta } = require('../utils/kanbanConfigCuenta');
+const { puedeCerrarChat } = require('../utils/chatCierreExclusivo');
 
 async function columnaPrincipal(id_configuracion) {
   const [col] = await db.query(
@@ -631,6 +632,19 @@ exports.cerrar = catchAsync(async (req, res, next) => {
   const cfg = await conexionDeLaCuenta(req.body?.id_configuracion, u.id_usuario);
   const chat = cfg && (await chatVisible(id_cliente, cfg, u));
   if (!chat) return next(new AppError('Chat no encontrado', 404));
+  if (
+    !puedeCerrarChat({
+      id_configuracion: cfg.id,
+      celular_cliente: chat.celular_cliente,
+      id_sub_usuario: u.id_sub_usuario,
+    })
+  ) {
+    return res.status(403).json({
+      status: 'fail',
+      code: 'CHAT_CIERRE_RESTRINGIDO',
+      message: 'Solo Imporfactorypro puede cerrar esta conversación.',
+    });
+  }
 
   let volver_al_cerrar = true;
   try {

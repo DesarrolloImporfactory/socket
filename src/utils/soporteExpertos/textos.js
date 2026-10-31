@@ -34,7 +34,7 @@ const LINKS = {
 const CIERRE_ASESOR = 'Un asesor lo revisa y te escribe apenas abramos.';
 const MENSAJE_ASESOR = `Recibí tu mensaje. ${CIERRE_ASESOR}`;
 const MENSAJE_SALUDO =
-  'Hola. Cuéntame qué necesitas. Si hace falta un asesor, lo dejo anotado para que te escriba apenas abramos.';
+  'Hola, ¿en qué te puedo ayudar?';
 const MENSAJE_RECIBIDO = 'Recibido. Lo sumo a tu caso para el asesor.';
 const MENSAJE_ARCHIVO = 'Recibí lo que enviaste. Un asesor lo revisa y te escribe apenas abramos.';
 const MENSAJE_CLASE = `El enlace para entrar a la clase en vivo es siempre el mismo: ${LINKS.clase}
@@ -393,7 +393,7 @@ const PROACTIVO = Object.freeze({
   pase_sin_area: 'Lo pasé a {nombre}. Te escribe por este chat {cuando}.',
   pase_directo: 'Esto lo atiende {nombre} directamente. Ya tiene tu caso con lo que me contaste y te escribe {cuando}.',
   // P4: el cliente vuelve a escribir y su pase sigue sin respuesta.
-  sigue_con: 'Tu caso sigue con {nombre} desde {desde}. Ya le avisé que volviste a escribir. Si hay algo nuevo, cuéntame y lo sumo.',
+  sigue_con: 'Tu caso lo lleva {nombre} y ya le avisé que escribiste.',
 });
 /* ── Shipping mark (marcaEnvio.js), FAQ de Daniel del 27-oct. ✅ marca,
    sin_aprobar y sin_marca APROBADOS POR DANIEL (27-oct: «Apruebo los textos

@@ -80,6 +80,7 @@ const {
   enviarConsultaAPI,
 } = require('../utils/webhook_whatsapp/enviar_consulta_socket');
 const { getKanbanConfigCuenta } = require('../utils/kanbanConfigCuenta');
+const { puedeCerrarChat } = require('../utils/chatCierreExclusivo');
 const { adornarMembresias } = require('../utils/membresiaImporsuit');
 const { adornarIncidencias } = require('../utils/incidenciasResumen');
 const {
@@ -104,9 +105,24 @@ exports.actualizar_cerrado = catchAsync(async (req, res, next) => {
     // (kanban_volver_al_cerrar = 0): en un embudo de atención sin bot cerrar
     // el chat no significa que el cliente retrocedió a "Contacto inicial".
     const [chatCierre] = await db.query(
-      `SELECT id_configuracion FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+      `SELECT id_configuracion, celular_cliente
+         FROM clientes_chat_center WHERE id = ? LIMIT 1`,
       { replacements: [chatId], type: db.QueryTypes.SELECT },
     );
+    if (
+      Number(nuevoEstado) === 1 &&
+      !puedeCerrarChat({
+        id_configuracion: chatCierre?.id_configuracion,
+        celular_cliente: chatCierre?.celular_cliente,
+        id_sub_usuario: req.sessionUser?.id_sub_usuario,
+      })
+    ) {
+      return res.status(403).json({
+        status: 'fail',
+        code: 'CHAT_CIERRE_RESTRINGIDO',
+        message: 'Solo Imporfactorypro puede cerrar esta conversación.',
+      });
+    }
     const { volver_al_cerrar } = await getKanbanConfigCuenta(
       chatCierre?.id_configuracion,
     );

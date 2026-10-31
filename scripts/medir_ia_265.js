@@ -27,6 +27,8 @@ const LOG = '/home/ubuntu/logs/ia265_resuelve.log';
 const AUTOMATICOS = new Set(['Sistema de valoraciones', 'cron_template_programado', 'Automatizador | Cotizador Pro', 'Soporte Importaciones', 'Encuesta Webhook']);
 const ACUSE = /^(ok+|okey|okay|gracias|muchas gracias|listo|ya|si|sí|perfecto|dale|bueno|vale|de acuerdo|👍|🙏|ok gracias)[\s.!🙏👍]*$/i;
 
+// Ni el «tip» de la plantilla ni la bienvenida automática de otra tienda son casos.
+const NO_ES_CASO = /^tip[\s.!]*$|bienvenid[oa]\(?a?\)? a |responde con el n[uú]mero/i;
 const arg = (n) => { const i = process.argv.indexOf(n); return i > 0 ? process.argv[i + 1] : null; };
 const VER = process.argv.includes('--ver');
 
@@ -48,7 +50,7 @@ const VER = process.argv.includes('--ver');
     const p = x.p || '';
     const t = String(x.t || '').trim();
     if (+x.r === 0) {
-      if (x.tm === 'text' && (ACUSE.test(t) || esMensajeDeBot(t))) continue;
+      if (x.tm === 'text' && (ACUSE.test(t) || NO_ES_CASO.test(t) || esMensajeDeBot(t))) continue;
       o.real++;
     } else if (+x.r === 1) {
       if (p === 'IA_respaldo') o.fallo++;

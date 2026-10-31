@@ -572,6 +572,16 @@ class ChatService {
         },
       );
 
+      // Esta consulta marca los mensajes entrantes como vistos. Refleja el
+      // cambio en la misma respuesta para que el cliente no muestre el estado
+      // anterior hasta que vuelva a abrir la conversación.
+      chatsPlain.forEach((chat) => {
+        if (!Array.isArray(chat.mensajes)) return;
+        chat.mensajes.forEach((mensaje) => {
+          if (Number(mensaje.rol_mensaje) === 0) mensaje.visto = 1;
+        });
+      });
+
       return chatsPlain;
     } catch (error) {
       console.error('Error al obtener los chats 1:', error.message);
@@ -747,11 +757,11 @@ class ChatService {
             caption: mensaje || '',
           },
         };
-      } else if (tipo === 'document' || tipo === 'file') {
+      } else if (tipo === 'audio' || tipo === 'document' || tipo === 'file') {
         if (!ruta_archivo) throw new Error('Falta ruta_archivo para document');
 
         const audioExtensions = /\.(mp3|ogg|wav|aac|m4a|oga|opus)(\?.*)?$/i;
-        const isAudio = audioExtensions.test(ruta_archivo);
+        const isAudio = tipo === 'audio' || audioExtensions.test(ruta_archivo);
 
         if (isAudio) {
           const { file: tmpFile } = require('tmp-promise');
@@ -832,7 +842,8 @@ class ChatService {
               filename: 'audio.ogg',
               contentType: 'audio/ogg; codecs=opus',
             });
-            uploadForm.append('type', 'audio/ogg');
+            // Meta requires the Opus codec to be declared for OGG voice notes.
+            uploadForm.append('type', 'audio/ogg; codecs=opus');
             uploadForm.append('messaging_product', 'whatsapp');
 
             const uploadResp = await axios.post(
@@ -906,11 +917,25 @@ class ChatService {
       const responseData = await response.json();
 
       if (responseData.error) {
-        console.error('Error al enviar el mensaje:', responseData.error);
-        throw new Error(responseData.error.message);
+        console.error('[WHATSAPP_SEND] Meta rechazó el mensaje:', {
+          status: response.status,
+          code: responseData.error.code,
+          subcode: responseData.error.error_subcode,
+          message: responseData.error.message,
+        });
+        throw new Error(
+          `${responseData.error.message || 'Meta rechazó el mensaje'} ` +
+            `(código ${responseData.error.code || 'desconocido'})`,
+        );
       }
 
       const wamid = responseData?.messages?.[0]?.id || null;
+      if (tipo === 'audio') {
+        console.info('[AUDIO_SEND] Meta aceptó el audio:', {
+          status: response.status,
+          accepted: Boolean(wamid),
+        });
+      }
 
       const cliente = await ClientesChatCenter.findOne({
         where: { propietario: '1', id_configuracion },
@@ -951,7 +976,7 @@ class ChatService {
       return responseData;
     } catch (error) {
       console.error('Error en la solicitud:', error);
-      throw new Error('Ocurrió un error al enviar el mensaje.');
+      throw new Error('Ocurrió un error al enviar el mensaje: ' + (error && error.message ? error.message : 'error desconocido'));
     }
   }
 
@@ -1157,18 +1182,66 @@ class ChatService {
     }
   }
 
-  async setDataAsignar(id_encargado, id_cliente_chat_center, id_configuracion) {
+  async setDataAsignar(
+    id_encargado,
+    id_cliente_chat_center,
+    id_configuracion,
+    actor,
+  ) {
     try {
-      if (!id_encargado) {
-        return { status: 'fail', message: 'id_encargado es requerido' };
+      if (!actor?.id_sub_usuario || !actor?.id_usuario) {
+        throw new AppError('Inicia sesión para asignarte un chat.', 401);
       }
+      if (!id_encargado) throw new AppError('id_encargado es requerido', 400);
 
       if (!id_cliente_chat_center || !id_configuracion) {
+        throw new AppError(
+          'id_cliente_chat_center o id_configuracion es requerido para WhatsApp',
+          400,
+        );
+      }
+
+      const esAdmin = ['administrador', 'admin_limitado', 'super_administrador'].includes(
+        String(actor.rol).toLowerCase(),
+      );
+      if (!esAdmin && String(id_encargado) !== String(actor.id_sub_usuario)) {
+        throw new AppError('Solo puedes asignarte el chat a ti mismo.', 403);
+      }
+
+      const configuracion = await Configuraciones.findByPk(id_configuracion, {
+        attributes: ['id_usuario'],
+      });
+      if (!configuracion) throw new AppError('Conexión no encontrada.', 404);
+      if (
+        String(configuracion.id_usuario) !== String(actor.id_usuario) &&
+        String(actor.rol).toLowerCase() !== 'super_administrador'
+      ) {
+        throw new AppError('Esa conexión no pertenece a tu cuenta.', 403);
+      }
+      const destino = await Sub_usuarios_chat_center.findByPk(id_encargado, {
+        attributes: ['id_usuario'],
+      });
+      if (!destino || String(destino.id_usuario) !== String(configuracion.id_usuario)) {
+        throw new AppError('El usuario asignado no pertenece a esta cuenta.', 403);
+      }
+
+      const cliente = await Clientes_chat_center.findOne({
+        where: { id: id_cliente_chat_center, id_configuracion },
+        attributes: ['id', 'id_encargado', 'chat_cerrado'],
+      });
+      if (!cliente) throw new AppError('Chat no encontrado en esa conexión.', 404);
+
+      const encargadoActual = cliente.id_encargado;
+      if (String(encargadoActual ?? '') === String(id_encargado)) {
         return {
-          status: 'fail',
-          message:
-            'id_cliente_chat_center o id_configuracion es requerido para WhatsApp',
+          status: 'success',
+          changed: false,
+          message: 'Este chat ya está asignado a ese usuario.',
+          data: await this.getDataAsignar(id_configuracion, id_cliente_chat_center),
         };
+      }
+      if (encargadoActual != null && !esAdmin) {
+        throw new AppError('Este chat ya fue asignado a otra persona.', 409);
       }
 
       const Departamento = await DepartamentosChatCenter.findOne({
@@ -1177,17 +1250,31 @@ class ChatService {
 
       const id_departamento = Departamento?.id_departamento ?? null;
 
+      // La condición sobre el encargado evita que dos asesores tomen el mismo
+      // chat simultáneamente. Los administradores sí pueden reasignarlo.
+      const [actualizados] = await Clientes_chat_center.update(
+        cliente.chat_cerrado ? { id_encargado, chat_cerrado: 0 } : { id_encargado },
+        {
+          where: {
+            id: id_cliente_chat_center,
+            id_configuracion,
+            id_encargado: encargadoActual ?? null,
+          },
+        },
+      );
+      if (!actualizados) {
+        throw new AppError('Alguien más acaba de asignarse este chat.', 409);
+      }
+
       await Historial_encargados.create({
         id_cliente_chat_center,
+        id_encargado_anterior: encargadoActual ?? null,
         id_encargado_nuevo: id_encargado,
-        motivo: 'Auto-asignacion de chat',
+        motivo: encargadoActual == null
+          ? 'Auto-asignacion de chat'
+          : 'Reasignación de chat por administrador',
         id_departamento_asginado: id_departamento,
       });
-
-      await Clientes_chat_center.update(
-        { id_encargado },
-        { where: { id: id_cliente_chat_center } },
-      );
 
       // Buscar el cliente propietario de esa configuración (igual que arriba)
       const cliente_configuracion = await Clientes_chat_center.findOne({
@@ -1200,7 +1287,7 @@ class ChatService {
       // (opcional pero recomendado) si no existe propietario, evita crashear:
       if (!cliente_configuracion) {
         throw new Error(
-          `No existe cliente propietario para id_configuracion=${configuracion_transferida.id_configuracion}`,
+          `No existe cliente propietario para id_configuracion=${id_configuracion}`,
         );
       }
 
@@ -1222,14 +1309,15 @@ class ChatService {
 
       return {
         status: 'success',
+        changed: true,
         message: 'Chat asignado correctamente',
         data: ultimoMensaje,
       };
     } catch (error) {
+      if (error instanceof AppError) throw error;
       throw new AppError(error.message, 500);
     }
   }
-
   /**
    * Chats en los que el cliente escribió y sigue sin respuesta hace más de
    * `minutos`. Recorre TODA la configuración, no solo la página cargada en
