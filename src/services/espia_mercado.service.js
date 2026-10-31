@@ -38,6 +38,12 @@ const {
 const TAM_PAGINA = 40; // lo que de verdad devuelve Dropi (pageSize > 100 → vacío)
 const PAUSA_PAGINA_MS = Number(process.env.ESPIA_PAUSA_PAGINA_MS) || 3000;
 const FRENO_MS = Number(process.env.ESPIA_FRENO_MS) || 60 * 60 * 1000;
+// Ante un 429 Dropi pide «vuelve a intentarlo en unos minutos»: se espera 5 min
+// y se repite la misma página hasta 3 veces seguidas antes de frenar la pasada
+// una hora. Así una ráfaga ajena (el sync de órdenes de los clientes corre cada
+// 15 min) no tumba la pasada entera, como pasó con MX el 31-10 en la página 19.
+const PAUSA_429_MS = 5 * 60 * 1000;
+const MAX_REINTENTOS_429 = 3;
 const PURGA_DIAS = 120;
 const DIAS_PARA_INACTIVO = 60; // como Dropkiller: un anuncio no visto en 60 días deja de estar activo
 // QA = país de pruebas: solo para pasadas con respuestas guardadas (mock); se
@@ -111,11 +117,15 @@ async function obtenerLlave(pais) {
   return { key, store_name: row.store_name, id: row.id };
 }
 
-/** Páginas del catálogo real. Lanza FrenoError ante un 429. */
-async function* paginasDropi(pais, { maxPaginas = 0 } = {}) {
+/**
+ * Páginas del catálogo real. Ante un 429 espera PAUSA_429_MS y repite la misma
+ * página (avisa por onRateLimit); tras MAX_REINTENTOS_429 seguidos lanza FrenoError.
+ */
+async function* paginasDropi(pais, { maxPaginas = 0, onRateLimit } = {}) {
   const { key } = await obtenerLlave(pais);
   let startData = 0;
   let n = 0;
+  let reintentos429 = 0;
   for (;;) {
     if (maxPaginas && n >= maxPaginas) return;
     let data;
@@ -134,10 +144,15 @@ async function* paginasDropi(pais, { maxPaginas = 0 } = {}) {
       });
     } catch (err) {
       if (err?.code === 'DROPI_RATE_LIMIT' || err?.statusCode === 429) {
-        throw new FrenoError(err.message);
+        reintentos429 += 1;
+        if (typeof onRateLimit === 'function') onRateLimit(reintentos429, n + 1, err.message);
+        if (reintentos429 > MAX_REINTENTOS_429) throw new FrenoError(err.message);
+        await dormir(PAUSA_429_MS);
+        continue; // misma página, mismo startData
       }
       throw err;
     }
+    reintentos429 = 0;
     const objetos = Array.isArray(data?.objects) ? data.objects : [];
     if (!objetos.length) return;
     n += 1;
@@ -356,7 +371,13 @@ async function pasada(paisCrudo, opts = {}) {
     const paginas =
       fuente === 'mock'
         ? paginasMock(mockDir, pais, { maxPaginas: opts.maxPaginas })
-        : paginasDropi(pais, { maxPaginas: opts.maxPaginas });
+        : paginasDropi(pais, {
+            maxPaginas: opts.maxPaginas,
+            onRateLimit: (intento, pagina, msg) => {
+              stats.errores_429 += 1;
+              log(`⏳ ${pais} 429 en pág ${pagina} (intento ${intento}/${MAX_REINTENTOS_429}): espero ${PAUSA_429_MS / 60000} min · ${msg}`);
+            },
+          });
 
     for await (const productos of paginas) {
       const instante = ahoraSql();
@@ -373,13 +394,13 @@ async function pasada(paisCrudo, opts = {}) {
       { pais, d: PURGA_DIAS },
       QueryTypes.DELETE,
     );
+    if (!opts.maxPaginas) await recalcularMetricas(pais, log); // una prueba corta no cambia las métricas
     await registro.update({ ...stats, fin: ahoraSql(), estado: 'ok' });
     log(`✔ pasada ${pais} #${registro.id}: ${stats.paginas} págs · ${stats.productos} productos · ${stats.fotos_escritas} fotos · ${stats.ventas_sumadas} ventas`);
     return { id: registro.id, ...stats, estado: 'ok' };
   } catch (err) {
     if (err instanceof FrenoError) {
       frenoHasta[pais] = Date.now() + FRENO_MS;
-      stats.errores_429 += 1;
       await registro.update({
         ...stats,
         fin: ahoraSql(),
@@ -413,146 +434,271 @@ function fechasDe(pais) {
   return { hoy, d1: menos(1), d7: menos(7), d14: menos(14), d30: menos(30), d60: menos(60) };
 }
 
-/** Subconsulta con ventas 1/7/30 y 7 previos por producto. */
-function subVentas(pais) {
-  const f = fechasDe(pais);
-  return {
-    sql: `(SELECT dropi_product_id,
-                  SUM(CASE WHEN fecha >= :f_d1 THEN unidades ELSE 0 END) AS v1,
-                  SUM(CASE WHEN fecha >= :f_d7 THEN unidades ELSE 0 END) AS v7,
-                  SUM(CASE WHEN fecha >= :f_d14 AND fecha < :f_d7 THEN unidades ELSE 0 END) AS v7prev,
-                  SUM(CASE WHEN fecha >= :f_d30 THEN unidades ELSE 0 END) AS v30
-             FROM espia_ventas_dia
-            WHERE pais = :pais AND fecha >= :f_d30
-            GROUP BY dropi_product_id)`,
-    repl: { pais, f_d1: f.d1, f_d7: f.d7, f_d14: f.d14, f_d30: f.d30 },
-  };
+/** Los últimos N días locales del país terminando hoy, como 'YYYY-MM-DD'. */
+function ultimosDias(pais, n) {
+  const { hoy } = fechasDe(pais);
+  const out = [];
+  for (let i = n - 1; i >= 0; i -= 1) {
+    const d = new Date(`${hoy}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() - i);
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
 }
 
+// Las métricas (ventas 1/7/30 d, 7 previos, serie7, iguales) viven en columnas
+// de espia_producto y las recalcula recalcularMetricas() al cerrar cada pasada y
+// a las 00:10 de cada país; así la pantalla lee una sola tabla indexada.
 const CAMPOS_PRODUCTO = `
   p.pais, p.dropi_product_id, p.nombre, p.tipo, p.sku, p.proveedor_id, p.proveedor_nombre,
   p.precio, p.sugerido, p.categoria, p.imagen_url, p.external_id, p.privado,
   p.primera_vez, p.ultima_vez, p.stock_actual, p.ventas_total, p.reabastecimientos,
-  COALESCE(v.v1,0) AS ventas_1d, COALESCE(v.v7,0) AS ventas_7d, COALESCE(v.v7prev,0) AS ventas_7d_prev,
-  COALESCE(v.v30,0) AS ventas_30d,
-  (SELECT COUNT(*) FROM espia_producto i
-     WHERE i.pais = p.pais AND i.nombre_norm = p.nombre_norm AND i.nombre_norm <> '' AND i.proveedor_id <> p.proveedor_id) AS n_iguales`;
+  p.ventas_1d, p.ventas_7d, p.ventas_7d_prev, p.ventas_30d, p.n_iguales, p.serie7, p.metricas_en,
+  p.n_anuncios, p.radar_en`;
+
+const serieDe = (s) => (s ? String(s).split(',').map((x) => Number(x) || 0) : [0, 0, 0, 0, 0, 0, 0]);
+
+/**
+ * Recalcula en espia_producto las métricas derivadas de espia_ventas_dia para un
+ * país: dos UPDATE ... JOIN sobre tablas materializadas (segundos, no por fila).
+ */
+async function recalcularMetricas(paisCrudo, log = () => {}) {
+  const pais = validarPais(paisCrudo);
+  const f = fechasDe(pais);
+  const dias = ultimosDias(pais, 7);
+  const t0 = Date.now();
+  const serie = dias.map((_, k) => `SUM(CASE WHEN fecha = :s${k} THEN unidades ELSE 0 END)`).join(", ',', ");
+  const repl = { pais, d1: f.d1, d7: f.d7, d14: f.d14, d30: f.d30 };
+  dias.forEach((d, k) => { repl[`s${k}`] = d; });
+  await q(
+    `UPDATE espia_producto p
+       LEFT JOIN (
+         SELECT dropi_product_id,
+                SUM(CASE WHEN fecha >= :d1 THEN unidades ELSE 0 END) AS v1,
+                SUM(CASE WHEN fecha >= :d7 THEN unidades ELSE 0 END) AS v7,
+                SUM(CASE WHEN fecha >= :d14 AND fecha < :d7 THEN unidades ELSE 0 END) AS v7prev,
+                SUM(CASE WHEN fecha >= :d30 THEN unidades ELSE 0 END) AS v30,
+                CONCAT(${serie}) AS serie7
+           FROM espia_ventas_dia
+          WHERE pais = :pais AND fecha >= :d30
+          GROUP BY dropi_product_id) v ON v.dropi_product_id = p.dropi_product_id
+       SET p.ventas_1d = COALESCE(v.v1, 0), p.ventas_7d = COALESCE(v.v7, 0),
+           p.ventas_7d_prev = COALESCE(v.v7prev, 0), p.ventas_30d = COALESCE(v.v30, 0),
+           p.serie7 = COALESCE(v.serie7, '0,0,0,0,0,0,0'), p.metricas_en = NOW()
+     WHERE p.pais = :pais`,
+    repl,
+    QueryTypes.BULKUPDATE,
+  );
+  await q(
+    `UPDATE espia_producto p
+       LEFT JOIN (SELECT nombre_norm, COUNT(*) AS n FROM espia_producto
+                   WHERE pais = :pais AND nombre_norm <> '' GROUP BY nombre_norm) g
+              ON g.nombre_norm = p.nombre_norm
+       LEFT JOIN (SELECT nombre_norm, proveedor_id, COUNT(*) AS n FROM espia_producto
+                   WHERE pais = :pais AND nombre_norm <> '' GROUP BY nombre_norm, proveedor_id) gp
+              ON gp.nombre_norm = p.nombre_norm AND gp.proveedor_id <=> p.proveedor_id
+       SET p.n_iguales = GREATEST(0, COALESCE(g.n, 0) - COALESCE(gp.n, 0))
+     WHERE p.pais = :pais`,
+    { pais },
+    QueryTypes.BULKUPDATE,
+  );
+  // Anuncios activos vinculados por el radar (los que Meta dejó de mostrar 60 días salen del conteo).
+  await q(
+    `UPDATE espia_producto p
+       LEFT JOIN (SELECT ap.dropi_product_id, COUNT(*) AS n
+                    FROM espia_anuncio_producto ap
+                    JOIN espia_anuncio a ON a.ad_archive_id = ap.ad_archive_id AND a.activo = 1
+                   WHERE ap.pais = :pais GROUP BY ap.dropi_product_id) x
+              ON x.dropi_product_id = p.dropi_product_id
+       SET p.n_anuncios = COALESCE(x.n, 0)
+     WHERE p.pais = :pais`,
+    { pais },
+    QueryTypes.BULKUPDATE,
+  );
+  log(`métricas ${pais} recalculadas en ${Date.now() - t0} ms`);
+}
 
 const ORDENES = {
-  v7: 'ventas_7d DESC, ventas_30d DESC',
-  v30: 'ventas_30d DESC, ventas_7d DESC',
+  v7: 'p.ventas_7d DESC, p.ventas_30d DESC',
+  v30: 'p.ventas_30d DESC, p.ventas_7d DESC',
   total: 'p.ventas_total DESC',
-  subida: '(COALESCE(v.v7,0) - COALESCE(v.v7prev,0)) DESC, ventas_7d DESC',
+  subida: '(p.ventas_7d - p.ventas_7d_prev) DESC, p.ventas_7d DESC',
   stock: 'p.stock_actual DESC',
   nuevos: 'p.primera_vez DESC',
   precio: 'p.precio ASC',
+  precio_desc: 'p.precio DESC',
+  // Facturación estimada = unidades × precio del proveedor; ganancia = sugerido − precio.
+  fact7: '(p.ventas_7d * p.precio) DESC, p.ventas_7d DESC',
+  fact30: '(p.ventas_30d * p.precio) DESC, p.ventas_30d DESC',
+  ganancia: '(p.sugerido - p.precio) DESC',
+  anuncios: 'p.n_anuncios DESC, p.ventas_7d DESC',
 };
 
 async function listarProductos(params = {}) {
   const pais = validarPais(params.pais);
-  const atajo = String(params.atajo || 'sin_escalar');
+  const atajo = String(params.atajo || 'top_7d');
   const base = calc.ATAJOS[atajo] || {};
   const f = { ...base };
-  for (const k of ['min_v7', 'max_v7', 'min_v30', 'max_v30', 'min_stock', 'max_stock', 'creado_dias', 'max_reab', 'min_total', 'max_total']) {
+  for (const k of ['min_v7', 'max_v7', 'min_v30', 'max_v30', 'min_stock', 'max_stock', 'creado_dias', 'max_reab', 'min_total', 'max_total', 'min_precio', 'max_precio', 'min_fact7', 'max_fact7', 'min_fact30', 'max_fact30', 'min_ganancia']) {
     if (params[k] !== undefined && params[k] !== '' && params[k] !== null) f[k] = Number(params[k]);
   }
   const limit = Math.min(200, Math.max(1, Number(params.limit) || 50));
   const page = Math.max(1, Number(params.page) || 1);
   const orden = ORDENES[params.orden] || ORDENES[f.orden] || ORDENES.v7;
-  const sv = subVentas(pais);
-  const repl = { ...sv.repl, limit, offset: (page - 1) * limit };
+  const repl = { pais, limit, offset: (page - 1) * limit };
   const where = ['p.pais = :pais'];
-  const having = [];
-  if (params.q && String(params.q).trim().length >= 2) {
+  const texto = String(params.q || '').trim();
+  if (/^\d+$/.test(texto)) {
+    // Un número es un id de producto de Dropi (o un SKU numérico).
+    where.push('(p.dropi_product_id = :qid OR p.sku = :qtexto)');
+    repl.qid = Number(texto);
+    repl.qtexto = texto;
+  } else if (texto.length >= 2) {
     where.push('(p.nombre LIKE :q OR p.proveedor_nombre LIKE :q OR p.sku LIKE :q)');
-    repl.q = `%${String(params.q).trim()}%`;
+    repl.q = `%${texto}%`;
   }
-  if (params.categoria) {
-    where.push('p.categoria = :categoria');
-    repl.categoria = String(params.categoria);
+  // categoria admite una o varias separadas por coma (los checkboxes del panel de filtros).
+  const cats = String(params.categoria || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (cats.length) { where.push('p.categoria IN (:categorias)'); repl.categorias = cats; }
+  if (params.proveedor_id) { where.push('p.proveedor_id = :proveedor_id'); repl.proveedor_id = Number(params.proveedor_id); }
+  if (params.proveedor) { where.push('p.proveedor_nombre LIKE :proveedor'); repl.proveedor = `%${String(params.proveedor).trim()}%`; }
+  const rangos = {
+    min_stock: 'p.stock_actual >=', max_stock: 'p.stock_actual <=', max_reab: 'p.reabastecimientos <=',
+    min_total: 'p.ventas_total >=', max_total: 'p.ventas_total <=',
+    min_v7: 'p.ventas_7d >=', max_v7: 'p.ventas_7d <=', min_v30: 'p.ventas_30d >=', max_v30: 'p.ventas_30d <=',
+    min_precio: 'p.precio >=', max_precio: 'p.precio <=',
+    min_fact7: '(p.ventas_7d * p.precio) >=', max_fact7: '(p.ventas_7d * p.precio) <=',
+    min_fact30: '(p.ventas_30d * p.precio) >=', max_fact30: '(p.ventas_30d * p.precio) <=',
+    min_ganancia: '(p.sugerido - p.precio) >=',
+  };
+  for (const [k, expr] of Object.entries(rangos)) {
+    if (f[k] != null) { where.push(`${expr} :${k}`); repl[k] = f[k]; }
   }
-  if (params.proveedor_id) {
-    where.push('p.proveedor_id = :proveedor_id');
-    repl.proveedor_id = Number(params.proveedor_id);
-  }
-  if (f.min_stock != null) { where.push('p.stock_actual >= :min_stock'); repl.min_stock = f.min_stock; }
-  if (f.max_stock != null) { where.push('p.stock_actual <= :max_stock'); repl.max_stock = f.max_stock; }
-  if (f.max_reab != null) { where.push('p.reabastecimientos <= :max_reab'); repl.max_reab = f.max_reab; }
-  if (f.min_total != null) { where.push('p.ventas_total >= :min_total'); repl.min_total = f.min_total; }
-  if (f.max_total != null) { where.push('p.ventas_total <= :max_total'); repl.max_total = f.max_total; }
   if (f.creado_dias != null) {
     where.push('p.primera_vez >= DATE_SUB(NOW(), INTERVAL :creado_dias DAY)');
     repl.creado_dias = f.creado_dias;
   }
-  if (f.min_v7 != null) { having.push('ventas_7d >= :min_v7'); repl.min_v7 = f.min_v7; }
-  if (f.max_v7 != null) { having.push('ventas_7d <= :max_v7'); repl.max_v7 = f.max_v7; }
-  if (f.min_v30 != null) { having.push('ventas_30d >= :min_v30'); repl.min_v30 = f.min_v30; }
-  if (f.max_v30 != null) { having.push('ventas_30d <= :max_v30'); repl.max_v30 = f.max_v30; }
-
-  const cuerpo = `FROM espia_producto p LEFT JOIN ${sv.sql} v ON v.dropi_product_id = p.dropi_product_id
-                  WHERE ${where.join(' AND ')}`;
-  const havingSql = having.length ? `HAVING ${having.join(' AND ')}` : '';
-
-  const items = await q(
-    `SELECT ${CAMPOS_PRODUCTO} ${cuerpo} ${havingSql} ORDER BY ${orden} LIMIT :limit OFFSET :offset`,
-    repl,
-  );
-  const [cnt] = await q(
-    `SELECT COUNT(*) AS total FROM (
-       SELECT p.dropi_product_id, COALESCE(v.v7,0) AS ventas_7d, COALESCE(v.v30,0) AS ventas_30d
-       ${cuerpo} ${havingSql}) x`,
-    repl,
-  );
+  // Radar: con anuncios vinculados / todavía sin buscar en Meta.
+  if (params.con_anuncios === '1' || params.con_anuncios === 1 || params.con_anuncios === true) where.push('p.n_anuncios > 0');
+  if (params.sin_radar === '1' || params.sin_radar === 1 || params.sin_radar === true) where.push('p.radar_en IS NULL');
+  const cuerpo = `FROM espia_producto p WHERE ${where.join(' AND ')}`;
+  const [items, [cnt]] = await Promise.all([
+    q(`SELECT ${CAMPOS_PRODUCTO} ${cuerpo} ORDER BY ${orden} LIMIT :limit OFFSET :offset`, repl),
+    q(`SELECT COUNT(*) AS total ${cuerpo}`, repl),
+  ]);
+  for (const it of items) it.serie7 = serieDe(it.serie7);
   return { total: Number(cnt?.total || 0), page, limit, atajo, filtros: f, items };
 }
 
-async function detalleProducto(paisCrudo, idCrudo) {
+/**
+ * Métricas de hasta 200 productos por id, para la capa que la extensión pinta
+ * sobre el catálogo de Dropi (debajo de cada producto, como Dropkiller).
+ * Devuelve solo los ids que conocemos; los demás no están en el catálogo
+ * público que recorre el recolector (privados, sin stock o recién creados).
+ */
+async function metricasLote(paisCrudo, idsCrudos = []) {
+  const pais = validarPais(paisCrudo);
+  const ids = [...new Set((Array.isArray(idsCrudos) ? idsCrudos : []).map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0))].slice(0, 200);
+  const f = fechasDe(pais);
+  const [dias] = await q(`SELECT COUNT(DISTINCT fecha) AS n FROM espia_ventas_dia WHERE pais = :pais`, { pais });
+  if (!ids.length) return { pais, dias_medidos: Number(dias?.n || 0), items: [] };
+
+  const filas = await q(
+    `SELECT p.dropi_product_id, p.nombre, p.proveedor_nombre, p.imagen_url, p.precio, p.sugerido,
+            p.stock_actual, p.ventas_total, p.reabastecimientos, p.primera_vez, p.ultima_vez,
+            p.ventas_1d, p.ventas_7d, p.ventas_7d_prev, p.ventas_30d, p.n_iguales
+       FROM espia_producto p
+      WHERE p.pais = :pais AND p.dropi_product_id IN (:ids)`,
+    { pais, ids },
+  );
+  const serie = await q(
+    `SELECT dropi_product_id, DATE_FORMAT(fecha, '%Y-%m-%d') AS fecha, unidades FROM espia_ventas_dia
+      WHERE pais = :pais AND dropi_product_id IN (:ids) AND fecha >= :d14`,
+    { pais, ids, d14: f.d14 },
+  );
+  const porId = new Map();
+  for (const s of serie) {
+    const k = String(s.dropi_product_id);
+    if (!porId.has(k)) porId.set(k, {});
+    porId.get(k)[String(s.fecha)] = Number(s.unidades || 0);
+  }
+  const dias14 = ultimosDias(pais, 14);
+  const items = filas.map((r) => {
+    const m = porId.get(String(r.dropi_product_id)) || {};
+    return {
+      ...r,
+      ventas_1d: Number(r.ventas_1d), ventas_7d: Number(r.ventas_7d),
+      ventas_7d_prev: Number(r.ventas_7d_prev), ventas_30d: Number(r.ventas_30d),
+      n_iguales: Number(r.n_iguales),
+      serie_14d: dias14.map((d) => m[d] || 0),
+      url_imporchat: `${FRONTEND_URL}/espia-mercado?pais=${pais}&tab=productos&producto=${r.dropi_product_id}`,
+    };
+  });
+  return { pais, dias_medidos: Number(dias?.n || 0), items };
+}
+
+async function detalleProducto(paisCrudo, idCrudo, opts = {}) {
   const pais = validarPais(paisCrudo);
   const id = Number(idCrudo);
   if (!Number.isFinite(id)) throw new AppError('Producto inválido', 400);
-  const sv = subVentas(pais);
-  const [producto] = await q(
-    `SELECT ${CAMPOS_PRODUCTO} FROM espia_producto p LEFT JOIN ${sv.sql} v ON v.dropi_product_id = p.dropi_product_id
-      WHERE p.pais = :pais AND p.dropi_product_id = :id`,
-    { ...sv.repl, id },
-  );
+  // Ventana del historial (selector de período de la ficha): 7, 14, 30, 60 o 90 días.
+  const dias = [7, 14, 30, 60, 90].includes(Number(opts.dias)) ? Number(opts.dias) : 30;
+  // Ficha e historial en paralelo (una sola ida y vuelta a la BD).
+  const [[producto], historial] = await Promise.all([
+    q(`SELECT ${CAMPOS_PRODUCTO}, p.nombre_norm FROM espia_producto p WHERE p.pais = :pais AND p.dropi_product_id = :id`, { pais, id }),
+    q(
+      `SELECT DATE_FORMAT(fecha, '%Y-%m-%d') AS fecha, unidades, reabastecido FROM espia_ventas_dia
+        WHERE pais = :pais AND dropi_product_id = :id AND fecha >= DATE_SUB(CURDATE(), INTERVAL :dias DAY) ORDER BY fecha`,
+      { pais, id, dias },
+    ),
+  ]);
   if (!producto) throw new AppError('Ese producto todavía no está en el espía', 404);
-  const f = fechasDe(pais);
-  const historial = await q(
-    `SELECT fecha, unidades, reabastecido FROM espia_ventas_dia
-      WHERE pais = :pais AND dropi_product_id = :id AND fecha >= :d30 ORDER BY fecha`,
-    { pais, id, d30: f.d30 },
-  );
-  const [fila] = await q(`SELECT nombre_norm, external_id, proveedor_id FROM espia_producto WHERE pais = :pais AND dropi_product_id = :id`, { pais, id });
-  const iguales = fila?.nombre_norm
-    ? await q(
+  producto.serie7 = serieDe(producto.serie7);
+  const fila = producto;
+  const pIguales = fila?.nombre_norm
+    ? q(
         `SELECT p.dropi_product_id, p.nombre, p.proveedor_id, p.proveedor_nombre, p.precio, p.sugerido, p.imagen_url,
-                p.stock_actual, p.ventas_total, COALESCE(v.v30,0) AS ventas_30d, COALESCE(v.v7,0) AS ventas_7d
-           FROM espia_producto p LEFT JOIN ${sv.sql} v ON v.dropi_product_id = p.dropi_product_id
+                p.stock_actual, p.ventas_total, p.ventas_30d, p.ventas_7d
+           FROM espia_producto p
           WHERE p.pais = :pais AND p.dropi_product_id <> :id
             AND (p.nombre_norm = :norm OR (:ext IS NOT NULL AND p.external_id = :ext))
             AND (p.proveedor_id IS NULL OR p.proveedor_id <> :prov)
-          ORDER BY ventas_30d DESC LIMIT 30`,
-        { ...sv.repl, id, norm: fila.nombre_norm, ext: fila.external_id || null, prov: fila.proveedor_id ?? -1 },
+          ORDER BY p.ventas_30d DESC LIMIT 30`,
+        { pais, id, norm: fila.nombre_norm, ext: fila.external_id || null, prov: fila.proveedor_id ?? -1 },
       )
-    : [];
+    : Promise.resolve([]);
+  // Anuncios: primero los vinculados por el radar (exactos), y si quedan huecos,
+  // los que mencionan las palabras del nombre (aproximados).
+  const CAMPOS_AD = `a.ad_archive_id, a.pagina_nombre, a.dominio, a.url_destino, a.tipo, a.media_url, a.imagen_url, a.inicio,
+                     a.tienda_plataforma, a.n_duplicados, DATEDIFF(CURDATE(), a.inicio) AS dias_activo`;
+  const pVinculados = q(
+    `SELECT ${CAMPOS_AD}, 'radar' AS origen
+       FROM espia_anuncio_producto ap
+       JOIN espia_anuncio a ON a.ad_archive_id = ap.ad_archive_id
+      WHERE ap.pais = :pais AND ap.dropi_product_id = :id AND a.activo = 1
+      ORDER BY a.ultima_vez_visto DESC LIMIT 30`,
+    { pais, id },
+  );
+  const palabras = String(fila?.nombre_norm || '').split(' ').filter((w) => w.length >= 4).slice(0, 2);
+  const pAnuncios = palabras.length
+    ? q(
+        `SELECT ${CAMPOS_AD}, 'nombre' AS origen
+           FROM espia_anuncio a
+          WHERE a.activo = 1 AND (a.pais = :pais OR a.pais = 'ALL')
+            AND ${palabras.map((_, i) => `(a.producto LIKE :w${i} OR a.titulo LIKE :w${i} OR a.texto LIKE :w${i})`).join(' AND ')}
+          ORDER BY a.ultima_vez_visto DESC LIMIT 12`,
+        Object.fromEntries([['pais', pais], ...palabras.map((w, i) => [`w${i}`, `%${w}%`])]),
+      )
+    : Promise.resolve([]);
+  const [iguales, vinculados, porNombre] = await Promise.all([pIguales, pVinculados, pAnuncios]);
+  const vistos = new Set(vinculados.map((a) => a.ad_archive_id));
+  const anuncios = [...vinculados, ...porNombre.filter((a) => !vistos.has(a.ad_archive_id))];
+  producto.radar = { buscado_en: producto.radar_en || null, vinculados: vinculados.length, termino: terminoBusqueda(producto.nombre) };
   const suma_iguales = {
     proveedores: iguales.length + 1,
     ventas_30d: Number(producto.ventas_30d) + iguales.reduce((n, i) => n + Number(i.ventas_30d), 0),
     ventas_total: Number(producto.ventas_total) + iguales.reduce((n, i) => n + Number(i.ventas_total), 0),
   };
-  const palabras = String(fila?.nombre_norm || '').split(' ').filter((w) => w.length >= 4).slice(0, 2);
-  const anuncios = palabras.length
-    ? await q(
-        `SELECT ad_archive_id, pagina_nombre, dominio, tipo, media_url, imagen_url, inicio,
-                DATEDIFF(CURDATE(), inicio) AS dias_activo
-           FROM espia_anuncio
-          WHERE activo = 1 AND (pais = :pais OR pais = 'ALL')
-            AND ${palabras.map((_, i) => `(producto LIKE :w${i} OR titulo LIKE :w${i} OR texto LIKE :w${i})`).join(' AND ')}
-          ORDER BY ultima_vez_visto DESC LIMIT 12`,
-        Object.fromEntries([['pais', pais], ...palabras.map((w, i) => [`w${i}`, `%${w}%`])]),
-      )
-    : [];
   for (const a of anuncios) a.url_meta = `https://www.facebook.com/ads/library/?id=${a.ad_archive_id}`;
   return { producto, historial, iguales, suma_iguales, anuncios };
 }
@@ -564,7 +710,8 @@ async function categorias(paisCrudo) {
       GROUP BY categoria ORDER BY n DESC LIMIT 200`,
     { pais },
   );
-  return rows.map((r) => r.categoria);
+  // Nombre y cuántos productos tiene cada una (para los checkboxes del panel de filtros).
+  return rows.map((r) => ({ categoria: r.categoria, n: Number(r.n || 0) }));
 }
 
 /* =========================================================================
@@ -619,6 +766,9 @@ async function recibirAnuncios(body = {}, sessionUser = {}) {
       media_url: a.media_url ? String(a.media_url).slice(0, 1000) : null,
       imagen_url: a.imagen_url ? String(a.imagen_url).slice(0, 1000) : null,
       plataformas: Array.isArray(a.plataformas) ? a.plataformas.join(',').slice(0, 100) : null,
+      tienda_plataforma: ['shopify', 'whatsapp', 'dropi', 'web'].includes(String(a.tienda_plataforma || '').toLowerCase())
+        ? String(a.tienda_plataforma).toLowerCase()
+        : null,
       inicio: fechaSql(a.inicio),
       n_duplicados: Math.max(1, Number(a.n_duplicados) || 1),
     });
@@ -633,12 +783,12 @@ async function recibirAnuncios(body = {}, sessionUser = {}) {
 
   const cols = [
     'ad_archive_id', 'pais', 'pagina_id', 'pagina_nombre', 'dominio', 'url_destino', 'producto', 'titulo', 'texto',
-    'tipo', 'media_url', 'imagen_url', 'plataformas', 'inicio', 'primera_vez_visto', 'ultima_vez_visto', 'activo',
+    'tipo', 'media_url', 'imagen_url', 'plataformas', 'tienda_plataforma', 'inicio', 'primera_vez_visto', 'ultima_vez_visto', 'activo',
     'n_duplicados', 'veces_visto', 'visto_por',
   ];
   const filas = limpios.map((a) => [
     a.ad_archive_id, a.pais, a.pagina_id, a.pagina_nombre, a.dominio, a.url_destino, a.producto, a.titulo, a.texto,
-    a.tipo, a.media_url, a.imagen_url, a.plataformas, a.inicio, ahora, ahora, 1, a.n_duplicados, 1, idSub,
+    a.tipo, a.media_url, a.imagen_url, a.plataformas, a.tienda_plataforma, a.inicio, ahora, ahora, 1, a.n_duplicados, 1, idSub,
   ]);
   await db.query(
     `INSERT INTO espia_anuncio (${cols.join(',')})
@@ -656,6 +806,7 @@ async function recibirAnuncios(body = {}, sessionUser = {}) {
        media_url = COALESCE(VALUES(media_url), media_url),
        imagen_url = COALESCE(VALUES(imagen_url), imagen_url),
        plataformas = COALESCE(VALUES(plataformas), plataformas),
+       tienda_plataforma = COALESCE(VALUES(tienda_plataforma), tienda_plataforma),
        inicio = COALESCE(inicio, VALUES(inicio)),
        ultima_vez_visto = VALUES(ultima_vez_visto),
        activo = 1,
@@ -680,13 +831,169 @@ async function recibirAnuncios(body = {}, sessionUser = {}) {
   }
   perfilarPendientes(3).catch(() => {});
 
+  // Lote del radar: estos anuncios salieron al buscar un producto de Dropi por nombre.
+  let radar = null;
+  if (body.producto_radar && pais !== 'ALL') {
+    radar = await vincularProducto(pais, body.producto_radar, ids, 'radar');
+  }
+
   return {
     recibidos: limpios.length,
     nuevos: nuevos_ids.length,
     nuevos_ids,
     conocidos_ids: ids.filter((id) => conocidos.has(id)),
     tiendas: [...porDominio.keys()],
+    radar,
   };
+}
+
+/* =========================================================================
+   2b. RADAR: la extensión busca en Meta los productos que más venden
+   ========================================================================= */
+
+// Quita lo que estorba en la Biblioteca (medidas, cantidades, relleno) y deja
+// las 3 primeras palabras con peso. keyword_unordered exige que aparezcan todas:
+// con más palabras Meta devuelve 0, con menos devuelve ruido.
+const RELLENO = new Set([
+  'el', 'la', 'los', 'las', 'de', 'del', 'con', 'para', 'por', 'y', 'o', 'en', 'un', 'una', 'unos', 'unas', 'al', 'a', 'x',
+  'pack', 'kit', 'set', 'combo', 'nuevo', 'nueva', 'nuevos', 'original', 'originales', 'oferta', 'promo', 'promocion', 'envio', 'gratis',
+  'producto', 'productos', 'unidad', 'unidades', 'pcs', 'pza', 'pzas', 'piezas', 'pieza', 'par', 'pares', 'talla', 'color', 'colores',
+  'mas', 'super', 'premium', 'calidad', 'alta', 'importado', 'importada', 'tipo', 'estilo', 'modelo', 'version', 'edicion',
+  'ml', 'gr', 'g', 'kg', 'cm', 'mm', 'm', 'lt', 'l', 'oz', 'w', 'v', 'mah', 'gb', 'tb', 'pulgadas', 'pulg',
+]);
+// Fichas de servicio que Dropi lista como productos: nunca se buscan.
+const RE_SERVICIO = /^\s*(caja|cajas)\s+(de\s+)?env[ií]os?\s*$|producto\s+privado|producto\s+gratis|env[ií]o\s+prioritario|diferencia\s+de\s+precio|^\s*flete|^\s*recargo|^\s*garant[ií]a\s*$/i;
+function terminoBusqueda(nombre) {
+  if (RE_SERVICIO.test(String(nombre || ''))) return '';
+  const base = String(nombre || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/ñ/g, 'ñ') // la ñ se conserva: «navideno» no encuentra nada en Meta, «navideño» sí
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9ñ ]+/g, ' ')
+    .split(' ')
+    // Fuera números sueltos y medidas («500», «49mm»); se quedan los códigos de modelo («t900», «d20»), que son lo más buscable.
+    .filter((w) => w && !RELLENO.has(w) && !/^\d+[a-z]*$/.test(w) && w.length >= 3);
+  // Sin repetidas, en el orden del nombre (lo primero suele ser lo que define el producto).
+  const palabras = [...new Set(base)].slice(0, 3);
+  // Una sola palabra solo si es un nombre propio largo (ASTAXANTHIN, SHILAJIT); «privado»,
+  // «prioritario» o «entrenamiento» solas traen cualquier anuncio que use esa palabra.
+  if (palabras.length === 1 && (palabras[0].length < 7 || GENERICAS_SOLAS.has(palabras[0]))) return '';
+  return palabras.join(' ');
+}
+// Fichas de servicio de Dropi y nombres sin producto: no se buscan en Meta (el 31-10 «PRODUCTO
+// PRIVADO», «ENVIO PRIORITARIO», «PRODUCTO GRATIS» y «Caja Envíos» trajeron 200+ vínculos falsos).
+const GENERICAS_SOLAS = new Set([
+  'privado', 'privados', 'prioritario', 'entrenamiento', 'importado', 'importados', 'servicio', 'servicios', 'garantia',
+  'diferencia', 'recarga', 'muestra', 'muestras', 'repuesto', 'repuestos', 'accesorio', 'accesorios', 'regalo', 'regalos',
+  'sorpresa', 'variado', 'variados', 'surtido', 'surtidos', 'especial', 'exclusivo', 'generico', 'generica', 'articulo', 'articulos',
+]);
+const esBuscable = (nombre) => Boolean(terminoBusqueda(nombre));
+
+/**
+ * Cola de productos para que la extensión los busque en la Biblioteca de Meta:
+ * primero los que el usuario sigue, luego los que más venden (7 d, 30 d). Se
+ * saltan los barridos hace menos de `dias` días. Pensado para miles de
+ * productos: una sola consulta por índice (pais, ventas_7d) con LIMIT.
+ */
+async function radarCola(params = {}, sessionUser = {}) {
+  const pais = validarPais(params.pais);
+  const limit = Math.min(1000, Math.max(1, Number(params.limit) || 300));
+  const dias = Math.min(90, Math.max(1, Number(params.dias) || 7));
+  const idSub = Number(sessionUser.id_sub_usuario) || 0;
+  const campos = `p.dropi_product_id, p.nombre, p.imagen_url, p.precio, p.ventas_7d, p.ventas_30d, p.n_anuncios, p.radar_en`;
+  const pendiente = `(p.radar_en IS NULL OR p.radar_en < DATE_SUB(NOW(), INTERVAL :dias DAY))`;
+  const [seguidos, top, [tot], [pend]] = await Promise.all([
+    idSub
+      ? q(
+          `SELECT ${campos} FROM espia_seguimiento s
+             JOIN espia_producto p ON p.pais = :pais AND p.dropi_product_id = CAST(SUBSTRING_INDEX(s.ref, ':', -1) AS UNSIGNED)
+            WHERE s.id_sub_usuario = :idSub AND s.tipo = 'producto' AND s.ref LIKE :pref AND ${pendiente}
+            ORDER BY p.ventas_7d DESC LIMIT 200`,
+          { pais, idSub, pref: `${pais}:%`, dias },
+        )
+      : Promise.resolve([]),
+    // Se piden de más porque las fichas no buscables (servicios, nombres genéricos) se filtran aquí.
+    q(
+      `SELECT ${campos} FROM espia_producto p
+        WHERE p.pais = :pais AND p.nombre IS NOT NULL AND p.nombre <> '' AND ${pendiente}
+        ORDER BY p.ventas_7d DESC, p.ventas_30d DESC, p.ventas_total DESC LIMIT :limitAmplio`,
+      { pais, dias, limitAmplio: Math.round(limit * 1.4) + 50 },
+    ),
+    q(`SELECT COUNT(*) AS n FROM espia_producto p WHERE p.pais = :pais`, { pais }),
+    q(`SELECT COUNT(*) AS n FROM espia_producto p WHERE p.pais = :pais AND ${pendiente}`, { pais, dias }),
+  ]);
+  const vistos = new Set();
+  const items = [];
+  let noBuscables = 0;
+  for (const p of [...seguidos, ...top]) {
+    const id = String(p.dropi_product_id);
+    if (vistos.has(id)) continue;
+    vistos.add(id);
+    const termino = terminoBusqueda(p.nombre);
+    if (!termino) { noBuscables++; continue; }
+    items.push({ ...p, dropi_product_id: Number(p.dropi_product_id), termino, seguido: vistos.size <= seguidos.length });
+    if (items.length >= limit) break;
+  }
+  return { pais, dias, total_productos: Number(tot?.n || 0), pendientes: Number(pend?.n || 0), no_buscables: noBuscables, items };
+}
+
+/**
+ * Deshace los vínculos de productos que no debieron buscarse (nombres de servicio o genéricos):
+ * borra sus filas en espia_anuncio_producto, pone n_anuncios en 0 y radar_en en NULL. Los
+ * anuncios se quedan: siguen valiendo en la pestaña Anuncios y Tiendas.
+ */
+async function limpiarVinculosNoBuscables(paisCrudo) {
+  const pais = validarPais(paisCrudo);
+  const filas = await q(`SELECT dropi_product_id, nombre FROM espia_producto WHERE pais = :pais AND radar_en IS NOT NULL`, { pais });
+  const malos = filas.filter((f) => !esBuscable(f.nombre));
+  if (!malos.length) return { pais, revisados: filas.length, limpiados: [], vinculos_borrados: 0 };
+  const ids = malos.map((m) => Number(m.dropi_product_id));
+  // BULKDELETE devuelve el número de filas afectadas directo (ver nota sequelize-raw-update-delete-affected-rows).
+  const borrados = Number(
+    await db.query(`DELETE FROM espia_anuncio_producto WHERE pais = :pais AND dropi_product_id IN (:ids)`, {
+      replacements: { pais, ids },
+      type: QueryTypes.BULKDELETE,
+    }),
+  ) || 0;
+  await db.query(`UPDATE espia_producto SET n_anuncios = 0, radar_en = NULL WHERE pais = :pais AND dropi_product_id IN (:ids)`, {
+    replacements: { pais, ids },
+    type: QueryTypes.UPDATE,
+  });
+  return { pais, revisados: filas.length, limpiados: malos.map((m) => ({ id: Number(m.dropi_product_id), nombre: m.nombre })), vinculos_borrados: borrados };
+}
+
+// Vincula anuncios ya guardados con un producto y refresca su conteo + radar_en.
+async function vincularProducto(pais, idCrudo, adIds = [], origen = 'radar') {
+  const id = Number(idCrudo);
+  if (!Number.isInteger(id) || id <= 0) throw new AppError('Producto inválido', 400);
+  const ids = [...new Set((Array.isArray(adIds) ? adIds : []).map((x) => String(x || '').replace(/\D/g, '')).filter(Boolean))].slice(0, 500);
+  const ahora = ahoraSql();
+  if (ids.length) {
+    // Solo anuncios que existen (los manda el mismo lote justo antes); INSERT IGNORE = idempotente.
+    await db.query(
+      `INSERT IGNORE INTO espia_anuncio_producto (pais, dropi_product_id, ad_archive_id, origen, creado_en)
+       SELECT :pais, :id, a.ad_archive_id, :origen, :ahora FROM espia_anuncio a WHERE a.ad_archive_id IN (:ids)`,
+      { replacements: { pais, id, origen: origen === 'manual' ? 'manual' : 'radar', ahora, ids }, type: QueryTypes.INSERT },
+    );
+  }
+  await db.query(
+    `UPDATE espia_producto p
+        SET p.radar_en = :ahora,
+            p.n_anuncios = (SELECT COUNT(*) FROM espia_anuncio_producto ap
+                              JOIN espia_anuncio a ON a.ad_archive_id = ap.ad_archive_id AND a.activo = 1
+                             WHERE ap.pais = p.pais AND ap.dropi_product_id = p.dropi_product_id)
+      WHERE p.pais = :pais AND p.dropi_product_id = :id`,
+    { replacements: { pais, id, ahora }, type: QueryTypes.UPDATE },
+  );
+  const [fila] = await q(`SELECT n_anuncios, radar_en FROM espia_producto WHERE pais = :pais AND dropi_product_id = :id`, { pais, id });
+  return { dropi_product_id: id, vinculados: ids.length, n_anuncios: Number(fila?.n_anuncios || 0), radar_en: fila?.radar_en || ahora };
+}
+
+/** La extensión terminó de buscar un producto (haya o no anuncios): marca radar_en y vincula lo que vio. */
+async function radarMarcar(body = {}) {
+  const pais = validarPais(body.pais);
+  return vincularProducto(pais, body.dropi_product_id, body.ad_ids, body.origen);
 }
 
 async function actualizarTienda(dominio, pais, nuevosHoy, hoy, ahora) {
@@ -696,12 +1003,22 @@ async function actualizarTienda(dominio, pais, nuevosHoy, hoy, ahora) {
     { dominio },
   );
   const activos = Number(c?.n || 0);
+  // Plataforma de la tienda = la más repetida entre sus anuncios (la deduce la extensión).
+  const [pl] = await q(
+    `SELECT tienda_plataforma AS p, COUNT(*) n FROM espia_anuncio
+      WHERE dominio = :dominio AND activo = 1 AND tienda_plataforma IS NOT NULL
+      GROUP BY tienda_plataforma ORDER BY n DESC LIMIT 1`,
+    { dominio },
+  );
+  const plataforma = pl?.p || null;
   await q(
-    `INSERT INTO espia_tienda (dominio, pais_principal, anuncios_activos, primera_vez, ultima_vez)
-     VALUES (:dominio, :pais, :activos, :ahora, :ahora)
+    `INSERT INTO espia_tienda (dominio, pais_principal, anuncios_activos, plataforma, es_shopify, primera_vez, ultima_vez)
+     VALUES (:dominio, :pais, :activos, :plataforma, :esShopify, :ahora, :ahora)
      ON DUPLICATE KEY UPDATE anuncios_activos = VALUES(anuncios_activos), ultima_vez = VALUES(ultima_vez),
+       plataforma = COALESCE(VALUES(plataforma), plataforma),
+       es_shopify = COALESCE(es_shopify, VALUES(es_shopify)),
        pais_principal = IF(:pais = 'ALL', pais_principal, :pais)`,
-    { dominio, pais: pais === 'ALL' ? null : pais, activos, ahora },
+    { dominio, pais: pais === 'ALL' ? null : pais, activos, plataforma, esShopify: plataforma === 'shopify' ? 1 : null, ahora },
     QueryTypes.INSERT,
   );
   await q(
@@ -810,7 +1127,7 @@ async function marcarInactivos() {
 }
 
 const CAMPOS_ANUNCIO = `a.ad_archive_id, a.pais, a.pagina_id, a.pagina_nombre, a.dominio, a.url_destino, a.producto,
-  a.titulo, a.texto, a.tipo, a.media_url, a.imagen_url, a.plataformas, a.inicio, a.primera_vez_visto, a.ultima_vez_visto,
+  a.titulo, a.texto, a.tipo, a.media_url, a.imagen_url, a.plataformas, a.tienda_plataforma, a.inicio, a.primera_vez_visto, a.ultima_vez_visto,
   a.activo, a.n_duplicados, a.veces_visto, DATEDIFF(CURDATE(), a.inicio) AS dias_activo`;
 
 async function listarAnuncios(params = {}) {
@@ -826,6 +1143,7 @@ async function listarAnuncios(params = {}) {
   }
   if (params.dominio) { where.push('a.dominio = :dominio'); repl.dominio = limpiarDominio(params.dominio) || String(params.dominio); }
   if (params.tipo === 'video' || params.tipo === 'imagen') { where.push('a.tipo = :tipo'); repl.tipo = params.tipo; }
+  if (['shopify', 'whatsapp', 'dropi', 'web'].includes(String(params.plataforma || ''))) { where.push('a.tienda_plataforma = :plataforma'); repl.plataforma = params.plataforma; }
   if (params.min_dias !== undefined && params.min_dias !== '') { where.push('DATEDIFF(CURDATE(), a.inicio) >= :min_dias'); repl.min_dias = Number(params.min_dias); }
   if (params.max_dias !== undefined && params.max_dias !== '') { where.push('DATEDIFF(CURDATE(), a.inicio) <= :max_dias'); repl.max_dias = Number(params.max_dias); }
   if (params.visto_dias !== undefined && params.visto_dias !== '') {
@@ -873,6 +1191,7 @@ async function listarTiendas(params = {}, sessionUser = {}) {
   if (pais && pais !== 'ALL') { where.push('(t.pais_principal = :pais OR t.pais_principal IS NULL)'); repl.pais = pais; }
   if (params.q && String(params.q).trim().length >= 2) { where.push('(t.dominio LIKE :q OR t.nombre LIKE :q)'); repl.q = `%${String(params.q).trim()}%`; }
   if (params.es_shopify === '1' || params.es_shopify === 1 || params.es_shopify === true) where.push('t.es_shopify = 1');
+  if (['shopify', 'whatsapp', 'dropi', 'web'].includes(String(params.plataforma || ''))) { where.push('t.plataforma = :plataforma'); repl.plataforma = params.plataforma; }
   if (params.min_activos) { where.push('t.anuncios_activos >= :min_activos'); repl.min_activos = Number(params.min_activos); }
   if (params.solo_seguidas === '1' || params.solo_seguidas === 1 || params.solo_seguidas === true) where.push('s.ref IS NOT NULL');
   const orden =
@@ -957,6 +1276,7 @@ async function seguir(body = {}, sessionUser = {}) {
 async function estado(paisCrudo) {
   const pais = validarPais(paisCrudo);
   const ultima = await EspiaPasada.findOne({ where: { pais }, order: [['inicio', 'DESC']], raw: true });
+  const ultimaCompleta = await EspiaPasada.findOne({ where: { pais, estado: 'ok' }, order: [['inicio', 'DESC']], raw: true });
   const [prod] = await q(`SELECT COUNT(*) AS n, MAX(ultima_vez) AS ultima FROM espia_producto WHERE pais = :pais`, { pais });
   const [anu] = await q(
     `SELECT COUNT(*) AS n, MAX(ultima_vez_visto) AS ultima FROM espia_anuncio WHERE activo = 1 AND (pais = :pais OR pais = 'ALL')`,
@@ -964,6 +1284,11 @@ async function estado(paisCrudo) {
   );
   const [tie] = await q(`SELECT COUNT(*) AS n FROM espia_tienda WHERE pais_principal = :pais OR pais_principal IS NULL`, { pais });
   const [vd] = await q(`SELECT COUNT(DISTINCT fecha) AS dias FROM espia_ventas_dia WHERE pais = :pais`, { pais });
+  const [rad] = await q(
+    `SELECT SUM(radar_en IS NOT NULL) AS barridos, SUM(n_anuncios > 0) AS con_anuncios, MAX(radar_en) AS ultimo
+       FROM espia_producto WHERE pais = :pais`,
+    { pais },
+  );
   let cuenta;
   if (pais === 'QA') {
     cuenta = { id_configuracion: null, nombre_configuracion: 'Pruebas', store_name: 'Mock', integracion_id: null };
@@ -980,6 +1305,7 @@ async function estado(paisCrudo) {
     cuenta,
     fuente: process.env.ESPIA_MOCK_DIR ? 'mock' : 'dropi',
     ultima_pasada: ultima || null,
+    ultima_completa: ultimaCompleta ? { id: ultimaCompleta.id, fin: ultimaCompleta.fin, productos: ultimaCompleta.productos, paginas: ultimaCompleta.paginas, minutos: ultimaCompleta.fin ? Math.round((new Date(ultimaCompleta.fin) - new Date(ultimaCompleta.inicio)) / 60000) : null } : null,
     corriendo: Boolean(corriendo[pais]),
     freno_hasta: frenoHasta[pais] && Date.now() < frenoHasta[pais] ? new Date(frenoHasta[pais]) : null,
     productos_total: Number(prod?.n || 0),
@@ -987,6 +1313,7 @@ async function estado(paisCrudo) {
     dias_con_ventas: Number(vd?.dias || 0),
     cron_activo: String(process.env.CRONS_ENABLED ?? 'true').toLowerCase() !== 'false',
     extension: { anuncios_total: Number(anu?.n || 0), tiendas_total: Number(tie?.n || 0), ultimo_envio: anu?.ultima || null },
+    radar: { barridos: Number(rad?.barridos || 0), con_anuncios: Number(rad?.con_anuncios || 0), ultimo: rad?.ultimo || null },
   };
 }
 
@@ -1072,9 +1399,16 @@ module.exports = {
   cuentaDe,
   pasada,
   listarProductos,
+  metricasLote,
+  recalcularMetricas,
   detalleProducto,
   categorias,
   recibirAnuncios,
+  radarCola,
+  radarMarcar,
+  terminoBusqueda,
+  esBuscable,
+  limpiarVinculosNoBuscables,
   registrarVistaTienda,
   perfilarTienda,
   perfilarPendientes,

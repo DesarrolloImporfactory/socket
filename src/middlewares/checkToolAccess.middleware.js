@@ -39,12 +39,18 @@ const TOOL_RULES = {
   // 'insta_landing' sigue fuera a propósito: esos usuarios nunca tuvieron el
   // chat, y el Dropiboard vive colgado de él.
   dropiboard: (access) => access === 'imporchat' || access === 'both',
+
+  // Espía de mercado (Dropkiller propio). Todavía no se vende: solo entra el
+  // super administrador (ver espiaAcceso.middleware). El día que se abra a
+  // clientes se decide aquí a qué planes: p. ej. `(access) => access === 'imporchat' || access === 'both'`.
+  espia_mercado: () => false,
 };
 
 const TOOL_LABELS = {
   imporchat: 'ImporChat',
   insta_landing: 'Insta Landing',
   dropiboard: 'Dropiboard',
+  espia_mercado: 'Espía de mercado',
 };
 
 const checkToolAccess = (requiredTool) => {

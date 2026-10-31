@@ -23,6 +23,9 @@
  *       Pasada real contra Dropi (solo en el servidor).
  *
  *   node scripts/espiaMercado.js estado --pais EC
+ *   node scripts/espiaMercado.js metricas --pais EC
+ *       Recalcula ventas 1/7/30 d, serie7 e iguales en espia_producto (lo hace
+ *       sola cada pasada y a las 00:10; útil tras aplicar la migración).
  *   node scripts/espiaMercado.js reporte --pais EC [--enviar]
  *   node scripts/espiaMercado.js limpiar --pais QA --si
  *       Borra TODO lo del país (solo pensado para QA).
@@ -224,6 +227,14 @@ async function estado() {
   });
 }
 
+async function metricas() {
+  const pais = String(opt('pais', 'EC')).toUpperCase();
+  await conBD(async () => {
+    const espia = require('../src/services/espia_mercado.service');
+    await espia.recalcularMetricas(pais, console.log);
+  });
+}
+
 async function reporte() {
   const pais = String(opt('pais', 'EC')).toUpperCase();
   await conBD(async () => {
@@ -239,8 +250,9 @@ async function limpiar() {
   if (!opt('si')) throw new Error(`Esto borra TODO lo del país ${pais}. Confirma con --si`);
   await conBD(async (db) => {
     for (const t of ['espia_ventas_dia', 'espia_stock_foto', 'espia_stock_actual', 'espia_producto', 'espia_pasada']) {
-      const [, meta] = await db.query(`DELETE FROM ${t} WHERE pais = ?`, { replacements: [pais], type: db.QueryTypes.DELETE }).then((r) => [r, r]).catch((e) => { throw e; });
-      console.log(`  ${t}: borrado (${meta?.affectedRows ?? '?'} filas)`);
+      // BULKDELETE devuelve el número de filas afectadas (DELETE devuelve undefined).
+      const n = await db.query(`DELETE FROM ${t} WHERE pais = ?`, { replacements: [pais], type: db.QueryTypes.BULKDELETE });
+      console.log(`  ${t}: borrado (${Number.isFinite(n) ? n : '?'} filas)`);
     }
   });
 }
@@ -253,6 +265,7 @@ async function limpiar() {
       case 'mock-generar': mockGenerar(); break;
       case 'pasada': await pasada(); break;
       case 'estado': await estado(); break;
+      case 'metricas': await metricas(); break;
       case 'reporte': await reporte(); break;
       case 'limpiar': await limpiar(); break;
       default:

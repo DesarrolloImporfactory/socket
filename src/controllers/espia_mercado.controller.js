@@ -13,16 +13,25 @@ exports.estado = catchAsync(async (req, res) => ok(res, await espia.estado(req.q
 exports.productos = catchAsync(async (req, res) => ok(res, await espia.listarProductos(req.query)));
 
 exports.producto = catchAsync(async (req, res) =>
-  ok(res, await espia.detalleProducto(req.params.pais, req.params.id)),
+  ok(res, await espia.detalleProducto(req.params.pais, req.params.id, { dias: req.query.dias })),
 );
 
 exports.categorias = catchAsync(async (req, res) => ok(res, await espia.categorias(req.query.pais)));
+
+// Extensión → métricas de los productos que el usuario tiene a la vista en Dropi.
+exports.productosLote = catchAsync(async (req, res) =>
+  ok(res, await espia.metricasLote(req.body?.pais || req.query.pais, req.body?.ids)),
+);
 
 exports.anuncios = catchAsync(async (req, res) => ok(res, await espia.listarAnuncios(req.query)));
 
 exports.recibirAnuncios = catchAsync(async (req, res) =>
   ok(res, await espia.recibirAnuncios(req.body, req.sessionUser)),
 );
+
+// Radar (extensión): qué productos buscar en la Biblioteca y con qué palabras; y «ya busqué este».
+exports.radarCola = catchAsync(async (req, res) => ok(res, await espia.radarCola(req.query, req.sessionUser)));
+exports.radarMarcar = catchAsync(async (req, res) => ok(res, await espia.radarMarcar(req.body)));
 
 exports.tiendas = catchAsync(async (req, res) => ok(res, await espia.listarTiendas(req.query, req.sessionUser)));
 
