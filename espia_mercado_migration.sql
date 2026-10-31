@@ -142,3 +142,47 @@ CREATE TABLE IF NOT EXISTS espia_seguimiento (
   creado_en DATETIME NOT NULL,
   PRIMARY KEY (id_sub_usuario, tipo, ref)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 31-10-2026: métricas precalculadas en espia_producto (la pantalla dejó de
+-- calcular ventas por fila al leer; las recalcula recalcularMetricas() al cerrar
+-- cada pasada y a las 00:10 de cada país) e índices para los órdenes de la lista.
+ALTER TABLE espia_producto
+  ADD COLUMN ventas_1d INT NOT NULL DEFAULT 0,
+  ADD COLUMN ventas_7d INT NOT NULL DEFAULT 0,
+  ADD COLUMN ventas_7d_prev INT NOT NULL DEFAULT 0,
+  ADD COLUMN ventas_30d INT NOT NULL DEFAULT 0,
+  ADD COLUMN n_iguales INT NOT NULL DEFAULT 0,
+  ADD COLUMN serie7 VARCHAR(80) NULL,
+  ADD COLUMN metricas_en DATETIME NULL,
+  ADD KEY ix_espia_producto_v7 (pais, ventas_7d),
+  ADD KEY ix_espia_producto_v30 (pais, ventas_30d),
+  ADD KEY ix_espia_producto_total (pais, ventas_total),
+  ADD KEY ix_espia_producto_stock (pais, stock_actual),
+  ADD KEY ix_espia_producto_primera (pais, primera_vez),
+  ADD KEY ix_espia_producto_precio (pais, precio);
+-- Después: node scripts/espiaMercado.js metricas --pais EC  (y MX)
+
+-- 31-10-2026 (tarde): plataforma de la tienda detectada por la extensión en cada
+-- anuncio (Shopify, WhatsApp, Dropi o web) y resumida por tienda.
+ALTER TABLE espia_anuncio ADD COLUMN tienda_plataforma VARCHAR(20) NULL AFTER plataformas;
+ALTER TABLE espia_tienda ADD COLUMN plataforma VARCHAR(20) NULL AFTER es_shopify;
+
+-- 31-10-2026 (noche): Radar de anuncios. La extensión recorre la Biblioteca de
+-- Meta buscando por nombre los productos que más venden y deja el vínculo exacto
+-- anuncio ↔ producto (sin depender de palabras del nombre). n_anuncios y radar_en
+-- se precalculan en espia_producto para listar/filtrar sin JOIN.
+ALTER TABLE espia_producto
+  ADD COLUMN n_anuncios INT NOT NULL DEFAULT 0,
+  ADD COLUMN radar_en DATETIME NULL,
+  ADD KEY ix_espia_producto_anuncios (pais, n_anuncios),
+  ADD KEY ix_espia_producto_radar (pais, radar_en);
+
+CREATE TABLE IF NOT EXISTS espia_anuncio_producto (
+  pais VARCHAR(2) NOT NULL,
+  dropi_product_id BIGINT NOT NULL,
+  ad_archive_id VARCHAR(40) NOT NULL,
+  origen VARCHAR(12) NOT NULL DEFAULT 'radar',
+  creado_en DATETIME NOT NULL,
+  PRIMARY KEY (pais, dropi_product_id, ad_archive_id),
+  KEY ix_espia_ap_anuncio (ad_archive_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

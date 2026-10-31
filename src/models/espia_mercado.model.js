@@ -45,6 +45,17 @@ const EspiaProducto = db.define(
     stock_actual: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     ventas_total: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     reabastecimientos: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    // Métricas derivadas, recalculadas por recalcularMetricas() (no por fila al leer).
+    ventas_1d: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    ventas_7d: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    ventas_7d_prev: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    ventas_30d: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    n_iguales: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    serie7: { type: DataTypes.STRING(80), allowNull: true }, // '0,3,0,12,5,0,1' (hoy al final)
+    metricas_en: { type: DataTypes.DATE, allowNull: true },
+    // Radar: anuncios activos vinculados (espia_anuncio_producto) y última vez que la extensión lo buscó en Meta.
+    n_anuncios: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    radar_en: { type: DataTypes.DATE, allowNull: true },
   },
   {
     ...comun,
@@ -54,6 +65,14 @@ const EspiaProducto = db.define(
       { name: 'ix_espia_producto_norm', fields: ['pais', 'nombre_norm'] },
       { name: 'ix_espia_producto_ext', fields: ['pais', 'external_id'] },
       { name: 'ix_espia_producto_ultima', fields: ['pais', 'ultima_vez'] },
+      { name: 'ix_espia_producto_v7', fields: ['pais', 'ventas_7d'] },
+      { name: 'ix_espia_producto_v30', fields: ['pais', 'ventas_30d'] },
+      { name: 'ix_espia_producto_total', fields: ['pais', 'ventas_total'] },
+      { name: 'ix_espia_producto_stock', fields: ['pais', 'stock_actual'] },
+      { name: 'ix_espia_producto_primera', fields: ['pais', 'primera_vez'] },
+      { name: 'ix_espia_producto_precio', fields: ['pais', 'precio'] },
+      { name: 'ix_espia_producto_anuncios', fields: ['pais', 'n_anuncios'] },
+      { name: 'ix_espia_producto_radar', fields: ['pais', 'radar_en'] },
     ],
   },
 );
@@ -144,6 +163,7 @@ const EspiaAnuncio = db.define(
     media_url: { type: DataTypes.STRING(1000), allowNull: true },
     imagen_url: { type: DataTypes.STRING(1000), allowNull: true },
     plataformas: { type: DataTypes.STRING(100), allowNull: true },
+    tienda_plataforma: { type: DataTypes.STRING(20), allowNull: true }, // shopify | whatsapp | dropi | web (la extensión lo deduce del destino y el texto)
     inicio: { type: DataTypes.DATEONLY, allowNull: true },
     primera_vez_visto: { type: DataTypes.DATE, allowNull: false },
     ultima_vez_visto: { type: DataTypes.DATE, allowNull: false },
@@ -170,6 +190,7 @@ const EspiaTienda = db.define(
     nombre: { type: DataTypes.STRING(200), allowNull: true },
     pais_principal: { type: DataTypes.STRING(3), allowNull: true },
     es_shopify: { type: DataTypes.TINYINT, allowNull: true }, // null = sin revisar
+    plataforma: { type: DataTypes.STRING(20), allowNull: true }, // shopify | whatsapp | dropi | web (de los anuncios que mandó la extensión)
     productos: { type: DataTypes.INTEGER, allowNull: true },
     moneda: { type: DataTypes.STRING(10), allowNull: true },
     tema: { type: DataTypes.STRING(120), allowNull: true },
@@ -208,8 +229,27 @@ const EspiaSeguimiento = db.define(
   { ...comun, tableName: 'espia_seguimiento' },
 );
 
+// Vínculo exacto anuncio ↔ producto de Dropi. Lo deja el radar de la extensión
+// (buscó el producto por nombre en la Biblioteca y estos anuncios salieron).
+const EspiaAnuncioProducto = db.define(
+  'espia_anuncio_producto',
+  {
+    pais: { type: DataTypes.STRING(2), allowNull: false, primaryKey: true },
+    dropi_product_id: { type: DataTypes.BIGINT, allowNull: false, primaryKey: true },
+    ad_archive_id: { type: DataTypes.STRING(40), allowNull: false, primaryKey: true },
+    origen: { type: DataTypes.STRING(12), allowNull: false, defaultValue: 'radar' }, // radar | manual
+    creado_en: { type: DataTypes.DATE, allowNull: false },
+  },
+  {
+    ...comun,
+    tableName: 'espia_anuncio_producto',
+    indexes: [{ name: 'ix_espia_ap_anuncio', fields: ['ad_archive_id'] }],
+  },
+);
+
 module.exports = {
   EspiaProducto,
+  EspiaAnuncioProducto,
   EspiaStockActual,
   EspiaStockFoto,
   EspiaVentasDia,
