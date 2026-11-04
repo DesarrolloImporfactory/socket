@@ -341,6 +341,28 @@ async function listAppointments({
   const profPorId = new Map(profesionales.map((p) => [Number(p.id), p]));
   const sedePorId = new Map(sedes.map((s) => [Number(s.id), s]));
 
+  /* De dónde salió la cita. Las que entran por la agenda pública (/agendar)
+     se marcan en el calendario sin abrir el detalle: el asesor necesita
+     distinguir de un vistazo lo que reservó un cliente solo de lo que él
+     mismo anotó. La tabla la crea agenda_publica.service al primer uso; si
+     todavía no existe, simplemente nada viene de ahí. */
+  const origenPorCita = new Map();
+  if (rows.length) {
+    try {
+      const reservas = await db.query(
+        `SELECT appointment_id, origen FROM agenda_publica_reservas
+          WHERE appointment_id IN (:ids)`,
+        {
+          replacements: { ids: rows.map((r) => Number(r.id)) },
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      for (const r of reservas) origenPorCita.set(Number(r.appointment_id), r.origen);
+    } catch (_) {
+      /* sin tabla todavía */
+    }
+  }
+
   // ── Formato FullCalendar + props extra ──────────────────────────
   return rows.map((r) => {
     const invitees =
@@ -371,6 +393,9 @@ async function listAppointments({
         sede: sedePorId.get(Number(r.id_establecimiento)) || null,
         contact_id: r.contact_id,
         contact, // invitado que quedó como contacto principal
+        // 'agenda_publica' cuando la reservó el cliente desde /agendar
+        origen: origenPorCita.has(Number(r.id)) ? 'agenda_publica' : null,
+        origen_detalle: origenPorCita.get(Number(r.id)) || null,
         booked_tz: r.booked_tz,
         location_text: r.location_text,
         meeting_url: r.meeting_url,
@@ -465,9 +490,24 @@ async function createAppointment(payload, currentUserId, opts = {}) {
         start: payload.start,
         end: payload.end,
         timeZone: tz,
+        /* Solo la agenda pública lo pide: a quien reservó desde /agendar le
+           tiene que llegar la invitación de Google con el Meet. La agenda
+           manual sigue sin avisar, como siempre. */
+        sendUpdates: payload.notificar_invitados ? 'all' : undefined,
+        /* Agenda pública con cuenta de Google propia: el evento (y la
+           invitación) salen de esa cuenta y no de la del encargado. */
+        ownerSubId: payload.google_sub_usuario || null,
       });
       if (res?.meetingUrl) {
         await appt.update({ meeting_url: res.meetingUrl }, { silent: true });
+      }
+      /* La agenda pública necesita saber si Google falló (sin vínculo, token
+         vencido): la cita existe igual, pero el correo no salió. */
+      if (res && res.ok === false) {
+        await appt.update(
+          { last_sync_error: `google: ${res.reason || 'sin detalle'}` },
+          { silent: true },
+        );
       }
     } catch (e) {
       await appt.update(

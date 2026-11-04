@@ -4,8 +4,11 @@
 // POR QUÉ EXISTE ESTE ARCHIVO
 //
 // Pedido 2026-10-22: quien entra por primera vez (o no ha avanzado) debe ver
-// una invitación a agendar su implementación con el equipo comercial
-// (Calendly). "No ha empezado" = tiene UNA conexión como máximo y ninguna
+// una invitación a agendar su implementación con el equipo comercial.
+// Hasta el 2026-11-04 abría un Calendly; ahora abre la agenda pública de
+// ImporChat (/agendar, services/agenda_publica.service.js), que deja la
+// reunión en la agenda del asesor y avisa por correo y WhatsApp.
+// "No ha empezado" = tiene UNA conexión como máximo y ninguna
 // está conectada: ni WhatsApp (id_telefono + id_whatsapp), ni Messenger ni
 // Instagram. Quien ya tiene dos conexiones —aunque una esté sin conectar— ya
 // pagó la segunda y maneja el sistema: no se le molesta.
@@ -24,8 +27,9 @@ const AVISO_IMPLEMENTACION = 'agendar_implementacion';
 
 // ── Ajustes (a propósito en código y no en .env: nadie los va a tocar desde
 //    el servidor; cuando cambien, cambian aquí con un commit) ──────────────
-// Agenda del equipo comercial.
-const CALENDLY_IMPLEMENTACION = 'https://calendly.com/comercial-imporchat/30min';
+// Agenda del equipo comercial: la pública de ImporChat. El front le agrega la
+// cuenta (u=) y los datos del dueño para prellenar el formulario.
+const AGENDA_IMPLEMENTACION = '/agendar?origen=modal';
 // Interruptor general: con la agenda llena, poner en false y desplegar. Las
 // respuestas guardadas no se tocan; al volver a true cada cuenta sigue donde
 // estaba.
@@ -86,7 +90,7 @@ async function resumenConexiones(id_usuario) {
  */
 async function estadoImplementacion(id_usuario) {
   await ensureTabla();
-  const [[dueno], conexiones, [aviso]] = await Promise.all([
+  const [[dueno], conexiones, [aviso], reserva] = await Promise.all([
     db.query(
       `SELECT nombre, email_propietario AS email, created_at FROM usuarios_chat_center WHERE id_usuario = ? LIMIT 1`,
       { replacements: [id_usuario], type: db.QueryTypes.SELECT },
@@ -97,12 +101,18 @@ async function estadoImplementacion(id_usuario) {
         WHERE id_usuario = ? AND aviso = ? LIMIT 1`,
       { replacements: [id_usuario, AVISO_IMPLEMENTACION], type: db.QueryTypes.SELECT },
     ),
+    /* Reunión ya reservada en la agenda pública y todavía por venir: no se
+       insiste aunque siga sin conectar nada (la va a conectar en la cita). */
+    require('./agenda_publica.service')
+      .reservaPendienteDeCuenta(id_usuario)
+      .catch(() => null),
   ]);
 
   const base = {
     mostrar: false,
     motivo: null,
-    calendly_url: CALENDLY_IMPLEMENTACION,
+    agenda_url: AGENDA_IMPLEMENTACION,
+    reserva: reserva ? { inicio: reserva.inicio } : null,
     dueno: dueno ? { nombre: dueno.nombre || null, email: dueno.email || null } : null,
     conexiones,
     aviso: aviso || null,
@@ -112,6 +122,7 @@ async function estadoImplementacion(id_usuario) {
   if (conexiones.conexiones > 1) return { ...base, motivo: 'varias_conexiones' };
   if (conexiones.conectadas > 0) return { ...base, motivo: 'ya_conectado' };
   if (aviso?.estado === 'descartado') return { ...base, motivo: 'no_mostrar' };
+  if (reserva) return { ...base, motivo: 'reunion_pendiente' };
   const enEspera =
     aviso?.pospuesto_hasta && new Date(aviso.pospuesto_hasta) > new Date();
   if (aviso?.estado === 'agendado') {
@@ -164,9 +175,22 @@ async function responderImplementacion({ id_usuario, accion, id_sub_usuario }) {
   return { estado: a.estado, posponer_dias: a.dias };
 }
 
+/* La agenda pública avisa que la cuenta RESERVÓ de verdad (no solo abrió la
+   agenda): el modal no vuelve a salir hasta pasada la cita. */
+async function marcarReservaHecha(id_usuario, hasta) {
+  await ensureTabla();
+  await db.query(
+    `INSERT INTO onboarding_avisos_chat_center (id_usuario, aviso, estado, pospuesto_hasta)
+     VALUES (?, ?, 'agendado', ?)
+     ON DUPLICATE KEY UPDATE estado = 'agendado', pospuesto_hasta = VALUES(pospuesto_hasta)`,
+    { replacements: [id_usuario, AVISO_IMPLEMENTACION, hasta], type: db.QueryTypes.INSERT },
+  );
+}
+
 module.exports = {
   AVISO_IMPLEMENTACION,
-  CALENDLY_IMPLEMENTACION,
+  AGENDA_IMPLEMENTACION,
+  marcarReservaHecha,
   estadoImplementacion,
   marcarMostrado,
   responderImplementacion,

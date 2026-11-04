@@ -262,6 +262,13 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
 
   const requestBody = toGoogleEventPayload(appointment);
 
+  /* Google NO avisa a los invitados salvo que se lo pidan (sendUpdates). La
+     agenda manual nunca lo pidió y así sigue: el dueño decide si escribe él.
+     La agenda pública sí lo necesita —es el único correo de confirmación que
+     recibe quien reservó, con el enlace de Meet— y lo marca con
+     __sendUpdates = 'all'. */
+  const sendUpdates = appointment.__sendUpdates || undefined;
+
   try {
     if (map?.google_event_id) {
       // PATCH
@@ -270,6 +277,7 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
         eventId: map.google_event_id,
         requestBody,
         conferenceDataVersion: 1,
+        ...(sendUpdates ? { sendUpdates } : {}),
       });
       await db.query(
         `UPDATE google_events_links
@@ -298,6 +306,7 @@ async function upsertGoogleEvent({ id_sub_usuario, calendar_id, appointment }) {
         calendarId: googleCalId,
         requestBody,
         conferenceDataVersion: 1,
+        ...(sendUpdates ? { sendUpdates } : {}),
       });
       await db.query(
         `INSERT INTO google_events_links
@@ -754,6 +763,8 @@ async function findLinkByHeaders({ channelId, resourceId }) {
  * Permite pasar overrides desde el servicio (create/update):
  *   - start, end: cadenas ISO (idealmente con offset, p.ej. ...-05:00) o Date
  *   - timeZone: 'America/Guayaquil', etc.
+ *   - sendUpdates: 'all' para que Google mande la invitación por correo a los
+ *     invitados (agenda pública). Sin él, como siempre: no avisa.
  */
 async function pushUpsertEvent({
   appointmentId,
@@ -761,6 +772,12 @@ async function pushUpsertEvent({
   start,
   end,
   timeZone,
+  sendUpdates,
+  /* Con quién se crea el evento en Google. Por defecto el encargado de la
+     cita; la agenda pública puede fijar la cuenta de Google de la agenda
+     (p. ej. «comercial» de ImporChat) para que las invitaciones salgan
+     siempre de ahí, atienda quien atienda. */
+  ownerSubId = null,
 }) {
   // Cargamos la cita con invitados (como antes)
   const appt = await Appointment.findByPk(appointmentId, {
@@ -777,7 +794,7 @@ async function pushUpsertEvent({
 
   // Dueño para la cuenta de Google (misma regla que tenías)
   const id_sub_usuario =
-    appt.assigned_user_id || appt.created_by_user_id || null;
+    ownerSubId || appt.assigned_user_id || appt.created_by_user_id || null;
 
   const payload = {
     ...appt.get({ plain: true }),
@@ -788,6 +805,7 @@ async function pushUpsertEvent({
   if (start || end || timeZone) {
     payload.__override = { start, end, timeZone };
   }
+  if (sendUpdates) payload.__sendUpdates = sendUpdates;
 
   return upsertGoogleEvent({
     id_sub_usuario,
