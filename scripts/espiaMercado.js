@@ -302,7 +302,12 @@ async function proveedor() {
   });
 }
 
-/* Reparación masiva del proveedor: recorre todo el catálogo y corrige espia_producto. */
+/* Reparación masiva del proveedor. Dropi manda la tienda en user.store_name
+   (confirmado en producción en noviembre de 2026) y los productos viejos quedaron con user.name (la
+   persona). Como todos los productos de un proveedor comparten el nombre, cada
+   proveedor se corrige de un golpe la primera vez que aparece en el catálogo
+   (UPDATE por proveedor_id) y la lectura se corta cuando ya se vio a todos los
+   proveedores que hay en la BD: no hace falta leer el catálogo entero. */
 async function proveedores() {
   const pais = String(opt('pais', 'EC')).toUpperCase();
   const campo = opt('campo', '');
@@ -321,52 +326,61 @@ async function proveedores() {
       const forzado = campo && typeof campo === 'string' ? leerCampo(p.user, campo).trim() : '';
       return (forzado || svc._interno.nombreProveedorDe(p) || '').slice(0, 200) || null;
     };
-    const actuales = new Map(
-      (await db.query(`SELECT dropi_product_id, proveedor_nombre FROM espia_producto WHERE pais = :pais`, { replacements: { pais }, type: QueryTypes.SELECT })).map((r) => [
-        Number(r.dropi_product_id),
-        r.proveedor_nombre,
-      ]),
+    // Proveedores que hay en la BD y cuántos productos tiene cada uno.
+    const filas = await db.query(
+      `SELECT proveedor_id, COUNT(*) AS n FROM espia_producto WHERE pais = :pais AND proveedor_id IS NOT NULL GROUP BY proveedor_id`,
+      { replacements: { pais }, type: QueryTypes.SELECT },
     );
-    console.log(`${pais}: ${actuales.size} productos en espia_producto · ${aplicar ? 'APLICANDO cambios' : 'solo lectura (usa --aplicar para escribir)'}${campo ? ` · campo forzado «${campo}»` : ''}`);
-    let vistos = 0;
-    let cambios = 0;
-    let sinNombre = 0;
-    let mostrados = 0;
+    const pendientes = new Map(filas.map((r) => [Number(r.proveedor_id), Number(r.n)]));
+    const totalProductos = [...pendientes.values()].reduce((a, b) => a + b, 0);
+    console.log(`${pais}: ${pendientes.size} proveedores con ${totalProductos} productos en espia_producto · ${aplicar ? 'APLICANDO cambios' : 'solo lectura (usa --aplicar para escribir)'}${campo ? ` · campo forzado «${campo}»` : ''}`);
     let paginas = 0;
-    const ejemplo = [];
+    let vistos = 0;
+    let proveedoresVistos = 0;
+    let productosCambiados = 0;
+    let mostrados = 0;
     for await (const productos of svc._interno.paginasDropi(pais, {
       maxPaginas,
-      onRateLimit: (n, pag) => console.log(`  429 de Dropi en la página ${pag} (reintento ${n}), esperando…`),
+      onRateLimit: (n, pag) => console.log(`  429 de Dropi en la página ${pag} (reintento ${n}): espero 5 min y sigo…`),
       onCorte: (n, pag) => console.log(`  Dropi sin responder en la página ${pag} (reintento ${n}), esperando…`),
     })) {
       paginas += 1;
       for (const p of productos) {
-        const id = Number(p.id);
-        if (!Number.isFinite(id)) continue;
         vistos += 1;
+        const pid = p.user?.id != null ? Number(p.user.id) : null;
+        if (pid == null || !pendientes.has(pid)) continue;
         const nuevo = nombreDe(p);
-        if (!nuevo) sinNombre += 1;
-        if (paginas === 1 && ejemplo.length < 3) ejemplo.push(`#${id} ${p.name} → ${nuevo || '(vacío)'} · user: ${JSON.stringify(svc._interno.camposProveedor(p))}`);
-        if (!actuales.has(id) || actuales.get(id) === nuevo) continue;
-        cambios += 1;
-        if (mostrados < 15) {
-          mostrados += 1;
-          console.log(`  #${id} ${String(p.name || '').slice(0, 50)}: «${actuales.get(id) || ''}» → «${nuevo || ''}»`);
-        }
+        pendientes.delete(pid);
+        proveedoresVistos += 1;
+        if (!nuevo) continue;
+        let n;
         if (aplicar) {
-          await db.query(`UPDATE espia_producto SET proveedor_nombre = :nombre WHERE pais = :pais AND dropi_product_id = :id`, {
-            replacements: { nombre: nuevo, pais, id },
-            type: QueryTypes.UPDATE,
-          });
+          const [, afectadas] = await db.query(
+            `UPDATE espia_producto SET proveedor_nombre = :nombre
+              WHERE pais = :pais AND proveedor_id = :pid AND (proveedor_nombre IS NULL OR proveedor_nombre <> :nombre)`,
+            { replacements: { nombre: nuevo, pais, pid }, type: QueryTypes.UPDATE },
+          );
+          n = Number(afectadas) || 0;
+        } else {
+          const [r] = await db.query(
+            `SELECT COUNT(*) AS n, MAX(proveedor_nombre) AS viejo FROM espia_producto
+              WHERE pais = :pais AND proveedor_id = :pid AND (proveedor_nombre IS NULL OR proveedor_nombre <> :nombre)`,
+            { replacements: { nombre: nuevo, pais, pid }, type: QueryTypes.SELECT },
+          );
+          n = Number(r?.n) || 0;
+          if (n && mostrados < 20) { mostrados += 1; console.log(`  proveedor #${pid} «${r.viejo || ''}» → «${nuevo}» (${n} productos)`); }
         }
+        productosCambiados += n;
       }
-      if (paginas % 50 === 0) console.log(`  … ${paginas} páginas, ${vistos} productos, ${cambios} cambios`);
+      if (paginas % 25 === 0) console.log(`  … ${paginas} páginas · ${vistos} productos leídos · ${proveedoresVistos} proveedores vistos (faltan ${pendientes.size}) · ${productosCambiados} productos ${aplicar ? 'corregidos' : 'por corregir'}`);
+      if (!pendientes.size) { console.log('  Ya aparecieron todos los proveedores de la BD: no hace falta seguir leyendo.'); break; }
     }
-    console.log(`\nEjemplo de la primera página:\n  ${ejemplo.join('\n  ')}`);
-    console.log(`\n${paginas} páginas · ${vistos} productos leídos · ${cambios} ${aplicar ? 'actualizados' : 'cambiarían'} · ${sinNombre} sin nombre de proveedor`);
-    if (!aplicar && cambios) console.log('Nada se escribió. Si los nombres nuevos son los de la tienda, repite con --aplicar.');
+    console.log(`\n${paginas} páginas · ${vistos} productos leídos · ${proveedoresVistos} proveedores vistos · ${productosCambiados} productos ${aplicar ? 'corregidos' : 'cambiarían'}`);
+    if (pendientes.size) console.log(`${pendientes.size} proveedores no aparecieron en lo leído (${[...pendientes.values()].reduce((a, b) => a + b, 0)} productos): los corrige la siguiente foto del recolector.`);
+    if (!aplicar && productosCambiados) console.log('Nada se escribió. Repite con --aplicar para corregir.');
   });
 }
+
 
 (async () => {
   try {
