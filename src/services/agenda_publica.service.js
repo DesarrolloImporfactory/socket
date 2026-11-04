@@ -77,6 +77,12 @@ const CONFIG_INICIAL = {
   lugar: null, // null = videollamada por Google Meet
   plantilla_confirmacion: null,
   google_link_id: null, // cuenta de Google de la agenda (users_google_accounts.id)
+  /* Apariencia de /agendar/<slug>. La página sale azul oscuro con acento
+     cyan (ImporChat); cada negocio pone su fondo, su acento y una insignia
+     corta en la cabecera (donde la principal muestra el sello de Meta). */
+  insignia: null, // «Agencia certificada», «Atención 24/7»… null = sin insignia
+  color_fondo: null, // #rrggbb; null = azul oscuro
+  color_acento: null, // #rrggbb; null = cyan
 };
 const PRINCIPAL_INICIAL = {
   id_configuracion: 265,
@@ -96,6 +102,16 @@ const DIAS_VENTANA_MAX = 60;
 const RE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const RE_SLUG = /^[a-z0-9](?:[a-z0-9-]{1,58}[a-z0-9])$/;
 const HORA_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const RE_COLOR = /^#[0-9a-f]{6}$/;
+
+/* "#1E90FF" → "#1e90ff"; "#fff" se expande; cualquier otra cosa → null. */
+function colorHex(v) {
+  let s = String(v || '')
+    .trim()
+    .toLowerCase();
+  if (/^#[0-9a-f]{3}$/.test(s)) s = '#' + [...s.slice(1)].map((c) => c + c).join('');
+  return RE_COLOR.test(s) ? s : null;
+}
 
 /* AppError solo lleva mensaje y status; el `code` lo reenvía el manejador
    global y el front lo usa para saber si tiene que recargar los huecos. */
@@ -128,6 +144,9 @@ async function ensureTablas() {
       titulo VARCHAR(120) NOT NULL DEFAULT 'Cita',
       descripcion TEXT NULL,
       lugar VARCHAR(200) NULL,
+      insignia VARCHAR(60) NULL,
+      color_fondo VARCHAR(7) NULL,
+      color_acento VARCHAR(7) NULL,
       plantilla_confirmacion VARCHAR(100) NULL,
       google_link_id INT NULL,
       actualizado_por INT NULL,
@@ -172,6 +191,25 @@ async function ensureTablas() {
       KEY idx_telefono (telefono)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+  /* Columnas que llegaron después de crear la tabla (2026-11-04, apariencia):
+     en una BD donde ya existía se añaden aquí, igual que el CREATE IF NOT
+     EXISTS de arriba, para no depender de correr el .sql a mano. */
+  const columnas = await db.query(`SHOW COLUMNS FROM agenda_publica_config`, {
+    type: db.QueryTypes.SELECT,
+  });
+  const tiene = new Set(columnas.map((c) => c.Field));
+  const faltan = [
+    ['insignia', 'VARCHAR(60) NULL AFTER lugar'],
+    ['color_fondo', 'VARCHAR(7) NULL AFTER insignia'],
+    ['color_acento', 'VARCHAR(7) NULL AFTER color_fondo'],
+  ].filter(([col]) => !tiene.has(col));
+  if (faltan.length) {
+    await db.query(
+      `ALTER TABLE agenda_publica_config ${faltan
+        .map(([col, def]) => `ADD COLUMN ${col} ${def}`)
+        .join(', ')}`,
+    );
+  }
   /* Siembra de la principal, solo si no hay ninguna marcada. */
   await db.query(
     `INSERT INTO agenda_publica_config
@@ -237,6 +275,9 @@ function normalizar(row) {
   cfg.lugar = cfg.lugar ? String(cfg.lugar) : null;
   cfg.plantilla_confirmacion = cfg.plantilla_confirmacion || null;
   cfg.google_link_id = Number(cfg.google_link_id) || null;
+  cfg.insignia = String(cfg.insignia || '').trim().slice(0, 60) || null;
+  cfg.color_fondo = colorHex(cfg.color_fondo);
+  cfg.color_acento = colorHex(cfg.color_acento);
   cfg.guardada = !!row && !row.__nueva;
   return cfg;
 }
@@ -392,6 +433,20 @@ async function guardarConfig(id_configuracion, datos = {}, actualizado_por = nul
   if (datos.google_link_id !== undefined) {
     n.google_link_id = Number(datos.google_link_id) || null;
   }
+  if (datos.insignia !== undefined) {
+    n.insignia = String(datos.insignia || '').trim().slice(0, 60) || null;
+  }
+  for (const campo of ['color_fondo', 'color_acento']) {
+    if (datos[campo] === undefined) continue;
+    const crudo = String(datos[campo] || '').trim();
+    const hex = colorHex(crudo);
+    if (crudo && !hex)
+      throw new AppError(
+        `El ${campo === 'color_fondo' ? 'color de fondo' : 'color de acento'} debe ser un hexadecimal como #1E90FF`,
+        400,
+      );
+    n[campo] = hex;
+  }
   if (datos.slug !== undefined) {
     const s = String(datos.slug || '').trim().toLowerCase();
     if (!RE_SLUG.test(s))
@@ -420,15 +475,17 @@ async function guardarConfig(id_configuracion, datos = {}, actualizado_por = nul
     `INSERT INTO agenda_publica_config
        (activo, id_configuracion, slug, principal, calendar_id, duracion_min, hora_inicio,
         hora_fin, dias, anticipacion_horas, dias_adelante, time_zone, titulo, descripcion,
-        lugar, plantilla_confirmacion, google_link_id, actualizado_por)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        lugar, insignia, color_fondo, color_acento, plantilla_confirmacion, google_link_id,
+        actualizado_por)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        activo = VALUES(activo), slug = VALUES(slug), calendar_id = VALUES(calendar_id),
        duracion_min = VALUES(duracion_min), hora_inicio = VALUES(hora_inicio),
        hora_fin = VALUES(hora_fin), dias = VALUES(dias),
        anticipacion_horas = VALUES(anticipacion_horas), dias_adelante = VALUES(dias_adelante),
        time_zone = VALUES(time_zone), titulo = VALUES(titulo), descripcion = VALUES(descripcion),
-       lugar = VALUES(lugar), plantilla_confirmacion = VALUES(plantilla_confirmacion),
+       lugar = VALUES(lugar), insignia = VALUES(insignia), color_fondo = VALUES(color_fondo),
+       color_acento = VALUES(color_acento), plantilla_confirmacion = VALUES(plantilla_confirmacion),
        google_link_id = VALUES(google_link_id), actualizado_por = VALUES(actualizado_por)`,
     {
       replacements: [
@@ -447,6 +504,9 @@ async function guardarConfig(id_configuracion, datos = {}, actualizado_por = nul
         n.titulo,
         n.descripcion,
         n.lugar,
+        n.insignia,
+        n.color_fondo,
+        n.color_acento,
         n.plantilla_confirmacion,
         n.google_link_id,
         actualizado_por,
@@ -656,6 +716,9 @@ async function fichaPublica(cfg) {
     titulo: cfg.titulo,
     descripcion: cfg.descripcion,
     lugar: cfg.lugar,
+    insignia: cfg.insignia,
+    color_fondo: cfg.color_fondo,
+    color_acento: cfg.color_acento,
     dias_adelante: cfg.dias_adelante,
   };
 }

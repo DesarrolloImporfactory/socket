@@ -135,3 +135,16 @@ CREATE TABLE IF NOT EXISTS agenda_publica_reservas (
 -- (últimos 90 días y futuro) como citas sin encargado, que la agenda pública
 -- trata como ocupadas para todos. Ya aplicado en la BD.
 -- ALTER TABLE agenda_publica_config ADD COLUMN google_link_id INT NULL AFTER plantilla_confirmacion;
+
+-- 2026-11-04 (noche): apariencia por negocio. En la vista previa de cualquier
+-- cuenta salía el sello «Meta Business Partner» de ImporChat sin poder
+-- cambiarlo, y el fondo era siempre el azul oscuro. Ahora cada agenda tiene
+-- su insignia (texto corto en la cabecera; vacío = nada; la principal sigue
+-- con el sello de Meta), su color de fondo y su color de acento; con fondo
+-- claro la página pasa sola a texto oscuro. Se configuran en Calendario →
+-- Agenda pública → «Apariencia». ensureTablas añade las columnas si faltan
+-- (SHOW COLUMNS + ALTER), así que no hace falta correr esto a mano:
+-- ALTER TABLE agenda_publica_config
+--   ADD COLUMN insignia VARCHAR(60) NULL AFTER lugar,
+--   ADD COLUMN color_fondo VARCHAR(7) NULL AFTER insignia,
+--   ADD COLUMN color_acento VARCHAR(7) NULL AFTER color_fondo;
