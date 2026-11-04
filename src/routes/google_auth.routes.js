@@ -1,6 +1,7 @@
 const express = require('express');
 const { google } = require('googleapis');
 const { makeState, readState } = require('../utils/googleState');
+const { permisoCalendario, olvidarPermiso } = require('../utils/googlePermiso');
 const { db } = require('../database/config');
 const { protect } = require('../middlewares/auth.middleware');
 require('dotenv').config();
@@ -190,6 +191,14 @@ router.get('/google/oauth2/callback', async (req, res) => {
       },
     );
 
+    try {
+      const [l] = await db.query(
+        `SELECT id FROM users_google_accounts WHERE id_sub_usuario = ? AND calendar_id = ? LIMIT 1`,
+        { replacements: [Number(uid), effectiveCalendarId], type: db.QueryTypes.SELECT },
+      );
+      if (l?.id) olvidarPermiso(l.id);
+    } catch (_) {}
+
     // 🔌 AÑADIDO: al vincular, inicia el canal watch (si tu googleSync lo maneja internamente)
     try {
       await startWatch({
@@ -222,7 +231,7 @@ router.get('/google/status', protect, async (req, res) => {
     return res.status(400).json({ linked: false, google_email: null });
 
   const rows = await db.query(
-    `SELECT google_email, access_token, refresh_token, expiry_date, is_active
+    `SELECT id, google_email, access_token, refresh_token, expiry_date, is_active
        FROM users_google_accounts
       WHERE id_sub_usuario = ? AND calendar_id = ? AND is_active = 1
       LIMIT 1`,
@@ -231,7 +240,16 @@ router.get('/google/status', protect, async (req, res) => {
 
   const row = rows?.[0];
   const linked = !!row && (!!row.access_token || !!row.refresh_token);
-  return res.json({ linked, google_email: linked ? row.google_email : null });
+  /* «Conectado» no basta: si al autorizar no aceptó el permiso de calendario,
+     Google rechaza cada evento con 403 y la pantalla decía que todo estaba
+     bien (Juan Garzón, 2026-11-04). Se informa para que la UI pida volver a
+     vincular. */
+  const calendar_scope = linked ? await permisoCalendario(row) : null;
+  return res.json({
+    linked,
+    google_email: linked ? row.google_email : null,
+    calendar_scope,
+  });
 });
 
 /**

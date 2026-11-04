@@ -2,6 +2,20 @@ const ExcelJS = require('exceljs');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
+const Stripe = require('stripe');
+const accesoPermanente = require('../services/acceso_permanente.service');
+
+// Misma selección de llave que stripe.controller: live en producción, test en
+// local. Cancelar una suscripción live desde local falla (no existe en test);
+// para eso está scripts/darAccesoPermanente.js, que exige la live.
+const isProd =
+  String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+const STRIPE_SECRET = isProd
+  ? process.env.STRIPE_SECRET_KEY || ''
+  : process.env.STRIPE_SECRET_KEY_TEST || process.env.STRIPE_SECRET_KEY || '';
+const stripe = STRIPE_SECRET
+  ? new Stripe(STRIPE_SECRET, { apiVersion: '2024-06-20' })
+  : null;
 
 /* ══════════════════════════════════════════════════════════════
    Helpers
@@ -452,6 +466,8 @@ exports.detalleUsuarioAdmin = catchAsync(async (req, res, next) => {
 
   if (!usuario) return next(new AppError('Usuario no encontrado', 404));
 
+  usuario.imporkiller = await leerImporKiller(id_usuario);
+
   const subusuarios = await db.query(
     `SELECT id_sub_usuario, usuario, email, nombre_encargado, rol, activar_cotizacion
        FROM sub_usuarios_chat_center
@@ -786,5 +802,287 @@ exports.metricasGestionAdmin = catchAsync(async (req, res, next) => {
       cobertura: cobertura || { en_riesgo: 0, contactados_30d: 0 },
       agenda: agenda || { vencidos: 0, hoy: 0, proximos_7d: 0 },
     },
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════
+   ACCESO PERMANENTE Y COMPLEMENTOS (solo super_administrador)
+
+   Lo que antes se hacía a mano con SQL sobre usuarios_chat_center para las
+   cuentas del equipo y las cortesías (Imporfactory Pro, la 10 de Eve…).
+   La lógica del permanente (y la cancelación en Stripe) vive en
+   services/acceso_permanente.service.js, compartida con
+   scripts/darAccesoPermanente.js. imporkiller = 1 abre la extensión y los
+   anuncios sin pasar por Stripe (una cuenta permanente ya lo tiene).
+   ══════════════════════════════════════════════════════════════ */
+
+const MAX_ADICIONALES = 999;
+
+/** La columna imporkiller no está en el modelo (ver usuarios_chat_center.model). */
+async function leerImporKiller(id_usuario) {
+  try {
+    const [[r]] = await db.query(
+      `SELECT imporkiller FROM usuarios_chat_center WHERE id_usuario = ? LIMIT 1`,
+      { replacements: [id_usuario] },
+    );
+    return Number(r?.imporkiller || 0);
+  } catch (e) {
+    return 0;
+  }
+}
+
+async function leerUsuarioAdmin(id_usuario) {
+  const rows = await db.query(
+    `SELECT * FROM (${buildBaseSelect()} WHERE u.id_usuario = ?) AS t LIMIT 1`,
+    { replacements: [id_usuario], type: db.QueryTypes.SELECT },
+  );
+  const usuario = rows?.[0] || null;
+  if (usuario) usuario.imporkiller = await leerImporKiller(id_usuario);
+  return usuario;
+}
+
+/** Quién ejecuta, para la nota de Seguimientos y el log. */
+async function nombreDelEjecutor(req) {
+  const id_sub = req.sessionUser?.id_sub_usuario;
+  const rows = id_sub
+    ? await db.query(
+        `SELECT nombre_encargado, usuario FROM sub_usuarios_chat_center
+          WHERE id_sub_usuario = ? LIMIT 1`,
+        { replacements: [id_sub], type: db.QueryTypes.SELECT },
+      )
+    : [];
+  const s = rows?.[0];
+  return {
+    id: id_sub || null,
+    nombre: s?.nombre_encargado || s?.usuario || `subusuario ${id_sub}`,
+  };
+}
+
+const errorAHttp = (e, next) =>
+  next(e?.statusCode ? new AppError(e.message, e.statusCode) : e);
+
+/**
+ * POST /admin_usuarios/acceso_permanente
+ * body: { id_usuario, activar: true|false, id_plan?, cancelar_stripe? }
+ *
+ * activar=true  → permanente = 1, estado activo y el plan elegido (o el que
+ *                 ya tiene, o Avanzado). Sirve también para cambiar el plan
+ *                 de una cuenta ya permanente. Con cancelar_stripe se cancela
+ *                 YA la suscripción viva en Stripe (sin más cobros).
+ * activar=false → permanente = 0 y vuelven las reglas normales.
+ */
+exports.accesoPermanenteAdmin = catchAsync(async (req, res, next) => {
+  const id_usuario = parseInt(req.body?.id_usuario, 10);
+  if (!id_usuario) return next(new AppError('id_usuario requerido', 400));
+  const activar = isTrue(req.body?.activar);
+  const ejecutor = await nombreDelEjecutor(req);
+
+  let asunto;
+  let stripeInfo = null;
+  let stripe_error = null;
+  try {
+    if (activar) {
+      const r = await accesoPermanente.activarAccesoPermanente({
+        id_usuario,
+        id_plan: parseInt(req.body?.id_plan, 10) || null,
+        cancelar_stripe: isTrue(req.body?.cancelar_stripe),
+        stripe,
+        ejecutor,
+      });
+      asunto = r.asunto;
+      stripeInfo = r.stripe;
+      stripe_error = r.stripe_error;
+      if (stripe_error && stripe && !STRIPE_SECRET.startsWith('sk_live_')) {
+        stripe_error +=
+          ' (este servidor usa la llave de prueba de Stripe; la suscripción vive en live: usa scripts/darAccesoPermanente.js)';
+      }
+    } else {
+      const r = await accesoPermanente.quitarAccesoPermanente({
+        id_usuario,
+        ejecutor,
+      });
+      asunto = r.asunto;
+    }
+  } catch (e) {
+    return errorAHttp(e, next);
+  }
+
+  const message = stripe_error
+    ? `${asunto}, pero no se pudo cancelar en Stripe: ${stripe_error}`
+    : stripeInfo?.cancelada
+      ? `${asunto}. Suscripción de Stripe cancelada: no se le cobra más`
+      : asunto;
+
+  return res.json({
+    status: 'success',
+    message,
+    data: {
+      usuario: await leerUsuarioAdmin(id_usuario),
+      stripe: stripeInfo,
+      stripe_error,
+    },
+  });
+});
+
+/**
+ * POST /admin_usuarios/suscripcion_cortesia
+ * body: { id_usuario, id_plan, meses }
+ *
+ * Crea en Stripe una suscripción real al plan con `meses` de prueba (gratis)
+ * y cobro mensual después, con la misma metadata que el checkout para que el
+ * webhook la lleve como cualquier otra. Cancela la sub viva anterior y anula
+ * las facturas abiertas del customer. Si Stripe falla no se toca la BD.
+ */
+exports.suscripcionCortesiaAdmin = catchAsync(async (req, res, next) => {
+  const id_usuario = parseInt(req.body?.id_usuario, 10);
+  if (!id_usuario) return next(new AppError('id_usuario requerido', 400));
+  const id_plan = parseInt(req.body?.id_plan, 10);
+  if (!id_plan) return next(new AppError('id_plan requerido', 400));
+
+  const ejecutor = await nombreDelEjecutor(req);
+  let r;
+  try {
+    r = await accesoPermanente.crearSuscripcionCortesia({
+      stripe,
+      id_usuario,
+      id_plan,
+      meses: req.body?.meses,
+      ejecutor,
+    });
+  } catch (e) {
+    if (e?.statusCode) return next(new AppError(e.message, e.statusCode));
+    let msg = `Stripe: ${e?.message || e}`;
+    if (stripe && !STRIPE_SECRET.startsWith('sk_live_')) {
+      msg +=
+        ' (este servidor usa la llave de prueba de Stripe; el cliente vive en live: usa scripts/darMesesGratis.js)';
+    }
+    return next(new AppError(msg, 502));
+  }
+
+  return res.json({
+    status: 'success',
+    message: `${r.asunto}. Suscripción ${r.sub.id} creada; cobra desde el ${r.trial_end.toISOString().slice(0, 10)}`,
+    data: { usuario: await leerUsuarioAdmin(id_usuario), cortesia: r },
+  });
+});
+
+/**
+ * POST /admin_usuarios/complementos
+ * body: { id_usuario, conexiones_adicionales?, subusuarios_adicionales?, imporkiller? }
+ *
+ * Fija (no suma) los cupos extra y el complemento ImporKiller sin pasar por
+ * Stripe. Solo se tocan los campos que vienen en el body.
+ */
+exports.complementosAdmin = catchAsync(async (req, res, next) => {
+  const id_usuario = parseInt(req.body?.id_usuario, 10);
+  if (!id_usuario) return next(new AppError('id_usuario requerido', 400));
+
+  const antes = await leerUsuarioAdmin(id_usuario);
+  if (!antes) return next(new AppError('Usuario no encontrado', 404));
+
+  const leerCupo = (v, campo) => {
+    if (v === undefined || v === null || v === '') return undefined;
+    const n = parseInt(v, 10);
+    if (Number.isNaN(n) || n < 0 || n > MAX_ADICIONALES) {
+      throw new AppError(
+        `${campo} debe ser un entero entre 0 y ${MAX_ADICIONALES}`,
+        400,
+      );
+    }
+    return n;
+  };
+
+  const body = req.body || {};
+  const conexiones = leerCupo(
+    body.conexiones_adicionales,
+    'conexiones_adicionales',
+  );
+  const subusuarios = leerCupo(
+    body.subusuarios_adicionales,
+    'subusuarios_adicionales',
+  );
+  const imporkiller =
+    body.imporkiller === undefined || body.imporkiller === null
+      ? undefined
+      : isTrue(body.imporkiller)
+        ? 1
+        : 0;
+
+  if (
+    conexiones === undefined &&
+    subusuarios === undefined &&
+    imporkiller === undefined
+  ) {
+    return next(
+      new AppError('No se envió ningún complemento para cambiar', 400),
+    );
+  }
+
+  const sets = [];
+  const reps = [];
+  const cambios = [];
+
+  if (conexiones !== undefined) {
+    sets.push('conexiones_adicionales = ?');
+    reps.push(conexiones);
+    if (conexiones !== Number(antes.conexiones_adicionales || 0)) {
+      cambios.push(
+        `conexiones adicionales ${Number(antes.conexiones_adicionales || 0)} → ${conexiones}`,
+      );
+    }
+  }
+  if (subusuarios !== undefined) {
+    sets.push('subusuarios_adicionales = ?');
+    reps.push(subusuarios);
+    if (subusuarios !== Number(antes.subusuarios_adicionales || 0)) {
+      cambios.push(
+        `usuarios adicionales ${Number(antes.subusuarios_adicionales || 0)} → ${subusuarios}`,
+      );
+    }
+  }
+  if (sets.length) {
+    sets.push('updated_at = NOW()');
+    await db.query(
+      `UPDATE usuarios_chat_center SET ${sets.join(', ')} WHERE id_usuario = ?`,
+      { replacements: [...reps, id_usuario] },
+    );
+  }
+
+  if (imporkiller !== undefined) {
+    try {
+      await db.query(
+        `UPDATE usuarios_chat_center SET imporkiller = ?, updated_at = NOW()
+          WHERE id_usuario = ?`,
+        { replacements: [imporkiller, id_usuario] },
+      );
+      if (imporkiller !== Number(antes.imporkiller || 0)) {
+        cambios.push(`ImporKiller ${imporkiller ? 'activado' : 'desactivado'}`);
+      }
+    } catch (e) {
+      return next(
+        new AppError(
+          'No se pudo guardar ImporKiller: falta la columna imporkiller en la BD',
+          500,
+        ),
+      );
+    }
+  }
+
+  if (cambios.length) {
+    const ejecutor = await nombreDelEjecutor(req);
+    const contenido = `${ejecutor.nombre} ajustó complementos a mano: ${cambios.join(', ')}.`;
+    await accesoPermanente.anotarSeguimiento(
+      id_usuario,
+      ejecutor,
+      'Complementos ajustados',
+      contenido,
+    );
+    console.log(`[admin_usuarios] ${contenido} (cuenta ${id_usuario})`);
+  }
+
+  return res.json({
+    status: 'success',
+    message: cambios.length ? 'Complementos guardados' : 'Sin cambios',
+    data: { usuario: await leerUsuarioAdmin(id_usuario) },
   });
 });

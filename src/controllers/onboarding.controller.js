@@ -5,7 +5,7 @@ const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const svc = require('../services/onboarding.service');
 
-/* GET /api/v1/onboarding/implementacion → { mostrar, motivo, calendly_url, dueno, conexiones } */
+/* GET /api/v1/onboarding/implementacion → { mostrar, motivo, agenda_url, reserva, dueno, conexiones } */
 exports.implementacion = catchAsync(async (req, res, next) => {
   const id_usuario = Number(req.sessionUser?.id_usuario);
   if (!id_usuario) return next(new AppError('Sesión sin cuenta', 401));

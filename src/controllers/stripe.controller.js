@@ -106,13 +106,33 @@ const getPlanById = async (id_plan) => {
             max_agentes_whatsapp, landing_whatsapp_link, ab_testing, bot_entrenado,
             analytics_nivel, max_subcuentas, soporte_nivel,
             multi_numero_whatsapp, bulk_gen_productos, estilos_custom, secciones_custom,
-            sort_order
+            sort_order,
+            n_conexiones, max_conexiones, max_subusuarios
      FROM planes_chat_center
      WHERE id_plan = ?
      LIMIT 1`,
     { replacements: [id_plan] },
   );
   return p || null;
+};
+
+// Complementos de «sí o no» (una sola unidad por cuenta), por target_columna.
+// ImporKiller: usuarios_chat_center.imporkiller = 1 abre la extensión de Chrome
+// y los anuncios de Meta (espiaAcceso.middleware → espiaAddon).
+const ADDONS_UNICOS = new Set(['imporkiller']);
+
+// Columna que todavía puede no existir en la BD compartida (ALTER pendiente en
+// espia_mercado_migration.sql): se lee aparte para no tumbar obtenerSuscripcionActiva.
+const leerAddonImporKiller = async (id_usuario) => {
+  try {
+    const [[r]] = await db.query(
+      `SELECT imporkiller FROM usuarios_chat_center WHERE id_usuario = ? LIMIT 1`,
+      { replacements: [id_usuario] },
+    );
+    return Number(r?.imporkiller || 0);
+  } catch (e) {
+    return 0;
+  }
 };
 
 const getAddonByClave = async (clave) => {
@@ -1100,6 +1120,7 @@ exports.obtenerSuscripcionActiva = catchAsync(async (req, res, next) => {
       stripe_subscription_id: user.stripe_subscription_id || null,
       conexiones_adicionales: Number(user.conexiones_adicionales || 0),
       subusuarios_adicionales: Number(user.subusuarios_adicionales || 0),
+      imporkiller: await leerAddonImporKiller(id_usuario),
       pending_plan_id: user.pending_plan_id || null,
       pending_change: user.pending_change || null,
       pending_effective_at: user.pending_effective_at || null,
@@ -2424,13 +2445,17 @@ exports.comprarAddon = catchAsync(async (req, res, next) => {
   const COLUMNAS_PERMITIDAS = new Set([
     'conexiones_adicionales',
     'subusuarios_adicionales',
+    'imporkiller',
   ]);
   const targetCol = addon.target_columna;
   if (!COLUMNAS_PERMITIDAS.has(targetCol)) {
     return next(new AppError(`target_columna inválida: ${targetCol}`, 500));
   }
 
-  const addToQty = Math.max(1, Math.min(Number(cantidad) || 1, 10));
+  const unico = ADDONS_UNICOS.has(targetCol);
+  const addToQty = unico
+    ? 1
+    : Math.max(1, Math.min(Number(cantidad) || 1, 10));
 
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
@@ -2458,7 +2483,25 @@ exports.comprarAddon = catchAsync(async (req, res, next) => {
   // ¿Ya existe el item de este addon? Sumamos a su quantity; si no, lo creamos.
   const addonItem = sub.items.data.find((it) => it.price?.id === addonPriceId);
   const currentQty = addonItem ? Number(addonItem.quantity || 0) : 0;
-  const newQty = currentQty + addToQty;
+
+  // Complemento único ya en la suscripción: no se cobra dos veces, solo se
+  // asegura la marca en la BD (por si el webhook no llegó).
+  if (unico && currentQty >= 1) {
+    await db.query(
+      `UPDATE usuarios_chat_center SET ${targetCol} = 1 WHERE id_usuario = ?`,
+      { replacements: [id_usuario] },
+    );
+    return res.status(200).json({
+      success: true,
+      actionRequired: false,
+      ya_activo: true,
+      clave,
+      cantidad_total: 1,
+      message: `${addon.nombre} ya está activo en tu cuenta.`,
+    });
+  }
+
+  const newQty = unico ? 1 : currentQty + addToQty;
 
   const itemsUpdate = addonItem
     ? [{ id: addonItem.id, quantity: newQty }]

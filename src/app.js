@@ -136,6 +136,7 @@ const soporteChatRouter = require('./routes/soporte_chat.routes');
 const asistenteCuentaRouter = require('./routes/asistente_cuenta.routes');
 // Avisos de arranque (invitación a agendar la implementación con comercial)
 const onboardingRouter = require('./routes/onboarding.routes');
+const agendaPublicaRouter = require('./routes/agenda_publica.routes');
 
 const kanbanPlantillasAdminRouter = require('./routes/kanban_plantillas_admin.routes');
 
@@ -339,7 +340,7 @@ app.use((req, res, next) => {
     // firma sobre los campos; el sanitizador los cambiaría y la firma
     // fallaría. Las demás rutas van con protect.
     '/api/v1/telefonia',
-    // Espía de mercado: la extensión manda textos de anuncios de Meta con "$",
+    // ImporKiller (espía de mercado): la extensión manda textos de anuncios de Meta con "$",
     // emojis y HTML escapado; el sanitizador los mutilaría. Todo el grupo va
     // con protect + requireSuperAdmin (ver espia_mercado.routes.js).
     '/api/v1/espia',
@@ -462,6 +463,7 @@ app.use('/api/v1/marketing-control', marketingControlRouter);
 app.use('/api/v1/soporte_chat', soporteChatRouter);
 app.use('/api/v1/asistente_cuenta', asistenteCuentaRouter);
 app.use('/api/v1/onboarding', onboardingRouter);
+app.use('/api/v1/agenda_publica', agendaPublicaRouter);
 app.use('/api/v1/comunidades', comunidadesRouter);
 app.use('/api/v1/referidos', referidosRouter);
 app.use('/api/v1/trive_cart', webhookTriveRouter);

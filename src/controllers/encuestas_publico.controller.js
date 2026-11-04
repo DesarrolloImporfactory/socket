@@ -67,38 +67,10 @@ async function resolverConexionEncuesta(idEncuesta) {
   return conn || null;
 }
 
-/**
- * Une código de país + número local en el formato que guarda la plataforma
- * (solo dígitos, con código de país al frente: 593987654321).
- *
- * Tolera lo que la gente escribe de verdad: "0987 654 321", "(09) 8765-4321"
- * e incluso el número ya con el código de país repetido adelante.
- *
- * @returns {string|null} null si no es un número plausible.
- */
-function normalizarTelefonoPublico(codigoPais, telefono) {
-  const cc = String(codigoPais || '').replace(/\D/g, '');
-  let local = String(telefono || '').replace(/\D/g, '');
-
-  if (!cc || !local) return null;
-
-  // "0987654321" → "987654321": el 0 es de marcación nacional, no del número.
-  local = local.replace(/^0+/, '');
-
-  // El cliente ya escribió el código de país dentro del campo del número.
-  // El margen de 5 dígitos evita recortar números que casualmente empiezan
-  // con los mismos dígitos que su código de país.
-  if (local.startsWith(cc) && local.length > cc.length + 5) {
-    local = local.slice(cc.length);
-  }
-
-  const completo = cc + local;
-
-  // Rango de la E.164 (con algo de holgura hacia abajo).
-  if (completo.length < 8 || completo.length > 15) return null;
-
-  return completo;
-}
+/* Une código de país + número local en el formato que guarda la plataforma
+   (593987654321). Vive en utils/telefonoPublico porque la agenda pública
+   (/agendar) recibe el teléfono de la misma forma. */
+const { normalizarTelefonoPublico } = require('../utils/telefonoPublico');
 
 /**
  * Busca o crea el contacto a partir del teléfono que escribió el cliente en el

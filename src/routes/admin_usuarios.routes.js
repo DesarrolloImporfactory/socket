@@ -25,4 +25,19 @@ router.get(
   ctrl.metricasGestionAdmin,
 );
 
+// Acceso permanente (plan gratuito sin vencimiento) y complementos a mano
+// (cupos extra, ImporKiller) sin pasar por Stripe → solo super_administrador.
+router.post(
+  '/acceso_permanente',
+  requireSuperAdmin,
+  ctrl.accesoPermanenteAdmin,
+);
+router.post('/complementos', requireSuperAdmin, ctrl.complementosAdmin);
+// Meses gratis: suscripción real en Stripe con trial de N meses y cobro después.
+router.post(
+  '/suscripcion_cortesia',
+  requireSuperAdmin,
+  ctrl.suscripcionCortesiaAdmin,
+);
+
 module.exports = router;

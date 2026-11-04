@@ -8,6 +8,21 @@
  *   node scripts/espiaMercado.js tablas
  *       Crea las tablas espia_* si no existen (CREATE TABLE IF NOT EXISTS).
  *
+ *   node scripts/espiaMercado.js proveedor --pais EC [--q "parlante bluetooth"]
+ *       Lee una página chica del catálogo real (solo desde el server: en local
+ *       Dropi responde «Access denied») y muestra, por producto, el proveedor
+ *       que resolvemos y los campos de texto del objeto `user` de Dropi. Sirve
+ *       para afinar nombreProveedorDe cuando «Proveedor» muestra a la persona
+ *       (Juan) y no a la tienda (Quality Gifts).
+ *
+ *   node scripts/espiaMercado.js proveedores --pais EC [--campo store.name] [--aplicar] [--max-paginas N]
+ *       Recorre el catálogo real completo (solo server) y compara el nombre de
+ *       proveedor que resolvemos con el guardado en espia_producto. Sin
+ *       --aplicar solo muestra el resumen y los primeros cambios; con --aplicar
+ *       actualiza proveedor_nombre de todos los que cambian. --campo fuerza la
+ *       clave del objeto `user` de Dropi (acepta ruta con punto) por si el
+ *       nombre de la tienda viene en un campo que nombreProveedorDe no prueba.
+ *
  *   node scripts/espiaMercado.js mock-generar --dir <carpeta> [--pais QA] [--escenario 1|2] [--paginas 3]
  *       Escribe respuestas de /products/index inventadas con la forma real de
  *       Dropi. Escenario 1 = foto inicial; escenario 2 = la misma tienda un día
@@ -257,10 +272,108 @@ async function limpiar() {
   });
 }
 
+/* Proveedor de los productos reales: qué trae Dropi en `user` y qué resolvemos. */
+async function proveedor() {
+  const svc = require('../src/services/espia_mercado.service');
+  const dropiService = require('../src/services/dropi.service');
+  const { decryptToken } = require('../src/utils/cryptoToken');
+  const pais = String(opt('pais', 'EC')).toUpperCase();
+  const keywords = opt('q', '') === true ? '' : String(opt('q', ''));
+  await conBD(async () => {
+  const cuenta = await svc.cuentaDe(pais);
+  const key = decryptToken(cuenta.token_enc);
+  if (!key) throw new Error('No se pudo descifrar el token de la cuenta');
+  const data = await dropiService.listProductsIndex({
+    integrationKey: key,
+    country_code: pais,
+    payload: { pageSize: 5, startData: 0, no_count: true, order_by: 'id', order_type: 'asc', keywords },
+  });
+  const objetos = Array.isArray(data?.objects) ? data.objects : [];
+  console.log(`${pais} · cuenta ${cuenta.descripcion} · ${objetos.length} productos${keywords ? ` para «${keywords}»` : ''}`);
+  const sensible = /token|password|cellphone|phone|email|document|identification|address|^dir$|wallet/i;
+  for (const p of objetos) {
+    const ficha = svc._interno.fichaDe(p);
+    const u = p.user && typeof p.user === 'object' ? p.user : {};
+    const textos = {};
+    for (const k of Object.keys(u)) if (!sensible.test(k) && (typeof u[k] === 'string' || typeof u[k] === 'number')) textos[k] = u[k];
+    console.log(`\n#${p.id} ${p.name}\n  proveedor resuelto: ${ficha.proveedor_nombre || '(vacío)'}\n  claves de user: ${Object.keys(u).join(', ') || '(sin user)'}\n  textos de user: ${JSON.stringify(textos)}`);
+    for (const k of ['supplier', 'shop', 'store']) if (p[k]) console.log(`  ${k}: ${JSON.stringify(p[k]).slice(0, 300)}`);
+  }
+  });
+}
+
+/* Reparación masiva del proveedor: recorre todo el catálogo y corrige espia_producto. */
+async function proveedores() {
+  const pais = String(opt('pais', 'EC')).toUpperCase();
+  const campo = opt('campo', '');
+  const aplicar = opt('aplicar', false) === true;
+  const maxPaginas = Number(opt('max-paginas', 0));
+  await conBD(async () => {
+    const svc = require('../src/services/espia_mercado.service');
+    const { db } = require('../src/database/config');
+    const { QueryTypes } = require('sequelize');
+    const leerCampo = (u, ruta) => {
+      let v = u;
+      for (const k of String(ruta).split('.')) v = v && typeof v === 'object' ? v[k] : undefined;
+      return v && typeof v === 'object' ? String(v.name ?? v.nombre ?? '') : String(v ?? '');
+    };
+    const nombreDe = (p) => {
+      const forzado = campo && typeof campo === 'string' ? leerCampo(p.user, campo).trim() : '';
+      return (forzado || svc._interno.nombreProveedorDe(p) || '').slice(0, 200) || null;
+    };
+    const actuales = new Map(
+      (await db.query(`SELECT dropi_product_id, proveedor_nombre FROM espia_producto WHERE pais = :pais`, { replacements: { pais }, type: QueryTypes.SELECT })).map((r) => [
+        Number(r.dropi_product_id),
+        r.proveedor_nombre,
+      ]),
+    );
+    console.log(`${pais}: ${actuales.size} productos en espia_producto · ${aplicar ? 'APLICANDO cambios' : 'solo lectura (usa --aplicar para escribir)'}${campo ? ` · campo forzado «${campo}»` : ''}`);
+    let vistos = 0;
+    let cambios = 0;
+    let sinNombre = 0;
+    let mostrados = 0;
+    let paginas = 0;
+    const ejemplo = [];
+    for await (const productos of svc._interno.paginasDropi(pais, {
+      maxPaginas,
+      onRateLimit: (n, pag) => console.log(`  429 de Dropi en la página ${pag} (reintento ${n}), esperando…`),
+      onCorte: (n, pag) => console.log(`  Dropi sin responder en la página ${pag} (reintento ${n}), esperando…`),
+    })) {
+      paginas += 1;
+      for (const p of productos) {
+        const id = Number(p.id);
+        if (!Number.isFinite(id)) continue;
+        vistos += 1;
+        const nuevo = nombreDe(p);
+        if (!nuevo) sinNombre += 1;
+        if (paginas === 1 && ejemplo.length < 3) ejemplo.push(`#${id} ${p.name} → ${nuevo || '(vacío)'} · user: ${JSON.stringify(svc._interno.camposProveedor(p))}`);
+        if (!actuales.has(id) || actuales.get(id) === nuevo) continue;
+        cambios += 1;
+        if (mostrados < 15) {
+          mostrados += 1;
+          console.log(`  #${id} ${String(p.name || '').slice(0, 50)}: «${actuales.get(id) || ''}» → «${nuevo || ''}»`);
+        }
+        if (aplicar) {
+          await db.query(`UPDATE espia_producto SET proveedor_nombre = :nombre WHERE pais = :pais AND dropi_product_id = :id`, {
+            replacements: { nombre: nuevo, pais, id },
+            type: QueryTypes.UPDATE,
+          });
+        }
+      }
+      if (paginas % 50 === 0) console.log(`  … ${paginas} páginas, ${vistos} productos, ${cambios} cambios`);
+    }
+    console.log(`\nEjemplo de la primera página:\n  ${ejemplo.join('\n  ')}`);
+    console.log(`\n${paginas} páginas · ${vistos} productos leídos · ${cambios} ${aplicar ? 'actualizados' : 'cambiarían'} · ${sinNombre} sin nombre de proveedor`);
+    if (!aplicar && cambios) console.log('Nada se escribió. Si los nombres nuevos son los de la tienda, repite con --aplicar.');
+  });
+}
+
 (async () => {
   try {
     switch (cmd) {
       case 'probar': probar(); break;
+      case 'proveedor': await proveedor(); break;
+      case 'proveedores': await proveedores(); break;
       case 'tablas': await tablas(); break;
       case 'mock-generar': mockGenerar(); break;
       case 'pasada': await pasada(); break;

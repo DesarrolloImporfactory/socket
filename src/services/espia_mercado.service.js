@@ -1,19 +1,20 @@
 'use strict';
 
 /**
- * espia_mercado.service.js — Espía de mercado (Dropkiller propio, 30-oct-2026).
+ * espia_mercado.service.js — ImporKiller (Dropkiller propio, 30-oct-2026).
  *
  * Tres piezas:
- *  1. Recolector: recorre el catálogo público de Dropi de un país con la llave
- *     de una integración NUESTRA (Global Outlet: EC 473, MX 891), toma la foto
- *     del stock por (producto, bodega, variación) y suma ventas por baja de
- *     stock (utils/espiaMercadoCalc). Corre en el servidor: la IP está en la
- *     lista blanca de Dropi, en local da 401. Para probar en local se usan
- *     respuestas guardadas (ESPIA_MOCK_DIR o `fuente: 'mock'`).
+ *  1. Recolector: recorre el catálogo público de Dropi de un país (EC, MX, CO)
+ *     con el token de integración de una cuenta de Dropi registrada por el
+ *     super admin en la pantalla (tabla espia_cuenta; si hay varias por país
+ *     se turnan). Toma la foto del stock por (producto, bodega, variación) y
+ *     suma ventas por baja de stock (utils/espiaMercadoCalc). Corre en el
+ *     servidor: la IP está en la lista blanca de Dropi, en local da 401. Para
+ *     probar en local se usan respuestas guardadas (ESPIA_MOCK_DIR o `fuente: 'mock'`).
  *  2. Anuncios y tiendas: lo que la extensión de Chrome «Espía de tiendas» ve
  *     en la Biblioteca de anuncios de Meta llega por POST /espia/anuncios; de
  *     cada dominio nuevo se consulta /products.json (Shopify) en segundo plano.
- *  3. Consultas de la pantalla /espia-mercado y el reporte diario.
+ *  3. Consultas de la pantalla /imporkiller y el reporte diario.
  *
  * Dropi limita por IP del servidor: todas las salidas pasan por
  * services/dropi.service (limitador global). Ante un 429 el recolector se
@@ -26,13 +27,14 @@ const axios = require('axios');
 const { QueryTypes } = require('sequelize');
 const { db } = require('../database/config');
 const AppError = require('../utils/appError');
-const { decryptToken } = require('../utils/cryptoToken');
+const { encryptToken, decryptToken, last4 } = require('../utils/cryptoToken');
 const dropiService = require('./dropi.service');
 const calc = require('../utils/espiaMercadoCalc');
 const {
   EspiaPasada,
   EspiaTienda,
   EspiaSeguimiento,
+  EspiaCuenta,
 } = require('../models/espia_mercado.model');
 
 const TAM_PAGINA = 40; // lo que de verdad devuelve Dropi (pageSize > 100 → vacío)
@@ -44,17 +46,25 @@ const FRENO_MS = Number(process.env.ESPIA_FRENO_MS) || 60 * 60 * 1000;
 // 15 min) no tumba la pasada entera, como pasó con MX el 31-10 en la página 19.
 const PAUSA_429_MS = 5 * 60 * 1000;
 const MAX_REINTENTOS_429 = 3;
+// Un corte de Dropi (5xx, sin respuesta, timeout: code DROPI_UNAVAILABLE) no
+// tumba la pasada: se espera 1 min y se repite la página hasta 3 veces. Entre
+// el 31-10 y el 04-11 tres pasadas de EC murieron por «interferencias» de un
+// solo minuto a mitad del catálogo.
+const PAUSA_CORTE_MS = 60 * 1000;
+const MAX_REINTENTOS_CORTE = 3;
 const PURGA_DIAS = 120;
 const DIAS_PARA_INACTIVO = 60; // como Dropkiller: un anuncio no visto en 60 días deja de estar activo
 // QA = país de pruebas: solo para pasadas con respuestas guardadas (mock); se
 // limpia con `node scripts/espiaMercado.js limpiar --pais QA --si`.
-const PAISES = ['EC', 'MX', 'QA'];
+const PAISES = ['EC', 'MX', 'CO', 'QA'];
+const PAISES_REALES = ['EC', 'MX', 'CO'];
+const NOMBRE_PAIS = { EC: 'Ecuador', MX: 'México', CO: 'Colombia', QA: 'Pruebas (QA)' };
 
-// Cuenta propia por país (configuraciones.id). Son cuentas NUESTRAS (Global
-// Outlet, la de pruebas en EC), nunca la de un cliente: si Dropi frena la
-// cuenta, no tumba a nadie. Se usa la integración Dropi activa de esa
-// configuración en ese país; no hace falta ninguna variable de entorno
-// (DROPI_ESPIA_CONFIGURACION_EC/_MX solo si algún día se quiere cambiar).
+// Respaldo mientras un país no tiene cuentas registradas en espia_cuenta: la
+// integración Dropi activa de una configuración NUESTRA de ChatCenter (Global
+// Outlet: EC 610, MX 822). Desde el 04-11 la regla es registrar las cuentas
+// desde la pantalla; esto solo evita que EC/MX se queden sin fotos en el
+// cambio. CO no tiene respaldo: necesita una cuenta registrada.
 const CUENTA_POR_PAIS = {
   EC: Number(process.env.DROPI_ESPIA_CONFIGURACION_EC) || 610,
   MX: Number(process.env.DROPI_ESPIA_CONFIGURACION_MX) || 822,
@@ -72,7 +82,7 @@ const q = (sql, replacements = {}, type = QueryTypes.SELECT, transaction) =>
 
 const validarPais = (pais) => {
   const p = String(pais || 'EC').toUpperCase();
-  if (!PAISES.includes(p)) throw new AppError(`País no soportado: ${p}. Usa EC o MX.`, 400);
+  if (!PAISES.includes(p)) throw new AppError(`País no soportado: ${p}. Usa EC, MX o CO.`, 400);
   return p;
 };
 
@@ -90,9 +100,63 @@ class FrenoError extends Error {
    1. RECOLECTOR
    ========================================================================= */
 
-/** Cuenta Dropi que usa el recolector para un país (sin la llave). */
+/* ---------- Cuentas de Dropi con las que se lee el catálogo ---------- */
+
+const RE_CORREO = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Fila de espia_cuenta para la pantalla: nunca el token, solo sus 4 últimos. */
+function cuentaPublica(c) {
+  if (!c) return null;
+  const o = typeof c.get === 'function' ? c.get({ plain: true }) : { ...c };
+  delete o.token_enc;
+  return o;
+}
+
+/**
+ * Cuenta con la que el recolector lee el catálogo de un país. Prioridad:
+ *  1. cuentas registradas y activas en espia_cuenta, turnándose: va primero
+ *     la que lleva más tiempo sin usarse, y las que fallaron en su último
+ *     intento se dejan para el final;
+ *  2. respaldo: la integración Dropi activa de CUENTA_POR_PAIS (solo EC/MX).
+ * Devuelve { origen: 'registrada'|'configuracion', id, correo, etiqueta,
+ * token_enc, descripcion } sin descifrar nada.
+ */
+// Mientras no se corra el CREATE TABLE de espia_cuenta (misma BD en dev y
+// prod), el recolector sigue con el respaldo en vez de caerse.
+const sinTabla = (err) => (err?.original?.code || err?.parent?.code || err?.code) === 'ER_NO_SUCH_TABLE';
+
 async function cuentaDe(pais) {
+  let registrada = null;
+  try {
+    registrada = await EspiaCuenta.findOne({
+      where: { pais, activa: 1 },
+      order: [
+        [db.literal('(ultimo_error_en IS NOT NULL AND (ultimo_ok IS NULL OR ultimo_error_en > ultimo_ok))'), 'ASC'],
+        [db.literal('ultimo_uso IS NULL'), 'DESC'],
+        ['ultimo_uso', 'ASC'],
+        ['id', 'ASC'],
+      ],
+      raw: true,
+    });
+  } catch (err) {
+    if (!sinTabla(err)) throw err;
+    console.warn('[espia-mercado] falta la tabla espia_cuenta (espia_mercado_migration.sql): uso el respaldo por configuración');
+  }
+  if (registrada) {
+    return {
+      origen: 'registrada',
+      id: registrada.id,
+      correo: registrada.correo,
+      etiqueta: registrada.etiqueta,
+      token_enc: registrada.token_enc,
+      token_last4: registrada.token_last4,
+      descripcion: registrada.correo,
+    };
+  }
   const idc = CUENTA_POR_PAIS[pais];
+  if (!idc) {
+    throw new AppError(`${NOMBRE_PAIS[pais] || pais} no tiene ninguna cuenta de Dropi registrada: agrégala en «Cuentas de mapeo»`, 400);
+  }
   const [row] = await q(
     `SELECT di.id, di.country_code, di.integration_key_enc, di.store_name,
             di.id_configuracion, c.nombre_configuracion
@@ -105,60 +169,256 @@ async function cuentaDe(pais) {
     { idc, pais },
   );
   if (!row) {
-    throw new AppError(`La configuración ${idc} no tiene una integración Dropi activa de ${pais}`, 500);
+    throw new AppError(
+      `${NOMBRE_PAIS[pais] || pais} no tiene cuentas registradas y la configuración ${idc} no tiene una integración Dropi activa: agrega una cuenta en «Cuentas de mapeo»`,
+      400,
+    );
   }
-  return row;
+  return {
+    origen: 'configuracion',
+    id: row.id,
+    correo: null,
+    etiqueta: `${row.store_name} · ${row.nombre_configuracion}`,
+    token_enc: row.integration_key_enc,
+    token_last4: null,
+    id_configuracion: row.id_configuracion,
+    store_name: row.store_name,
+    nombre_configuracion: row.nombre_configuracion,
+    descripcion: `cfg ${row.id_configuracion}`,
+  };
 }
 
-async function obtenerLlave(pais) {
-  const row = await cuentaDe(pais);
-  const key = decryptToken(row.integration_key_enc);
-  if (!key) throw new AppError(`La llave de la integración #${row.id} no se pudo descifrar`, 500);
-  return { key, store_name: row.store_name, id: row.id };
+async function obtenerLlave(pais, cuenta) {
+  const c = cuenta || (await cuentaDe(pais));
+  const key = decryptToken(c.token_enc);
+  if (!key) {
+    throw new AppError(
+      c.origen === 'registrada'
+        ? `El token de la cuenta ${c.correo} no se pudo descifrar (¿cambió DROPI_TOKEN_ENC_KEY?)`
+        : `La llave de la integración #${c.id} no se pudo descifrar`,
+      500,
+    );
+  }
+  if (c.origen === 'registrada') {
+    await EspiaCuenta.update({ ultimo_uso: ahoraSql() }, { where: { id: c.id } }).catch(() => {});
+  }
+  return { key, cuenta: c };
+}
+
+/** Anota en espia_cuenta cómo le fue a la cuenta en la última lectura. */
+async function anotarCuenta(cuenta, { ok, error, pasada = false } = {}) {
+  if (!cuenta || cuenta.origen !== 'registrada') return;
+  const ahora = ahoraSql();
+  const cambios = ok
+    ? { ultimo_ok: ahora, ultimo_error: null, ultimo_error_en: null }
+    : { ultimo_error: String(error || 'Error').slice(0, 500), ultimo_error_en: ahora };
+  if (pasada && ok) cambios.pasadas = db.literal('pasadas + 1');
+  await EspiaCuenta.update(cambios, { where: { id: cuenta.id } }).catch(() => {});
+}
+
+const esCorte = (err) => err?.code === 'DROPI_UNAVAILABLE';
+const esRateLimit = (err) => err?.code === 'DROPI_RATE_LIMIT' || err?.statusCode === 429;
+
+/**
+ * Lee una página del catálogo con un token dado. Es lo que usan el recolector
+ * y «Probar» de las cuentas (una sola página chica).
+ */
+function leerPagina(pais, key, { startData = 0, pageSize = TAM_PAGINA } = {}) {
+  return dropiService.listProductsIndex({
+    integrationKey: key,
+    country_code: pais,
+    payload: {
+      pageSize,
+      startData,
+      no_count: true,
+      order_by: 'id',
+      order_type: 'asc',
+      keywords: '',
+    },
+  });
 }
 
 /**
- * Páginas del catálogo real. Ante un 429 espera PAUSA_429_MS y repite la misma
- * página (avisa por onRateLimit); tras MAX_REINTENTOS_429 seguidos lanza FrenoError.
+ * Páginas del catálogo real con la cuenta `cuenta` (o la que toque por turno).
+ * Ante un 429 espera PAUSA_429_MS y repite la misma página (avisa por
+ * onRateLimit); tras MAX_REINTENTOS_429 seguidos lanza FrenoError. Ante un
+ * corte de Dropi (5xx / sin respuesta) espera PAUSA_CORTE_MS y repite hasta
+ * MAX_REINTENTOS_CORTE veces. Cualquier otro error (401 token malo, 403 IP)
+ * sale de inmediato y queda anotado en la cuenta.
  */
-async function* paginasDropi(pais, { maxPaginas = 0, onRateLimit } = {}) {
-  const { key } = await obtenerLlave(pais);
+async function* paginasDropi(pais, { maxPaginas = 0, onRateLimit, onCorte, cuenta } = {}) {
+  const { key, cuenta: usada } = await obtenerLlave(pais, cuenta);
   let startData = 0;
   let n = 0;
   let reintentos429 = 0;
+  let reintentosCorte = 0;
   for (;;) {
     if (maxPaginas && n >= maxPaginas) return;
     let data;
     try {
-      data = await dropiService.listProductsIndex({
-        integrationKey: key,
-        country_code: pais,
-        payload: {
-          pageSize: TAM_PAGINA,
-          startData,
-          no_count: true,
-          order_by: 'id',
-          order_type: 'asc',
-          keywords: '',
-        },
-      });
+      data = await leerPagina(pais, key, { startData });
     } catch (err) {
-      if (err?.code === 'DROPI_RATE_LIMIT' || err?.statusCode === 429) {
+      if (esRateLimit(err)) {
         reintentos429 += 1;
         if (typeof onRateLimit === 'function') onRateLimit(reintentos429, n + 1, err.message);
         if (reintentos429 > MAX_REINTENTOS_429) throw new FrenoError(err.message);
         await dormir(PAUSA_429_MS);
         continue; // misma página, mismo startData
       }
+      if (esCorte(err) && reintentosCorte < MAX_REINTENTOS_CORTE) {
+        reintentosCorte += 1;
+        if (typeof onCorte === 'function') onCorte(reintentosCorte, n + 1, err.message);
+        await dormir(PAUSA_CORTE_MS);
+        continue;
+      }
+      await anotarCuenta(usada, { ok: false, error: err.message });
       throw err;
     }
     reintentos429 = 0;
+    reintentosCorte = 0;
     const objetos = Array.isArray(data?.objects) ? data.objects : [];
     if (!objetos.length) return;
     n += 1;
     yield objetos;
     startData += TAM_PAGINA;
     await dormir(PAUSA_PAGINA_MS);
+  }
+}
+
+/** Cuentas registradas (sin token) con un resumen por país, para la pantalla. */
+async function listarCuentas(paisCrudo) {
+  const where = paisCrudo ? { pais: validarPais(paisCrudo) } : {};
+  let filas = [];
+  try {
+    filas = await EspiaCuenta.findAll({ where, order: [['pais', 'ASC'], ['activa', 'DESC'], ['id', 'ASC']], raw: true });
+  } catch (err) {
+    if (!sinTabla(err)) throw err;
+    throw new AppError('Falta crear la tabla espia_cuenta (espia_mercado_migration.sql, sección 04-11-2026)', 500);
+  }
+  const cuentas = filas.map(cuentaPublica);
+  const resumen = {};
+  for (const p of PAISES_REALES) {
+    const del = cuentas.filter((c) => c.pais === p);
+    resumen[p] = {
+      total: del.length,
+      activas: del.filter((c) => Number(c.activa) === 1).length,
+      con_error: del.filter((c) => Number(c.activa) === 1 && c.ultimo_error_en && (!c.ultimo_ok || new Date(c.ultimo_error_en) > new Date(c.ultimo_ok))).length,
+      respaldo: CUENTA_POR_PAIS[p] || null,
+    };
+  }
+  return { cuentas, resumen };
+}
+
+function limpiarToken(token) {
+  const t = String(token || '').trim().replace(/^bearer\s+/i, '').replace(/^dropi-integration-key:\s*/i, '').trim();
+  if (t.length < 20) throw new AppError('El token de integración se ve incompleto: cópialo entero desde Dropi', 400);
+  if (/\s/.test(t)) throw new AppError('El token no debe llevar espacios ni saltos de línea', 400);
+  return t;
+}
+
+/**
+ * Registra (o reemplaza el token de) una cuenta de Dropi para un país. El
+ * token se cifra con la misma llave que dropi_integrations y no vuelve nunca
+ * al front. Si ya existe (pais + correo) se actualiza el token y se reactiva.
+ */
+async function guardarCuenta(body = {}, sessionUser) {
+  const pais = validarPais(body.pais);
+  if (pais === 'QA') throw new AppError('QA solo usa respuestas guardadas; no lleva cuentas', 400);
+  const correo = String(body.correo || '').trim().toLowerCase();
+  if (!RE_CORREO.test(correo)) throw new AppError('Escribe el correo con el que esa cuenta entra a Dropi', 400);
+  const token = limpiarToken(body.token);
+  const etiqueta = String(body.etiqueta || '').trim().slice(0, 120) || null;
+  const ahora = ahoraSql();
+  const datos = {
+    token_enc: encryptToken(token),
+    token_last4: last4(token),
+    etiqueta,
+    activa: 1,
+    ultimo_error: null,
+    ultimo_error_en: null,
+    actualizado_en: ahora,
+  };
+  let fila = await EspiaCuenta.findOne({ where: { pais, correo } });
+  let creada = false;
+  if (fila) {
+    await fila.update(datos);
+  } else {
+    fila = await EspiaCuenta.create({ pais, correo, ...datos, creado_por: sessionUser?.id_sub_usuario || null, creado_en: ahora });
+    creada = true;
+  }
+  return { creada, cuenta: cuentaPublica(fila) };
+}
+
+async function actualizarCuenta(id, body = {}) {
+  const fila = await EspiaCuenta.findByPk(Number(id));
+  if (!fila) throw new AppError('Esa cuenta ya no existe', 404);
+  const cambios = { actualizado_en: ahoraSql() };
+  if (body.activa !== undefined) cambios.activa = body.activa ? 1 : 0;
+  if (body.etiqueta !== undefined) cambios.etiqueta = String(body.etiqueta || '').trim().slice(0, 120) || null;
+  if (body.token) {
+    const token = limpiarToken(body.token);
+    cambios.token_enc = encryptToken(token);
+    cambios.token_last4 = last4(token);
+    cambios.ultimo_error = null;
+    cambios.ultimo_error_en = null;
+  }
+  await fila.update(cambios);
+  return cuentaPublica(fila);
+}
+
+async function eliminarCuenta(id) {
+  const n = await EspiaCuenta.destroy({ where: { id: Number(id) } });
+  if (!n) throw new AppError('Esa cuenta ya no existe', 404);
+  return { eliminada: true };
+}
+
+/**
+ * Prueba un token contra Dropi leyendo UNA página chica del catálogo del país.
+ * Acepta { id } (cuenta guardada) o { pais, token } (antes de guardar). Solo
+ * funciona desde el servidor (la IP está en la lista blanca de Dropi).
+ */
+async function probarCuenta(body = {}) {
+  let pais;
+  let key;
+  let fila = null;
+  if (body.id) {
+    fila = await EspiaCuenta.findByPk(Number(body.id), { raw: true });
+    if (!fila) throw new AppError('Esa cuenta ya no existe', 404);
+    pais = fila.pais;
+    key = decryptToken(fila.token_enc);
+    if (!key) throw new AppError(`El token de ${fila.correo} no se pudo descifrar (¿cambió DROPI_TOKEN_ENC_KEY?)`, 500);
+  } else {
+    pais = validarPais(body.pais);
+    if (pais === 'QA') throw new AppError('QA no tiene catálogo real', 400);
+    key = limpiarToken(body.token);
+  }
+  const t0 = Date.now();
+  try {
+    const data = await leerPagina(pais, key, { startData: 0, pageSize: 5 });
+    const objetos = Array.isArray(data?.objects) ? data.objects : [];
+    if (fila) await anotarCuenta({ origen: 'registrada', id: fila.id }, { ok: true });
+    return {
+      ok: true,
+      pais,
+      productos: objetos.length,
+      ms: Date.now() - t0,
+      ejemplo: objetos[0]
+        ? {
+            id: objetos[0].id,
+            nombre: String(objetos[0].name || '').slice(0, 80),
+            // Para afinar de dónde sale el nombre de la tienda del proveedor.
+            proveedor: nombreProveedorDe(objetos[0]) || null,
+            campos_proveedor: camposProveedor(objetos[0]),
+          }
+        : null,
+    };
+  } catch (err) {
+    const motivo =
+      err?.statusCode === 401 || err?.statusCode === 403
+        ? `Dropi rechazó el token (${err.statusCode}): revisa que sea el de ${NOMBRE_PAIS[pais]} y que la integración siga activa en Dropi`
+        : err.message;
+    if (fila) await anotarCuenta({ origen: 'registrada', id: fila.id }, { ok: false, error: motivo });
+    return { ok: false, pais, ms: Date.now() - t0, error: motivo, codigo: err?.code || null, status: err?.statusCode || null };
   }
 }
 
@@ -212,7 +472,42 @@ const num = (v) => {
   return Number.isFinite(n) ? n : null;
 };
 
+/**
+ * Nombre del proveedor tal como lo muestra Dropi: el de la tienda, no el de
+ * la persona. `user.name` es el nombre de pila del dueño de la cuenta (el
+ * producto 129102 de EC decía «Juan» cuando Dropi muestra «Quality Gifts»);
+ * se prefiere cualquier campo de tienda que venga en el objeto y `name` solo
+ * queda de respaldo. `camposProveedor` lista lo que trae el objeto para que
+ * «Probar» en Cuentas de mapeo lo enseñe y se pueda afinar.
+ */
+const CAMPOS_TIENDA = ['store', 'store_name', 'shop', 'shop_name', 'business_name', 'company', 'company_name', 'nombre_tienda', 'trade_name', 'brand', 'display_name', 'nickname'];
+const texto = (v) => {
+  if (v == null) return '';
+  if (typeof v === 'object') return texto(v.name ?? v.nombre ?? '');
+  const s = String(v).trim();
+  return s && s !== 'null' && s !== 'undefined' ? s : '';
+};
+function nombreProveedorDe(p) {
+  const u = p?.user && typeof p.user === 'object' ? p.user : {};
+  for (const origen of [p?.supplier, p?.shop, p?.store]) {
+    const s = texto(origen);
+    if (s) return s;
+  }
+  for (const k of CAMPOS_TIENDA) {
+    const s = texto(u[k]);
+    if (s) return s;
+  }
+  const persona = [texto(u.name), texto(u.surname ?? u.last_name)].filter(Boolean).join(' ');
+  return persona || '';
+}
+function camposProveedor(p) {
+  const u = p?.user && typeof p.user === 'object' ? p.user : null;
+  if (!u) return [];
+  return Object.keys(u).filter((k) => !/token|password|cellphone|phone|email|document|identification|address|dir\b|wallet/i.test(k));
+}
+
 function fichaDe(p) {
+  const proveedor = nombreProveedorDe(p);
   return {
     dropi_product_id: Number(p.id),
     nombre: String(p.name || '').slice(0, 300),
@@ -220,7 +515,7 @@ function fichaDe(p) {
     tipo: String(p.type || '').slice(0, 12) || null,
     sku: p.sku ? String(p.sku).slice(0, 120) : null,
     proveedor_id: p.user?.id != null ? Number(p.user.id) : null,
-    proveedor_nombre: p.user?.name ? String(p.user.name).slice(0, 200) : null,
+    proveedor_nombre: proveedor ? proveedor.slice(0, 200) : null,
     precio: num(p.sale_price),
     sugerido: num(p.suggested_price),
     categoria: p.categories?.[0]?.name ? String(p.categories[0].name).slice(0, 200) : null,
@@ -363,9 +658,26 @@ async function pasada(paisCrudo, opts = {}) {
   }
   corriendo[pais] = true;
   const inicio = ahoraSql();
-  const registro = await EspiaPasada.create({ pais, fuente, inicio, estado: 'corriendo' });
+  // La cuenta se resuelve antes de abrir la bitácora: si el país no tiene
+  // ninguna, la pasada no queda como error, simplemente no arranca.
+  let cuenta = null;
+  if (fuente !== 'mock') {
+    try {
+      cuenta = await cuentaDe(pais);
+    } catch (e) {
+      corriendo[pais] = false;
+      await q(`DO RELEASE_LOCK(:n)`, { n: lockName }, QueryTypes.RAW).catch(() => {});
+      throw e;
+    }
+  }
+  // `cuenta` es columna nueva (04-11): si todavía no corrió el ALTER de espia_pasada, se registra sin ella.
+  const registro = await EspiaPasada.create({ pais, fuente, inicio, estado: 'corriendo', cuenta: cuenta?.descripcion || null }).catch((e) => {
+    if ((e?.original?.code || e?.parent?.code || e?.code) !== 'ER_BAD_FIELD_ERROR') throw e;
+    console.warn('[espia-mercado] falta la columna espia_pasada.cuenta (espia_mercado_migration.sql)');
+    return EspiaPasada.create({ pais, fuente, inicio, estado: 'corriendo' }, { fields: ['pais', 'fuente', 'inicio', 'estado'] });
+  });
   const stats = { paginas: 0, productos: 0, fotos_escritas: 0, ventas_sumadas: 0, errores_429: 0 };
-  log(`▶ pasada ${pais} (${fuente}) #${registro.id}`);
+  log(`▶ pasada ${pais} (${fuente}) #${registro.id}${cuenta ? ` · cuenta ${cuenta.descripcion}` : ''}`);
 
   try {
     const paginas =
@@ -373,9 +685,13 @@ async function pasada(paisCrudo, opts = {}) {
         ? paginasMock(mockDir, pais, { maxPaginas: opts.maxPaginas })
         : paginasDropi(pais, {
             maxPaginas: opts.maxPaginas,
+            cuenta,
             onRateLimit: (intento, pagina, msg) => {
               stats.errores_429 += 1;
               log(`⏳ ${pais} 429 en pág ${pagina} (intento ${intento}/${MAX_REINTENTOS_429}): espero ${PAUSA_429_MS / 60000} min · ${msg}`);
+            },
+            onCorte: (intento, pagina, msg) => {
+              log(`⏳ ${pais} corte de Dropi en pág ${pagina} (intento ${intento}/${MAX_REINTENTOS_CORTE}): espero ${PAUSA_CORTE_MS / 1000} s · ${msg}`);
             },
           });
 
@@ -396,6 +712,7 @@ async function pasada(paisCrudo, opts = {}) {
     );
     if (!opts.maxPaginas) await recalcularMetricas(pais, log); // una prueba corta no cambia las métricas
     await registro.update({ ...stats, fin: ahoraSql(), estado: 'ok' });
+    await anotarCuenta(cuenta, { ok: true, pasada: !opts.maxPaginas });
     log(`✔ pasada ${pais} #${registro.id}: ${stats.paginas} págs · ${stats.productos} productos · ${stats.fotos_escritas} fotos · ${stats.ventas_sumadas} ventas`);
     return { id: registro.id, ...stats, estado: 'ok' };
   } catch (err) {
@@ -412,6 +729,7 @@ async function pasada(paisCrudo, opts = {}) {
       return { id: registro.id, ...stats, estado: 'frenada' };
     }
     await registro.update({ ...stats, fin: ahoraSql(), estado: 'error', error: String(err.message).slice(0, 500) });
+    await anotarCuenta(cuenta, { ok: false, error: err.message });
     log(`✖ pasada ${pais} error: ${err.message}`);
     throw err;
   } finally {
@@ -631,7 +949,7 @@ async function metricasLote(paisCrudo, idsCrudos = []) {
       ventas_7d_prev: Number(r.ventas_7d_prev), ventas_30d: Number(r.ventas_30d),
       n_iguales: Number(r.n_iguales),
       serie_14d: dias14.map((d) => m[d] || 0),
-      url_imporchat: `${FRONTEND_URL}/espia-mercado?pais=${pais}&tab=productos&producto=${r.dropi_product_id}`,
+      url_imporchat: `${FRONTEND_URL}/imporkiller?pais=${pais}&tab=productos&producto=${r.dropi_product_id}`,
     };
   });
   return { pais, dias_medidos: Number(dias?.n || 0), items };
@@ -1284,25 +1602,54 @@ async function estado(paisCrudo) {
   );
   const [tie] = await q(`SELECT COUNT(*) AS n FROM espia_tienda WHERE pais_principal = :pais OR pais_principal IS NULL`, { pais });
   const [vd] = await q(`SELECT COUNT(DISTINCT fecha) AS dias FROM espia_ventas_dia WHERE pais = :pais`, { pais });
+  // Ventas estimadas del último día cerrado (ayer) y lo que va de hoy: el KPI
+  // del cliente siempre tiene un número en vez de «se calcula con la próxima
+  // actualización», que no le decía nada.
+  const [vh] = await q(`SELECT SUM(unidades) AS hoy FROM espia_ventas_dia WHERE pais = :pais AND fecha = CURDATE()`, { pais });
+  const [va] = await q(
+    `SELECT DATE_FORMAT(fecha, '%Y-%m-%d') AS fecha, SUM(unidades) AS unidades
+       FROM espia_ventas_dia WHERE pais = :pais AND fecha < CURDATE()
+      GROUP BY fecha ORDER BY fecha DESC LIMIT 1`,
+    { pais },
+  );
   const [rad] = await q(
     `SELECT SUM(radar_en IS NOT NULL) AS barridos, SUM(n_anuncios > 0) AS con_anuncios, MAX(radar_en) AS ultimo
        FROM espia_producto WHERE pais = :pais`,
     { pais },
   );
+  // Cuentas de Dropi del país: cuántas hay registradas y cuál usaría la próxima pasada.
   let cuenta;
+  let cuentas = { total: 0, activas: 0, con_error: 0, respaldo: CUENTA_POR_PAIS[pais] || null };
   if (pais === 'QA') {
-    cuenta = { id_configuracion: null, nombre_configuracion: 'Pruebas', store_name: 'Mock', integracion_id: null };
+    cuenta = { origen: 'mock', descripcion: 'Mock', etiqueta: 'Pruebas' };
   } else {
     try {
-      const c = await cuentaDe(pais);
-      cuenta = { id_configuracion: c.id_configuracion, nombre_configuracion: c.nombre_configuracion, store_name: c.store_name, integracion_id: c.id };
+      const { resumen } = await listarCuentas(pais);
+      cuentas = resumen[pais] || cuentas;
     } catch (e) {
-      cuenta = { id_configuracion: CUENTA_POR_PAIS[pais], error: e.message };
+      cuentas = { ...cuentas, error: e.message };
+    }
+    try {
+      const c = await cuentaDe(pais);
+      cuenta = {
+        origen: c.origen,
+        id: c.id,
+        correo: c.correo,
+        etiqueta: c.etiqueta,
+        token_last4: c.token_last4,
+        descripcion: c.descripcion,
+        id_configuracion: c.id_configuracion || null,
+        store_name: c.store_name || null,
+        nombre_configuracion: c.nombre_configuracion || null,
+      };
+    } catch (e) {
+      cuenta = { origen: null, error: e.message };
     }
   }
   return {
     pais,
     cuenta,
+    cuentas,
     fuente: process.env.ESPIA_MOCK_DIR ? 'mock' : 'dropi',
     ultima_pasada: ultima || null,
     ultima_completa: ultimaCompleta ? { id: ultimaCompleta.id, fin: ultimaCompleta.fin, productos: ultimaCompleta.productos, paginas: ultimaCompleta.paginas, minutos: ultimaCompleta.fin ? Math.round((new Date(ultimaCompleta.fin) - new Date(ultimaCompleta.inicio)) / 60000) : null } : null,
@@ -1311,6 +1658,8 @@ async function estado(paisCrudo) {
     productos_total: Number(prod?.n || 0),
     productos_ultima_vez: prod?.ultima || null,
     dias_con_ventas: Number(vd?.dias || 0),
+    ventas_hoy: vh?.hoy != null ? Number(vh.hoy) : 0,
+    ventas_ultimo_dia: va ? { fecha: va.fecha, unidades: Number(va.unidades || 0) } : null,
     cron_activo: String(process.env.CRONS_ENABLED ?? 'true').toLowerCase() !== 'false',
     extension: { anuncios_total: Number(anu?.n || 0), tiendas_total: Number(tie?.n || 0), ultimo_envio: anu?.ultima || null },
     radar: { barridos: Number(rad?.barridos || 0), con_anuncios: Number(rad?.con_anuncios || 0), ultimo: rad?.ultimo || null },
@@ -1322,8 +1671,8 @@ const corto = (s, n = 38) => (String(s || '').length > n ? `${String(s).slice(0,
 
 async function reporte(paisCrudo) {
   const pais = validarPais(paisCrudo);
-  const nombrePais = pais === 'MX' ? 'México' : pais === 'QA' ? 'Pruebas (QA)' : 'Ecuador';
-  const enlace = (atajo) => `${FRONTEND_URL}/espia-mercado?pais=${pais}&tab=productos&atajo=${atajo}`;
+  const nombrePais = NOMBRE_PAIS[pais] || pais;
+  const enlace = (atajo) => `${FRONTEND_URL}/imporkiller?pais=${pais}&tab=productos&atajo=${atajo}`;
   const [subieron, sinEscalar, nuevos] = await Promise.all([
     listarProductos({ pais, atajo: 'todos', orden: 'subida', min_v7: 1, limit: 10 }),
     listarProductos({ pais, atajo: 'sin_escalar', orden: 'v7', limit: 10 }),
@@ -1337,12 +1686,60 @@ async function reporte(paisCrudo) {
       ORDER BY nuevos DESC, t.anuncios_activos DESC LIMIT 10`,
   );
   const est = await estado(pais);
+  const dias = Number(est.dias_con_ventas || 0);
+  // Con menos de dos semanas medidas la ventana «7 anteriores» está vacía y el
+  // «vs 0» engaña: hasta entonces el bloque es simplemente «los más vendidos».
+  const comparaSemanas = dias >= 14;
+  const producto = (p) => ({
+    dropi_product_id: p.dropi_product_id,
+    nombre: p.nombre,
+    imagen_url: p.imagen_url || null,
+    proveedor: p.proveedor_nombre || null,
+    categoria: p.categoria || null,
+    precio: p.precio != null ? Number(p.precio) : null,
+    stock: Number(p.stock_actual || 0),
+    ventas_7d: Number(p.ventas_7d || 0),
+    ventas_7d_prev: Number(p.ventas_7d_prev || 0),
+    ventas_30d: Number(p.ventas_30d || 0),
+    ventas_total: Number(p.ventas_total || 0),
+    reabastecimientos: Number(p.reabastecimientos || 0),
+    n_anuncios: Number(p.n_anuncios || 0),
+  });
+  // Lo mismo que el texto de WhatsApp, pero estructurado para que la pantalla
+  // lo pinte como lista (la ficha de cada producto se abre desde ahí).
+  const secciones = [
+    {
+      clave: 'subieron',
+      titulo: comparaSemanas ? 'Los que más subieron esta semana' : 'Los más vendidos esta semana',
+      descripcion: comparaSemanas ? 'Ventas de los últimos 7 días frente a los 7 anteriores.' : `Ventas estimadas de los últimos 7 días (llevamos ${dias} ${dias === 1 ? 'día medido' : 'días medidos'}; la comparación semanal aparece a los 14).`,
+      filtros: { atajo: 'todos', orden: 'subida' },
+      items: subieron.items.map(producto),
+    },
+    {
+      clave: 'sin_escalar',
+      titulo: 'Sin escalar',
+      descripcion: 'Venden entre 10 y 120 a la semana, entre 120 y 500 al mes y tienen stock (≥ 80): hay espacio para pautar más.',
+      filtros: { atajo: 'sin_escalar', orden: 'v7' },
+      items: sinEscalar.items.map(producto),
+      necesita_dias: 30,
+    },
+    {
+      clave: 'nuevos',
+      titulo: 'Nuevos con tracción',
+      descripcion: 'Creados hace 90 días o menos, con 100 a 2.000 ventas estimadas en total.',
+      filtros: { atajo: 'nuevos_traccion', orden: 'v7' },
+      items: nuevos.items.map(producto),
+      necesita_dias: 14,
+    },
+  ];
+  const tiendas = seguidas.map((t) => ({ dominio: t.dominio, nombre: t.nombre || null, anuncios_activos: Number(t.anuncios_activos || 0), nuevos: Number(t.nuevos || 0) }));
+
   const lineas = [];
-  lineas.push(`📡 *Espía de mercado · ${nombrePais}* · ${calc.fechaLocal(new Date(), pais)}`);
+  lineas.push(`📡 *ImporKiller · ${nombrePais}* · ${calc.fechaLocal(new Date(), pais)}`);
   if (!est.ultima_pasada) {
     lineas.push('Todavía no hay una pasada del catálogo. Cuando corra el recolector, este reporte trae los productos.');
   } else {
-    lineas.push(`Catálogo: ${fmt(est.productos_total)} productos · ${est.dias_con_ventas} días medidos`);
+    lineas.push(`Catálogo: ${fmt(est.productos_total)} productos · ${dias} días medidos`);
   }
   const bloque = (titulo, lista, atajo, extra) => {
     lineas.push('');
@@ -1354,7 +1751,12 @@ async function reporte(paisCrudo) {
     }
     lineas.push(`👉 ${enlace(atajo)}`);
   };
-  bloque('🔥 Los que más subieron (7 días vs 7 anteriores)', subieron, 'todos&orden=subida', (p) => `${fmt(p.ventas_7d)} vs ${fmt(p.ventas_7d_prev)} · stock ${fmt(p.stock_actual)}`);
+  bloque(
+    comparaSemanas ? '🔥 Los que más subieron (7 días vs 7 anteriores)' : '🔥 Los más vendidos (últimos 7 días)',
+    subieron,
+    'todos&orden=subida',
+    (p) => (comparaSemanas ? `${fmt(p.ventas_7d)} vs ${fmt(p.ventas_7d_prev)} · stock ${fmt(p.stock_actual)}` : `${fmt(p.ventas_7d)} en 7 d · stock ${fmt(p.stock_actual)}`),
+  );
   bloque('🚀 Sin escalar (7d 10–120, 30d 120–500, stock ≥ 80)', sinEscalar, 'sin_escalar', (p) => `7d ${fmt(p.ventas_7d)} · 30d ${fmt(p.ventas_30d)} · ${corto(p.proveedor_nombre, 18)}`);
   bloque('🌱 Nuevos con tracción (≤ 90 días, 100–2.000 totales)', nuevos, 'nuevos_traccion', (p) => `total ${fmt(p.ventas_total)} · 7d ${fmt(p.ventas_7d)} · reab ${p.reabastecimientos}`);
   if (seguidas.length) {
@@ -1363,11 +1765,23 @@ async function reporte(paisCrudo) {
     for (const t of seguidas) {
       lineas.push(`• ${t.dominio} · ${fmt(t.anuncios_activos)} activos · ${fmt(t.nuevos)} nuevos`);
     }
-    lineas.push(`👉 ${FRONTEND_URL}/espia-mercado?pais=${pais}&tab=tiendas&solo_seguidas=1`);
+    lineas.push(`👉 ${FRONTEND_URL}/imporkiller?pais=${pais}&tab=tiendas&solo_seguidas=1`);
   }
   lineas.push('');
   lineas.push('_Ventas estimadas por baja de stock en Dropi; un traslado o ajuste puede verse como venta._');
-  return { pais, texto: lineas.join('\n'), generado_en: new Date() };
+  return {
+    pais,
+    nombre_pais: nombrePais,
+    fecha: calc.fechaLocal(new Date(), pais),
+    catalogo: Number(est.productos_total || 0),
+    dias_medidos: dias,
+    compara_semanas: comparaSemanas,
+    actualizado_en: est.productos_ultima_vez || null,
+    secciones,
+    tiendas,
+    texto: lineas.join('\n'),
+    generado_en: new Date(),
+  };
 }
 
 /** Manda el reporte por WhatsApp si está configurado el destino. */
@@ -1388,15 +1802,22 @@ async function enviarReporteWhatsapp(paisCrudo) {
     business_phone_id: conf.id_telefono,
     accessToken: conf.token,
     id_configuracion: idConf,
-    responsable: 'Espía de mercado',
+    responsable: 'ImporKiller',
   });
   return { enviado: true, pais, telefono: `…${telefono.slice(-4)}` };
 }
 
 module.exports = {
   PAISES,
+  PAISES_REALES,
+  NOMBRE_PAIS,
   CUENTA_POR_PAIS,
   cuentaDe,
+  listarCuentas,
+  guardarCuenta,
+  actualizarCuenta,
+  eliminarCuenta,
+  probarCuenta,
   pasada,
   listarProductos,
   metricasLote,
@@ -1420,5 +1841,5 @@ module.exports = {
   estado,
   reporte,
   enviarReporteWhatsapp,
-  _interno: { fichaDe, paginasMock, limpiarDominio, dominioDe },
+  _interno: { fichaDe, nombreProveedorDe, camposProveedor, paginasDropi, paginasMock, limpiarDominio, dominioDe },
 };
