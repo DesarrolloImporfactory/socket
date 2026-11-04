@@ -40,17 +40,15 @@ const TOOL_RULES = {
   // chat, y el Dropiboard vive colgado de él.
   dropiboard: (access) => access === 'imporchat' || access === 'both',
 
-  // Espía de mercado (Dropkiller propio). Todavía no se vende: solo entra el
-  // super administrador (ver espiaAcceso.middleware). El día que se abra a
-  // clientes se decide aquí a qué planes: p. ej. `(access) => access === 'imporchat' || access === 'both'`.
-  espia_mercado: () => false,
+  // ImporKiller no entra por aquí: el buscador de productos va con cualquier
+  // plan activo y la extensión/anuncios con el complemento imporkiller
+  // (espiaAcceso.middleware).
 };
 
 const TOOL_LABELS = {
   imporchat: 'ImporChat',
   insta_landing: 'Insta Landing',
   dropiboard: 'Dropiboard',
-  espia_mercado: 'Espía de mercado',
 };
 
 const checkToolAccess = (requiredTool) => {

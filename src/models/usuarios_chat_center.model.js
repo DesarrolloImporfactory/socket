@@ -58,6 +58,10 @@ const Usuarios_chat_center = db.define(
       allowNull: true,
       defaultValue: 0,
     },
+    // La columna `imporkiller` (complemento ImporKiller, 1 = activo) NO va en
+    // el modelo a propósito: findByPk la pediría en cada SELECT y, con la BD
+    // compartida, tumbaría checkPlanActivo hasta que corra el ALTER. La leen
+    // con SQL tolerante espiaAcceso.middleware y stripe.controller.
     free_trial_used: {
       type: DataTypes.TINYINT,
       allowNull: true,

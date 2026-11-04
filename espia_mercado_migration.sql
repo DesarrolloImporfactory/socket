@@ -186,3 +186,51 @@ CREATE TABLE IF NOT EXISTS espia_anuncio_producto (
   PRIMARY KEY (pais, dropi_product_id, ad_archive_id),
   KEY ix_espia_ap_anuncio (ad_archive_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 04-11-2026: ImporKiller. El mapeo deja de depender de la integración Dropi de
+-- una configuración de ChatCenter: el super admin registra desde la pantalla el
+-- correo y el token de integración (generado en Dropi) de cada cuenta con la que
+-- se quiere leer el catálogo, por país (EC, MX, CO). El token se guarda cifrado
+-- con DROPI_TOKEN_ENC_KEY (utils/cryptoToken), igual que dropi_integrations.
+CREATE TABLE IF NOT EXISTS espia_cuenta (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+  pais VARCHAR(2) NOT NULL,
+  correo VARCHAR(190) NOT NULL,
+  etiqueta VARCHAR(120) NULL,
+  token_enc TEXT NOT NULL,
+  token_last4 VARCHAR(4) NULL,
+  activa TINYINT NOT NULL DEFAULT 1,
+  ultimo_uso DATETIME NULL,
+  ultimo_ok DATETIME NULL,
+  ultimo_error VARCHAR(500) NULL,
+  ultimo_error_en DATETIME NULL,
+  pasadas INT NOT NULL DEFAULT 0,
+  creado_por BIGINT NULL,
+  creado_en DATETIME NOT NULL,
+  actualizado_en DATETIME NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY ux_espia_cuenta_pais_correo (pais, correo)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Qué cuenta usó cada pasada (correo registrado, o «cfg <id>» si fue una integración de ChatCenter).
+ALTER TABLE espia_pasada ADD COLUMN cuenta VARCHAR(190) NULL AFTER error;
+
+-- 04-11-2026 (b): ImporKiller abierto a los clientes.
+-- El buscador de productos y las métricas van con cualquier plan activo. La
+-- extensión de Chrome (ventas estimadas dentro de Dropi) y todo lo de anuncios
+-- (Biblioteca de Meta, radar, tiendas) son el complemento «ImporKiller»
+-- ($10/mes), que se compra igual que las conexiones y subusuarios adicionales:
+-- fila en addons_chat_center + item en la suscripción de Stripe; el webhook
+-- escribe la cantidad (0/1) en usuarios_chat_center.imporkiller.
+ALTER TABLE usuarios_chat_center
+  ADD COLUMN imporkiller TINYINT(1) NOT NULL DEFAULT 0
+  COMMENT 'Complemento ImporKiller (addons_chat_center.imporkiller): 1 = extensión y anuncios habilitados'
+  AFTER conexiones_adicionales;
+
+-- La fila del complemento la crea `node scripts/crearAddonImporKiller.js`, que
+-- además crea el producto y el price ($10/mes) en Stripe (test y producción
+-- según las llaves del .env) y rellena id_product_stripe_* / id_price_*.
+-- Si prefieres crearlos a mano en el panel de Stripe, es esta fila:
+-- INSERT INTO addons_chat_center (clave, activo, nombre, descripcion, precio, id_product_stripe_prod, id_price_prod, id_product_stripe_test, id_price_test, target_columna)
+-- VALUES ('imporkiller', 1, 'ImporKiller', 'Extensión de Chrome con ventas estimadas dentro de Dropi y descargador de anuncios de Meta ($10/mes recurrente).', 10.00, 'prod_…', 'price_…', 'prod_…', 'price_…', 'imporkiller')
+-- ON DUPLICATE KEY UPDATE activo = 1, nombre = VALUES(nombre), descripcion = VALUES(descripcion), precio = VALUES(precio), target_columna = VALUES(target_columna);

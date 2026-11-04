@@ -234,6 +234,7 @@ const completarTransaccionPagada = async ({
 const ADDON_COLUMNS_PERMITIDAS = new Set([
   'conexiones_adicionales',
   'subusuarios_adicionales',
+  'imporkiller', // complemento ImporKiller: 1 = activo (espiaAcceso.middleware)
 ]);
 
 // Map de priceId(entorno) -> { clave, target_columna } de todos los addons activos

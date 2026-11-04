@@ -1,20 +1,60 @@
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const espia = require('../services/espia_mercado.service');
+const { ADDON_IMPORKILLER } = require('../middlewares/espiaAcceso.middleware');
 
 /**
- * Espía de mercado (Dropkiller propio). Todo con sesión de super administrador
- * (ver espia_mercado.routes.js). Respuestas { status:'success', data }.
+ * ImporKiller (Dropkiller propio; antes «Espía de mercado»). Quién entra lo
+ * decide espiaAcceso (ver espia_mercado.routes.js), que deja en req.espia
+ * qué puede ver cada uno. Respuestas { status:'success', data }.
  */
 const ok = (res, data, code = 200) => res.status(code).json({ status: 'success', data });
 
-exports.estado = catchAsync(async (req, res) => ok(res, await espia.estado(req.query.pais)));
+// Lo que la pantalla y la extensión necesitan saber del que pregunta.
+const accesoDe = (req) => {
+  const a = req.espia || {};
+  return {
+    rol: a.rol || null,
+    super_admin: !!a.super_admin,
+    administrador: !!a.administrador,
+    addon: !!a.addon,
+    addon_comprado: !!a.addon_comprado,
+    complemento: ADDON_IMPORKILLER,
+  };
+};
+
+exports.estado = catchAsync(async (req, res) => {
+  const est = await espia.estado(req.query.pais);
+  est.acceso = accesoDe(req);
+  if (!req.espia?.super_admin) {
+    // El cliente ve el mercado, no la operación: ni las cuentas de Dropi con
+    // las que se fotografía el catálogo, ni páginas, errores, cron o freno del
+    // recolector. De la pasada solo queda lo que alimenta sus indicadores.
+    delete est.cuenta;
+    delete est.cuentas;
+    delete est.ultima_completa;
+    delete est.cron_activo;
+    delete est.fuente;
+    delete est.freno_hasta;
+    const u = est.ultima_pasada;
+    est.ultima_pasada = u
+      ? { estado: u.estado, inicio: u.inicio || null, fin: u.fin || null, ventas_sumadas: u.ventas_sumadas ?? null }
+      : null;
+  }
+  return ok(res, est);
+});
 
 exports.productos = catchAsync(async (req, res) => ok(res, await espia.listarProductos(req.query)));
 
-exports.producto = catchAsync(async (req, res) =>
-  ok(res, await espia.detalleProducto(req.params.pais, req.params.id, { dias: req.query.dias })),
-);
+exports.producto = catchAsync(async (req, res) => {
+  const d = await espia.detalleProducto(req.params.pais, req.params.id, { dias: req.query.dias });
+  if (!req.espia?.addon) {
+    // Los anuncios son del complemento: la ficha dice cuántos hay, no cuáles.
+    d.anuncios_bloqueados = (d.anuncios || []).length;
+    d.anuncios = [];
+  }
+  return ok(res, d);
+});
 
 exports.categorias = catchAsync(async (req, res) => ok(res, await espia.categorias(req.query.pais)));
 
@@ -47,6 +87,14 @@ exports.seguir = catchAsync(async (req, res) => ok(res, await espia.seguir(req.b
 
 exports.reporte = catchAsync(async (req, res) => ok(res, await espia.reporte(req.query.pais)));
 
+// Cuentas de Dropi con las que el recolector lee el catálogo (solo super admin).
+// El token entra una vez, se guarda cifrado y nunca vuelve: la lista trae solo los 4 últimos.
+exports.cuentas = catchAsync(async (req, res) => ok(res, await espia.listarCuentas(req.query.pais)));
+exports.guardarCuenta = catchAsync(async (req, res) => ok(res, await espia.guardarCuenta(req.body, req.sessionUser), 201));
+exports.actualizarCuenta = catchAsync(async (req, res) => ok(res, await espia.actualizarCuenta(req.params.id, req.body)));
+exports.eliminarCuenta = catchAsync(async (req, res) => ok(res, await espia.eliminarCuenta(req.params.id)));
+exports.probarCuenta = catchAsync(async (req, res) => ok(res, await espia.probarCuenta(req.body)));
+
 exports.enviarReporte = catchAsync(async (req, res) =>
   ok(res, await espia.enviarReporteWhatsapp(req.body?.pais || req.query.pais)),
 );
@@ -55,6 +103,7 @@ exports.enviarReporte = catchAsync(async (req, res) =>
 // la lista blanca de Dropi) solo funciona con ESPIA_MOCK_DIR o fuente 'mock'.
 exports.pasada = catchAsync(async (req, res, next) => {
   const pais = String(req.body?.pais || req.query.pais || 'EC').toUpperCase();
+  if (!espia.PAISES.includes(pais)) return next(new AppError(`País no soportado: ${pais}. Usa EC, MX o CO.`, 400));
   const fuente = req.body?.fuente === 'mock' ? 'mock' : undefined;
   const maxPaginas = Number(req.body?.max_paginas) || 0;
   const fuenteEfectiva = fuente || (process.env.ESPIA_MOCK_DIR ? 'mock' : 'dropi');
@@ -66,19 +115,25 @@ exports.pasada = catchAsync(async (req, res, next) => {
   if (est.freno_hasta) {
     return next(new AppError(`Recolector frenado por Dropi hasta ${new Date(est.freno_hasta).toLocaleString('es-EC')}`, 429));
   }
+  if (fuenteEfectiva !== 'mock' && est.cuenta?.error) return next(new AppError(est.cuenta.error, 400));
   espia
     .pasada(pais, { fuente, maxPaginas })
     .catch((e) => console.error('[espia-mercado] pasada manual falló:', e.message));
   return ok(res, { iniciada: true, pais, fuente: fuente || est.fuente }, 202);
 });
 
-exports.ping = catchAsync(async (req, res) =>
-  ok(res, {
+// La extensión pregunta al instalarse y antes de cada envío: quién soy y si
+// tengo el complemento (sin él, Dropi y la Biblioteca muestran cómo activarlo).
+exports.ping = catchAsync(async (req, res) => {
+  const acceso = accesoDe(req);
+  return ok(res, {
     ok: true,
     usuario: {
       nombre: req.sessionUser?.nombre || req.sessionUser?.usuario || null,
-      rol: req.sessionUser?.rol || null,
+      rol: acceso.rol,
       id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
     },
-  }),
-);
+    addon: { ...ADDON_IMPORKILLER, activo: acceso.addon, comprado: acceso.addon_comprado },
+    acceso,
+  });
+});

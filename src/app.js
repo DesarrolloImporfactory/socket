@@ -340,7 +340,7 @@ app.use((req, res, next) => {
     // firma sobre los campos; el sanitizador los cambiaría y la firma
     // fallaría. Las demás rutas van con protect.
     '/api/v1/telefonia',
-    // Espía de mercado: la extensión manda textos de anuncios de Meta con "$",
+    // ImporKiller (espía de mercado): la extensión manda textos de anuncios de Meta con "$",
     // emojis y HTML escapado; el sanitizador los mutilaría. Todo el grupo va
     // con protect + requireSuperAdmin (ver espia_mercado.routes.js).
     '/api/v1/espia',

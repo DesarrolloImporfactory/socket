@@ -2,7 +2,7 @@ const { DataTypes } = require('sequelize');
 const { db } = require('../database/config');
 
 /**
- * Espía de mercado (Dropkiller propio, 30-oct-2026).
+ * ImporKiller (Dropkiller propio, 30-oct-2026; antes «Espía de mercado»).
  *
  * Son datos de MERCADO, no de una cuenta: no llevan id_configuracion, llevan
  * `pais`. Viven en la BD principal. Las llena el recolector
@@ -19,6 +19,10 @@ const { db } = require('../database/config');
  *  - espia_tienda        dominios con anuncios (perfil Shopify si responde /products.json).
  *  - espia_tienda_dia    anuncios activos por dominio y día (tendencia).
  *  - espia_seguimiento   qué sigue cada sub-usuario (tienda / producto).
+ *  - espia_cuenta        cuentas de Dropi (correo + token de integración) con las
+ *                        que el recolector lee el catálogo de cada país. Las
+ *                        registra el super admin desde la pantalla; el token va
+ *                        cifrado (utils/cryptoToken) y nunca vuelve al front.
  */
 
 const comun = { timestamps: false, freezeTableName: true };
@@ -139,6 +143,7 @@ const EspiaPasada = db.define(
     errores_429: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     freno_hasta: { type: DataTypes.DATE, allowNull: true },
     error: { type: DataTypes.STRING(500), allowNull: true },
+    cuenta: { type: DataTypes.STRING(190), allowNull: true }, // correo de espia_cuenta (o «cfg <id>» si usó una integración de ChatCenter)
   },
   {
     ...comun,
@@ -247,9 +252,36 @@ const EspiaAnuncioProducto = db.define(
   },
 );
 
+const EspiaCuenta = db.define(
+  'espia_cuenta',
+  {
+    id: { type: DataTypes.INTEGER.UNSIGNED, autoIncrement: true, primaryKey: true },
+    pais: { type: DataTypes.STRING(2), allowNull: false },
+    correo: { type: DataTypes.STRING(190), allowNull: false }, // usuario de Dropi dueño del token (solo referencia)
+    etiqueta: { type: DataTypes.STRING(120), allowNull: true },
+    token_enc: { type: DataTypes.TEXT, allowNull: false }, // encryptToken() — nunca sale del servidor
+    token_last4: { type: DataTypes.STRING(4), allowNull: true },
+    activa: { type: DataTypes.TINYINT, allowNull: false, defaultValue: 1 },
+    ultimo_uso: { type: DataTypes.DATE, allowNull: true }, // la rotación toma la de uso más antiguo
+    ultimo_ok: { type: DataTypes.DATE, allowNull: true },
+    ultimo_error: { type: DataTypes.STRING(500), allowNull: true },
+    ultimo_error_en: { type: DataTypes.DATE, allowNull: true },
+    pasadas: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+    creado_por: { type: DataTypes.BIGINT, allowNull: true }, // id_sub_usuario del super admin
+    creado_en: { type: DataTypes.DATE, allowNull: false },
+    actualizado_en: { type: DataTypes.DATE, allowNull: true },
+  },
+  {
+    ...comun,
+    tableName: 'espia_cuenta',
+    indexes: [{ name: 'ux_espia_cuenta_pais_correo', unique: true, fields: ['pais', 'correo'] }],
+  },
+);
+
 module.exports = {
   EspiaProducto,
   EspiaAnuncioProducto,
+  EspiaCuenta,
   EspiaStockActual,
   EspiaStockFoto,
   EspiaVentasDia,
