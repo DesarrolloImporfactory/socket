@@ -313,7 +313,12 @@ const {
   plantillasEnviadas,
 } = require('../utils/mediaFijaPrompt');
 // Para que el rescate de turnos no repita los que el bot calló a propósito.
-const { anotarSilencio } = require('../utils/turnosCallados');
+const {
+  anotarSilencio,
+  anotarRespuestaDescartada,
+  verRespuestaDescartada,
+  olvidarRespuestaDescartada,
+} = require('../utils/turnosCallados');
 
 // Un turno de OpenAI a la vez por cliente: los huecos >8s que la ráfaga ya no
 // agrupa corrían en paralelo y bifurcaban la cadena de previous_response_id
@@ -1213,6 +1218,26 @@ async function procesarMensajeKanban(params) {
     },
   };
 
+  /* Tope del mensaje del cliente que abre este turno: lo que una persona del
+     negocio escriba DESPUÉS de este id (desde el panel o desde la app de
+     WhatsApp Business) significa que ya contestó, y el 9.4 descarta la
+     respuesta del bot. Se toma antes de la ráfaga: la corrida que sobrevive
+     es la del último mensaje, así que su tope es el correcto. */
+  let idTopeClienteTurno = 0;
+  try {
+    const [tope] = await db.query(
+      `SELECT MAX(id) AS id FROM mensajes_clientes
+        WHERE celular_recibe = ? AND id_configuracion = ? AND rol_mensaje = 0`,
+      {
+        replacements: [String(id_cliente), id_configuracion],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    idTopeClienteTurno = Number(tope?.id || 0);
+  } catch (_) {
+    idTopeClienteTurno = 0;
+  }
+
   // ── 0. Corta-fuegos por plan ──────────────────────────────
   // El webhook de Meta no pasa por checkPlanActivo (lo llama Meta, no el
   // cliente), así que este es el único punto donde se puede cortar el bot.
@@ -2005,18 +2030,47 @@ async function procesarMensajeKanban(params) {
            IA_, cron_ o es un emisor del sistema no cuenta. */
         const resp = String(ultimoMsg.responsable || '').trim();
         if (esResponsableHumano(resp)) {
-          // El panel antepone la firma "*Nombre* 🎤:" al texto: no aporta.
-          const textoHumano = String(ultimoMsg.texto_mensaje)
-            .replace(/^\s*\*[^*\n]{1,60}\*\s*🎤:?\s*\n?/u, '')
-            .trim()
-            .slice(0, 600);
-          if (textoHumano) {
+          /* No solo el último: TODO lo que la persona escribió desde la
+             última respuesta del bot, en orden. La dueña contesta en varios
+             mensajes seguidos ("Hasta la 13:30" / "El horario es de" /
+             "08H30 A 13H30" / "14H00 A 18H30", cfg 1549, 2026-11-04) y con
+             uno solo el bot retomaba a medias. Se recorre del más nuevo al
+             más viejo y se corta en el primer mensaje que no es de una
+             persona (IA_, cron_, sistema). */
+          const hace24h = Date.now() - 24 * 60 * 60 * 1000;
+          const salientes = await db.query(
+            `SELECT texto_mensaje, responsable, created_at FROM mensajes_clientes
+              WHERE celular_recibe = ? AND id_configuracion = ?
+                AND rol_mensaje = 1 AND deleted_at IS NULL
+                AND tipo_mensaje IN ('text', 'template')
+              ORDER BY id DESC LIMIT 8`,
+            {
+              replacements: [id_cliente, id_configuracion],
+              type: db.QueryTypes.SELECT,
+            },
+          );
+          const textosHumanos = [];
+          for (const m of salientes) {
+            if (!esResponsableHumano(m.responsable)) break;
+            if (new Date(m.created_at).getTime() < hace24h) break;
+            // El panel antepone la firma "*Nombre* 🎤:" al texto: no aporta.
+            const t = String(m.texto_mensaje || '')
+              .replace(/^\s*\*[^*\n]{1,60}\*\s*🎤:?\s*\n?/u, '')
+              .trim()
+              .slice(0, 600);
+            if (t) textosHumanos.push(t);
+            if (textosHumanos.length >= 5) break;
+          }
+          textosHumanos.reverse();
+          if (textosHumanos.length) {
             bloqueContexto +=
-              `🧑‍💼 LO ÚLTIMO QUE SE LE ESCRIBIÓ AL CLIENTE lo envió una persona de tu equipo (no fuiste tú y NO está en tu memoria):\n` +
-              `"${textoHumano}"\n` +
-              `El cliente está respondiendo a ESO: interpreta su mensaje en ese contexto (si dice "¿cómo?", "¿hay un video?", "¿y eso dónde?", "ok", habla de lo que le indicó tu compañero) y no contradigas lo que ya se le dijo.\n\n`;
+              (textosHumanos.length === 1
+                ? `🧑‍💼 LO ÚLTIMO QUE SE LE ESCRIBIÓ AL CLIENTE lo envió una persona de tu equipo (no fuiste tú y NO está en tu memoria):\n`
+                : `🧑‍💼 LO ÚLTIMO QUE SE LE ESCRIBIÓ AL CLIENTE lo envió una persona de tu equipo, en ${textosHumanos.length} mensajes seguidos (no fuiste tú y NO están en tu memoria):\n`) +
+              textosHumanos.map((t) => `"${t}"`).join('\n') +
+              `\nEl cliente está respondiendo a ESO: interpreta su mensaje en ese contexto (si dice "¿cómo?", "¿hay un video?", "¿y eso dónde?", "ok", habla de lo que le indicó tu compañero), no contradigas lo que ya se le dijo y no vuelvas a preguntar ni a responder lo que tu compañero ya resolvió.\n\n`;
             await log(
-              `🧑‍💼 Último mensaje fue de un asesor humano (${resp}): inyectado como contexto cliente=${id_cliente}`,
+              `🧑‍💼 ${textosHumanos.length} mensaje(s) de ${resp} inyectados como contexto cliente=${id_cliente}`,
             );
           }
         }
@@ -2024,6 +2078,22 @@ async function procesarMensajeKanban(params) {
     } catch (e) {
       await log(`⚠️ Error inyectando remarketing previo: ${e.message}`);
     }
+  }
+
+  /* ── Respuesta descartada en el turno anterior (9.4) ──
+     Una persona contestó antes y la respuesta del bot se tiró, pero OpenAI
+     ya la tiene en la cadena como si hubiera salido. Sin este aviso el bot
+     retoma dando por dicho algo que el cliente nunca leyó. Vale para todas
+     las columnas; se borra en el 13 cuando el bot vuelve a mandar algo. */
+  const descartada = verRespuestaDescartada(id_configuracion, id_cliente);
+  if (descartada) {
+    bloqueContexto +=
+      `⚠️ TU RESPUESTA ANTERIOR NO SE ENVIÓ. Ibas a decir: "${descartada.texto}"` +
+      (descartada.por ? ` pero ${descartada.por} le contestó al cliente antes y se descartó.` : ` pero se descartó porque una persona de tu equipo contestó antes.`) +
+      ` El cliente NUNCA la leyó: no des por dicho nada de lo que decía, no te refieras a ella, y continúa desde lo que escribió tu compañero y lo que el cliente dice ahora.\n\n`;
+    await log(
+      `⚠️ Respuesta descartada del turno anterior inyectada como contexto cliente=${id_cliente}`,
+    );
   }
 
   /* ── Plantillas fijas que el cliente YA recibió ──
@@ -3202,6 +3272,47 @@ async function procesarMensajeKanban(params) {
       require('../utils/soporteExpertos/turno').anotarCotizacion(turnoExpertos.hechos.clave, herramientasTurno.cotizacionArmada());
     } catch (_) {
       /* nada: sin la cifra, la objeción se explica sin números */
+    }
+  }
+
+  /* ── 9.4 Una persona contestó mientras el bot pensaba ──────
+     El cliente escribe, la dueña le responde desde la app de WhatsApp
+     Business 9 s después y el bot, que ya estaba en OpenAI, manda su propia
+     respuesta 5 s más tarde: dos contestaciones a lo mismo (cfg 1549, chat
+     593994683794, 2026-11-04 09:21). Si entre el mensaje que abrió el turno
+     y este punto una persona del negocio escribió en el chat, la respuesta
+     se tira y el bot espera al próximo mensaje del cliente (decisión de
+     Daniel, 05-11). Solo personas: lo que empieza con IA_, cron_, sistema…
+     no cuenta (esResponsableHumano); 'Whatsapp Business' —el eco de la
+     app— sí. El panel de pruebas no tiene personas en medio. */
+  if (idTopeClienteTurno > 0 && !params.es_prueba) {
+    try {
+      const posteriores = await db.query(
+        `SELECT id, responsable FROM mensajes_clientes
+          WHERE celular_recibe = ? AND id_configuracion = ?
+            AND rol_mensaje = 1 AND deleted_at IS NULL AND id > ?
+          ORDER BY id DESC LIMIT 20`,
+        {
+          replacements: [String(id_cliente), id_configuracion, idTopeClienteTurno],
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      const persona = posteriores.find((m) => esResponsableHumano(m.responsable));
+      if (persona) {
+        await log(
+          `🤫 ${persona.responsable} le contestó al cliente mientras el bot pensaba (msg ${persona.id} > ${idTopeClienteTurno}): ` +
+            `se descarta la respuesta de la IA y el bot espera al próximo mensaje (cliente=${id_cliente})`,
+        );
+        // Para que en el próximo turno sepa que esto NUNCA le llegó al cliente.
+        anotarRespuestaDescartada(id_configuracion, id_cliente, {
+          texto: limpiarTagsAcciones(respuestaRaw),
+          por: persona.responsable,
+        });
+        anotarSilencio(id_configuracion, id_cliente);
+        return { ok: true, motivo: 'humano_contesto', silencio: true };
+      }
+    } catch (eHum) {
+      await log(`⚠️ 9.4 humano_contesto: ${eHum.message}`);
     }
   }
 
@@ -4747,6 +4858,8 @@ async function procesarMensajeKanban(params) {
         analytics: analyticsIA,
       });
     }
+    // El bot ya volvió a hablar: la respuesta descartada (9.4) deja de importar.
+    olvidarRespuestaDescartada(id_configuracion, id_cliente);
   }
 
   /* Mensaje de VENTA REALIZADA del embudo (el "Flujo 7" del wizard): si esta

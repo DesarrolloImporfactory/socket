@@ -1475,6 +1475,17 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
               creacion_mensaje.id
             }\n`,
           );
+          /* Una persona del negocio le escribió al cliente desde la app de
+             WhatsApp Business: ya lo está atendiendo. Los remarketing que
+             estaban agendados para este chat se cancelan igual que cuando
+             el cliente contesta; si no, 15 min después salía "¿Tienes
+             alguna pregunta sobre el producto?" encima de la conversación
+             de la dueña (cfg 1549, 2026-11-04: 46 de 590 remarketing en
+             7 días salieron en la hora siguiente a un mensaje suyo). El
+             historial (field === 'history') no cuenta: son mensajes viejos. */
+          if (!isHistory) {
+            cancelarRemarketingEnNode(phone_whatsapp_from, id_configuracion);
+          }
           return;
         }
 
@@ -1509,6 +1520,20 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
         dashboardEmitter.emitByConfig(id_configuracion, 'new_chat', {
           chatsCreated: 1,
         });
+
+        /* Una reacción (👍 al último mensaje) no es un mensaje: queda guardada
+           y se ve en el chat, pero no cancela remarketing, no dispara la IA ni
+           la ráfaga ni el mensaje interno. Antes seguía de largo con el emoji
+           como texto y el bot repetía su última respuesta ("Perfecto, ahí lo
+           esperan" dos veces; 654 turnos así en 7 días, 88 cuentas; caso cfg
+           1549, 2026-11-04). */
+        if (tipo_mensaje === 'reaction') {
+          await fsp.appendFile(
+            path.join(logsDir, 'debug_log.txt'),
+            `[${new Date().toISOString()}] 👍 Reacción guardada (id ${creacion_mensaje.id}): no dispara IA ni remarketing\n`,
+          );
+          return;
+        }
 
         cancelarRemarketingEnNode(phone_whatsapp_from, id_configuracion);
         if (tipo_button == 'template') {
