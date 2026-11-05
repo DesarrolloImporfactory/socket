@@ -40,10 +40,11 @@ const {
 const T = db.QueryTypes;
 
 /* ── Piloto ─────────────────────────────────────────────────────────────
-   Como Campañas: lista de cuentas; vacía = todas. Mientras es beta solo
-   corre (y solo se ve en el menú) en estas cuentas. El front tiene la misma
-   lista en pages/remarketingProducto. */
-const PILOTO = String(process.env.REMARKETING_PRODUCTO_PILOTO ?? '10,610,822')
+   Como Campañas: lista de cuentas; vacía = todas. Abierto a todas las
+   cuentas desde el 05-11-2026 (el piloto fue 10, 610 y 822). Si hiciera
+   falta volver a acotarlo, REMARKETING_PRODUCTO_PILOTO=10,610 en el .env.
+   El front tiene la misma lista en pages/remarketingProducto. */
+const PILOTO = String(process.env.REMARKETING_PRODUCTO_PILOTO ?? '')
   .split(',')
   .map((x) => Number(x.trim()))
   .filter((x) => Number.isFinite(x) && x > 0);
@@ -374,7 +375,8 @@ function filaAConfig(fila) {
 
 async function productoDe(id_configuracion, id_producto) {
   const [p] = await db.query(
-    `SELECT id, nombre, precio, imagen_url, video_url
+    `SELECT id, nombre, precio, imagen_url, video_url, descripcion,
+            documento_url, documento_nombre
        FROM productos_chat_center
       WHERE id = ? AND id_configuracion = ? AND eliminado = 0 LIMIT 1`,
     { replacements: [id_producto, id_configuracion], type: T.SELECT },
@@ -510,18 +512,85 @@ async function listar(id_configuracion, { dias = 30 } = {}) {
   };
 }
 
+/**
+ * Lo que el cliente recibe ANTES del primer recordatorio: la respuesta al
+ * «Hola, quiero info». La vista previa del editor la pinta para que la
+ * conversación tenga sentido (el recordatorio sale porque el cliente dejó
+ * de responder, no porque nadie le contestó).
+ *  - origen 'wizard': el producto tiene sus ajustes avanzados (/productos)
+ *    completos y activos → paquete de media + mensaje fijo, tal cual lo
+ *    manda enviarPaqueteInicial (con los precios al día).
+ *  - origen 'bot': sin ajustes → una respuesta tipo de la IA de Contacto
+ *    inicial, armada con el nombre, el precio y la descripción del
+ *    producto. Es ilustrativa: el texto real lo redacta la IA en cada chat.
+ */
+async function respuestaInicialDe(producto) {
+  const {
+    wizardActivoDeProducto,
+  } = require('./producto_wizard_runtime.service');
+  const {
+    paqueteMedia,
+    componerMensajeInicial,
+    refrescarPreciosMensaje,
+    fmtPrecio,
+  } = require('../utils/wizardProducto/componerMensajeInicial');
+
+  let wizard = null;
+  try {
+    wizard = await wizardActivoDeProducto(producto.id);
+  } catch {
+    wizard = null;
+  }
+
+  if (wizard) {
+    const guardado = String(wizard.mensaje_inicial || '').trim();
+    const texto =
+      (guardado
+        ? refrescarPreciosMensaje(guardado, producto, wizard.tipo_venta)
+        : componerMensajeInicial({ producto, wizard })) || '';
+    const { todas } = paqueteMedia({ producto, wizard });
+    return {
+      origen: 'wizard',
+      texto: texto.trim(),
+      media: todas.map((m) => ({ tipo: m.tipo, url: m.url, etiqueta: m.etiqueta || null })),
+    };
+  }
+
+  const precio = fmtPrecio(producto.precio);
+  const descripcion = String(producto.descripcion || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // Primera oración de la descripción, corta, para que la respuesta tipo
+  // hable del producto y no sea un relleno genérico.
+  const resumen = descripcion
+    ? descripcion.split(/(?<=[.!?])\s+/)[0].slice(0, 160).trim()
+    : '';
+  const partes = [`¡Hola! 😊 Con gusto te cuento sobre *${producto.nombre}*.`];
+  if (resumen) partes.push(resumen);
+  if (precio) partes.push(`💵 Precio: ${precio}\n🚚 Envío gratis y pagas al recibir`);
+  partes.push('¿Para qué ciudad sería el envío?');
+  return {
+    origen: 'bot',
+    texto: partes.join('\n\n'),
+    media: producto.imagen_url ? [{ tipo: 'image', url: producto.imagen_url, etiqueta: 'Foto del producto' }] : [],
+  };
+}
+
 async function obtener(id_configuracion, id_producto) {
   const producto = await productoDe(id_configuracion, id_producto);
   if (!producto) throw error('Producto no encontrado', 404);
   const config = await configDeProducto(id_configuracion, id_producto);
   const metricas = await metricasPorProducto(id_configuracion, 30);
   const columnas = await columnasDe(id_configuracion);
+  const respuesta_inicial = await respuestaInicialDe(producto);
   return {
     producto,
     config: config || configPorDefecto(producto, columnas),
     existe: !!config,
     metricas: metricas.get(Number(id_producto)) || null,
     columnas,
+    respuesta_inicial,
     variables: ['{{nombre}}', '{{producto}}', '{{precio}}'],
     limites: { pasos: MAX_PASOS, botones: MAX_BOTONES, titulo: MAX_TITULO, cuerpo: MAX_CUERPO, items: MAX_ITEMS_BLOQUE },
   };
