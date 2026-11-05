@@ -5,6 +5,14 @@ const {
   updateOrderForClient,
 } = require('../services/dropiOrders.service');
 const AppError = require('../utils/appError');
+const {
+  registrarAuditoriaDropi,
+  resumirPayloadCotizacion,
+} = require('../utils/dropiAuditoria');
+// Lo único que ve el usuario cuando Dropi no cotiza o no crea (el motivo real
+// queda en dropi_auditoria_acciones). Mismo texto que DROPI_DOWN_MESSAGE.
+const DROPI_INTERFERENCIAS_MSG =
+  'Dropi está presentando interferencias en este momento. Por favor, vuelve a intentarlo en unos minutos o realiza la acción directamente en Dropi.';
 const { db } = require('../database/config');
 const {
   enlazarOrdenContactoOrigen,
@@ -402,6 +410,9 @@ class Sockets {
       });
 
       socket.on('GET_DROPI_COTIZA_ENVIO_V2', async (payload) => {
+        // Auditoría (utils/dropiAuditoria): cuánto tardó y qué contestó Dropi.
+        const auditT0 = Date.now();
+        let auditPais = null;
         try {
           const id_configuracion = toInt(payload?.id_configuracion);
           const EnvioConCobroRaw = payload?.EnvioConCobro;
@@ -704,8 +715,94 @@ class Sockets {
             country_code: integration.country_code,
           });
 
+          /* Dropi responde HTTP 200 también cuando NO cotizó:
+             {"isSuccess":false,"message":"Error cotizando flete: No se ha
+             encontrado ciudad remitente, puede deberse a que el producto no
+             posee stock en ninguna bodega"} (lo más frecuente en el log del
+             auto-orden, 7 días). Eso salía como _OK sin `objects`, el panel
+             apagaba el "cargando" y no pintaba nada: el botón volvía a
+             aparecer sin explicación (cfg 569 Compra Segura, 2026-11-05).
+             Se devuelve como error con el texto de Dropi, que sí dice qué
+             pasa (producto sin stock, ciudad). */
+          auditPais = integration.country_code;
+          if (data && data.isSuccess === false) {
+            const motivo = String(
+              data.message || data.error || 'Dropi no pudo cotizar',
+            )
+              .replace(/^Error cotizando flete:\s*/i, '')
+              .trim();
+            console.log(
+              `[Dropi Cotiza] cfg ${id_configuracion}: Dropi respondió isSuccess=false: ${motivo}`,
+            );
+            registrarAuditoriaDropi({
+              id_configuracion,
+              accion: 'cotizar',
+              country_code: integration.country_code,
+              resultado: 'dropi_no_cotizo',
+              motivo,
+              detalle: {
+                payload: resumirPayloadCotizacion(payload),
+                dropi: dropiPayload,
+                respuesta: data,
+              },
+              ms: Date.now() - auditT0,
+              socket_id: socket.id,
+            });
+            /* Al usuario NO se le muestra el motivo (stock, ciudad): decisión
+               de Daniel 05-11. Ve el mismo aviso de interferencias de siempre
+               y que lo intente en Dropi; el detalle queda en la auditoría. */
+            const err = new AppError(DROPI_INTERFERENCIAS_MSG, 422);
+            err.auditado = true;
+            throw err;
+          }
+
+          const lista = data?.objects || data?.data?.objects || [];
+          const nTransportadoras = Array.isArray(lista) ? lista.length : 0;
+          const conPrecio = Array.isArray(lista)
+            ? lista.filter((t) => Number(t?.objects?.precioEnvio) > 0).length
+            : 0;
+          registrarAuditoriaDropi({
+            id_configuracion,
+            accion: 'cotizar',
+            country_code: integration.country_code,
+            resultado: conPrecio > 0 ? 'ok' : 'sin_transportadoras',
+            motivo:
+              conPrecio > 0
+                ? `${conPrecio} transportadora(s) con precio de ${nTransportadoras}`
+                : `Dropi devolvió ${nTransportadoras} transportadora(s), ninguna con precio`,
+            detalle: {
+              payload: resumirPayloadCotizacion(payload),
+              dropi: dropiPayload,
+              respuesta: conPrecio > 0 ? undefined : data,
+              transportadoras: Array.isArray(lista)
+                ? lista.map((t) => ({
+                    nombre: t?.transportadora || t?.distributionCompany?.name,
+                    precio: t?.objects?.precioEnvio ?? null,
+                  }))
+                : null,
+            },
+            ms: Date.now() - auditT0,
+            socket_id: socket.id,
+          });
+
           socket.emit('DROPI_COTIZA_ENVIO_V2_OK', { isSuccess: true, data });
         } catch (e) {
+          if (!e?.auditado) {
+            registrarAuditoriaDropi({
+              id_configuracion: toInt(payload?.id_configuracion),
+              accion: 'cotizar',
+              country_code: auditPais,
+              resultado: e?.code === 'DROPI_RATE_LIMIT' || e?.code === 'DROPI_UNAVAILABLE' ? 'error_dropi' : 'error',
+              motivo: e?.dropiRawMessage || e?.message || 'error',
+              detalle: {
+                payload: resumirPayloadCotizacion(payload),
+                status: e?.statusCode || null,
+                code: e?.code || null,
+              },
+              ms: Date.now() - auditT0,
+              socket_id: socket.id,
+            });
+          }
           socket.emit('DROPI_COTIZA_ENVIO_V2_ERROR', {
             isSuccess: false,
             message: e?.message || 'Error cotizando transportadoras',
@@ -714,6 +811,7 @@ class Sockets {
       });
 
       socket.on('DROPI_CREATE_ORDER', async (payload) => {
+        const auditT0 = Date.now();
         try {
           const id_configuracion = toInt(payload?.id_configuracion);
           if (!id_configuracion)
@@ -723,6 +821,29 @@ class Sockets {
             id_configuracion,
             body: payload,
           });
+
+          {
+            const created = data?.objects ?? data?.order ?? data?.data ?? data;
+            const noCreada = data && data.isSuccess === false;
+            registrarAuditoriaDropi({
+              id_configuracion,
+              accion: 'crear_orden',
+              resultado: noCreada ? 'dropi_no_creo' : 'ok',
+              motivo: noCreada
+                ? data.message || data.error || 'isSuccess=false'
+                : `orden ${Number(created?.id || data?.id) || '?'}`,
+              detalle: {
+                telefono: payload?.phone || null,
+                ciudad: payload?.city || payload?.ciudad || null,
+                productos: Array.isArray(payload?.products)
+                  ? payload.products.map((p) => ({ id: p.id, quantity: p.quantity }))
+                  : null,
+                respuesta: noCreada ? data : undefined,
+              },
+              ms: Date.now() - auditT0,
+              socket_id: socket.id,
+            });
+          }
 
           // Enlace contacto origen ↔ orden: si el panel mandó el id del contacto
           // del chat, el notifier moverá también a ese contacto por las columnas
@@ -743,6 +864,19 @@ class Sockets {
 
           socket.emit('DROPI_CREATE_ORDER_OK', { isSuccess: true, data });
         } catch (e) {
+          registrarAuditoriaDropi({
+            id_configuracion: toInt(payload?.id_configuracion),
+            accion: 'crear_orden',
+            resultado: e?.code === 'DROPI_RATE_LIMIT' || e?.code === 'DROPI_UNAVAILABLE' ? 'error_dropi' : 'error',
+            motivo: e?.dropiRawMessage || e?.message || 'error',
+            detalle: {
+              telefono: payload?.phone || null,
+              status: e?.statusCode || null,
+              code: e?.code || null,
+            },
+            ms: Date.now() - auditT0,
+            socket_id: socket.id,
+          });
           socket.emit('DROPI_CREATE_ORDER_ERROR', {
             isSuccess: false,
             message: e?.message || 'Error creando orden en Dropi',
