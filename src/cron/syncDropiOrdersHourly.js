@@ -78,6 +78,20 @@ const DELAY_BETWEEN_INTEGRATIONS = 4000;
 const MAX_ORDERS_PER_INTEGRATION = 2000;
 const MAX_RETRIES_429 = 4;
 
+/* Integraciones sin movimiento (v10, 2026-11-05).
+   Medido ese día: 599 integraciones activas, y 346 de ellas sin UNA sola
+   orden en el cache en 30 días (llaves muertas, cuentas que no venden). Cada
+   una costaba igual que una viva (4 s de pausa + la consulta a Dropi), y la
+   vuelta completa tardaba ~105 min: un pedido creado a mano en Dropi
+   esperaba 1-2 h su aviso y el de PENDIENTE CONFIRMACION se perdía (cfg 366,
+   orden 7783969). Las que no tienen órdenes recientes se visitan solo cada
+   IDLE_REVISITA_MS; las demás, en cada vuelta. La lista se recalcula en cada
+   ciclo desde el cache, así que una cuenta "dormida" a la que le entra un
+   pedido por cualquier vía (webhook, auto-orden del bot, la visita de cada
+   2 h) pasa a la fila de las activas en el ciclo siguiente, sola. */
+const IDLE_SIN_ORDENES_DIAS = 30;
+const IDLE_REVISITA_MS = 2 * 60 * 60 * 1000;
+
 // Profit sync — Dropi solo expone profit vía getOrderDetail individual
 const PROFIT_MAX_PER_RUN = 30;
 const PROFIT_DELAY_MS = 2500;
@@ -398,6 +412,7 @@ async function listarIntegraciones() {
   return db.query(
     `SELECT di.id, di.id_configuracion, di.id_usuario, di.country_code,
             di.integration_key_enc, di.dropi_user_id
+            ${conLastSync ? ', di.last_sync_at' : ''}
      FROM dropi_integrations di
      LEFT JOIN configuraciones c ON c.id = di.id_configuracion
      WHERE di.is_active = 1
@@ -414,6 +429,67 @@ async function listarIntegraciones() {
      }`,
     { type: db.QueryTypes.SELECT },
   );
+}
+
+/* Cuentas con alguna orden en el cache en los últimos IDLE_SIN_ORDENES_DIAS.
+   Clave por configuración ('c:<id>') o, para integraciones sin configuración,
+   por usuario ('u:<id>'). Consulta barata (idx_synced, ~140 ms con 56k filas
+   de 30 días). Si falla, devuelve null y el ciclo visita a todas, como antes. */
+async function cuentasConOrdenesRecientes() {
+  try {
+    const filas = await db.query(
+      `SELECT id_configuracion, id_usuario
+         FROM dropi_orders_cache
+        WHERE synced_at >= NOW() - INTERVAL ? DAY
+        GROUP BY id_configuracion, id_usuario`,
+      { replacements: [IDLE_SIN_ORDENES_DIAS], type: db.QueryTypes.SELECT },
+    );
+    const set = new Set();
+    for (const f of filas) {
+      if (Number(f.id_configuracion) > 0) set.add(`c:${Number(f.id_configuracion)}`);
+      if (Number(f.id_usuario) > 0) set.add(`u:${Number(f.id_usuario)}`);
+    }
+    return set;
+  } catch (err) {
+    console.error(
+      '[Cron Dropi] no se pudo leer qué cuentas tienen órdenes recientes; se visitan todas:',
+      err?.message,
+    );
+    return null;
+  }
+}
+
+/* Separa la lista en las que se visitan este ciclo y las dormidas que
+   esperan. Dormida = sin órdenes recientes Y visitada hace menos de
+   IDLE_REVISITA_MS. Una dormida nunca visitada (last_sync_at NULL) entra. */
+function repartirPorActividad(integrations, conOrdenes) {
+  if (!conOrdenes) {
+    return { aVisitar: integrations, dormidasSaltadas: 0, dormidasVisitadas: 0 };
+  }
+  const ahora = Date.now();
+  const aVisitar = [];
+  let dormidasSaltadas = 0;
+  let dormidasVisitadas = 0;
+  for (const integ of integrations) {
+    const cfg = Number(integ.id_configuracion) || 0;
+    const activa = cfg
+      ? conOrdenes.has(`c:${cfg}`)
+      : conOrdenes.has(`u:${Number(integ.id_usuario) || 0}`);
+    if (activa) {
+      aVisitar.push(integ);
+      continue;
+    }
+    const ultima = integ.last_sync_at
+      ? new Date(integ.last_sync_at).getTime()
+      : 0;
+    if (!ultima || ahora - ultima >= IDLE_REVISITA_MS) {
+      aVisitar.push(integ);
+      dormidasVisitadas++;
+    } else {
+      dormidasSaltadas++;
+    }
+  }
+  return { aVisitar, dormidasSaltadas, dormidasVisitadas };
 }
 
 /* Marca la visita. Best-effort: si falla, la integración vuelve a quedar
@@ -541,10 +617,14 @@ async function runHourlyDropiSync() {
     }
 
     const { from, until } = getDateRange();
-    const integrations = await listarIntegraciones();
+    const todas = await listarIntegraciones();
+    const { aVisitar: integrations, dormidasSaltadas, dormidasVisitadas } =
+      repartirPorActividad(todas, await cuentasConOrdenesRecientes());
 
     const totals = {
       integraciones: integrations.length,
+      dormidas_saltadas: dormidasSaltadas,
+      dormidas_visitadas: dormidasVisitadas,
       ordenes: 0,
       enviados: 0,
       skipped: 0,
@@ -630,8 +710,10 @@ const CRONS_ENABLED =
 // v8: */15 (antes */5). El webhook de Dropi ya notifica en tiempo real las
 // órdenes IMPORSUIT; este cron queda como red de seguridad para el resto
 // (Shopify/bots/creadas en Dropi) y para eventos de webhook perdidos.
-// Con 305 integraciones un ciclo completo toma ~20 min de todas formas, así
-// que el impacto en frescura es mínimo y se reduce ~66% la presión de 429.
+// Con 305 integraciones un ciclo completo tomaba ~20 min; para 2026-11-05
+// eran 599 y la vuelta llegó a ~105 min. v10: las dormidas (sin órdenes en
+// 30 días, ~330) se visitan cada 2 h y la vuelta de las ~270 activas queda
+// en ~25-30 min (17,8 min de pausa pura + las consultas a Dropi).
 if (CRONS_ENABLED) {
   cron.schedule('*/15 * * * *', () => {
     runHourlyDropiSync().catch(() => {});
@@ -648,4 +730,7 @@ module.exports = {
   listarIntegraciones,
   aprenderDropiUserId,
   DELAY_BETWEEN_INTEGRATIONS,
+  // Para simular el reparto activas/dormidas sin correr el ciclo
+  cuentasConOrdenesRecientes,
+  repartirPorActividad,
 };
