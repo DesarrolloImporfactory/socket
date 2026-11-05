@@ -685,7 +685,279 @@ function vectorStoresDeColumna(columna) {
     .slice(0, 2);
 }
 
+// ─────────────────────────────────────────────────────────────
+// Vector store de documentos que la llave actual NO ve
+//
+// Los vector stores y los archivos de OpenAI viven por PROYECTO. Si la cuenta
+// cambia su API Key por una de otro proyecto (o de otra organización), el
+// store de documentos guardado en kanban_columnas.vector_store_docs_id deja
+// de existir para la llave nueva y OpenAI responde 404 "Vector store vs_… not
+// found in organization org-…, project proj-…" en CADA turno de esa columna:
+// el bot se queda mudo y el aviso de /conexiones dice "se reintenta solo"
+// sin que nada lo arregle (cfg 1511 MaeliShop del 29-10 al 05-11-2026, 111
+// turnos perdidos; cfg 613 ImporVerito desde el 02-11, 29 turnos).
+//
+// El catálogo no sufre esto porque la sincronización lo recrea con la llave
+// vigente; los documentos nadie los volvía a subir. Acá se hace: se vuelve a
+// crear el store con la llave actual y se vuelven a subir los bytes de cada
+// archivo desde la copia local (src/uploads/kanban_docs/…), o desde el
+// default de la plataforma (src/assets/kanban_defaults/, el directorio de
+// agencias Servientrega) o desde el texto extraído. Un archivo sin ninguna de
+// las tres fuentes queda marcado 'perdido' y la columna sigue sin él: mejor
+// un bot sin un documento que un bot mudo.
+// ─────────────────────────────────────────────────────────────
+const DIR_DEFAULTS = path.join(__dirname, '..', 'assets', 'kanban_defaults');
+
+/* Si el error de OpenAI es "vector store inexistente", devuelve el id del
+   store; si no, null. Sirve para decidir el reintento en el motor. */
+function esVectorStoreNoExiste(err) {
+  const status = err?.response?.status;
+  const msg = String(err?.response?.data?.error?.message || err?.message || '');
+  if (status !== 404 && status !== 400) return null;
+  if (!/vector store/i.test(msg) || !/not found/i.test(msg)) return null;
+  const m = msg.match(/vs_[A-Za-z0-9]+/);
+  return m ? m[0] : null;
+}
+
+async function leerBytesDeArchivo(arch) {
+  if (arch.storage_path) {
+    try {
+      const buf = await fs.promises.readFile(
+        path.join(__dirname, '..', 'uploads', arch.storage_path),
+      );
+      return { buffer: buf, fuente: 'copia local' };
+    } catch (_) {
+      /* la copia local no está en esta máquina */
+    }
+  }
+  const nombre = String(arch.nombre_original || '').replace(/[\\/]/g, '');
+  if (nombre) {
+    try {
+      const buf = await fs.promises.readFile(path.join(DIR_DEFAULTS, nombre));
+      return { buffer: buf, fuente: 'default de la plataforma' };
+    } catch (_) {
+      /* no es un default */
+    }
+  }
+  if (arch.texto_extraido && String(arch.texto_extraido).trim()) {
+    return {
+      buffer: Buffer.from(String(arch.texto_extraido), 'utf8'),
+      fuente: 'texto extraído',
+      comoTexto: true,
+    };
+  }
+  return null;
+}
+
+async function subirBytesAOpenAI(arch, bytes, apiKey) {
+  const form = new FormData();
+  form.append('purpose', 'assistants');
+  const filename = bytes.comoTexto
+    ? String(arch.nombre_original || 'documento').replace(/\.[^.]+$/, '') + '.txt'
+    : arch.nombre_original || 'documento';
+  form.append('file', bytes.buffer, {
+    filename,
+    contentType: bytes.comoTexto ? 'text/plain' : arch.mime || 'application/octet-stream',
+  });
+  const res = await axios.post('https://api.openai.com/v1/files', form, {
+    headers: { ...headersBase(apiKey), ...form.getHeaders() },
+    maxBodyLength: Infinity,
+    maxContentLength: Infinity,
+    timeout: 120000,
+  });
+  const id = res.data?.id;
+  if (!id) throw new Error('OpenAI no devolvió file_id');
+  return id;
+}
+
+// Una reparación por cuenta a la vez: varios turnos del mismo chat center
+// pueden tropezar con el 404 en el mismo segundo.
+const reparacionesEnCurso = new Map();
+
+/**
+ * Recrea con la llave actual los vector stores de documentos de una cuenta.
+ * @param {number} id_configuracion
+ * @param {object} opts
+ * @param {function} [opts.logger]      async (msg) => {}
+ * @param {number[]} [opts.soloColumnas] ids de kanban_columnas; por defecto
+ *                                       todas las que tienen vector_store_docs_id
+ * @param {string}  [opts.apiKey]       llave plana; si no, se lee de la BD
+ * @returns {{columnas:number, archivos:number, perdidos:string[], detalle:object[]}}
+ */
+async function recrearVectorStoresDocs(id_configuracion, opts = {}) {
+  const key = Number(id_configuracion);
+  if (reparacionesEnCurso.has(key)) return reparacionesEnCurso.get(key);
+  const promesa = _recrearVectorStoresDocs(key, opts).finally(() =>
+    reparacionesEnCurso.delete(key),
+  );
+  reparacionesEnCurso.set(key, promesa);
+  return promesa;
+}
+
+async function _recrearVectorStoresDocs(id_configuracion, opts) {
+  const log = opts.logger || (async () => {});
+  const apiKey = opts.apiKey || (await getApiKey(id_configuracion));
+
+  const filtro = Array.isArray(opts.soloColumnas) && opts.soloColumnas.length
+    ? ` AND id IN (${opts.soloColumnas.map(() => '?').join(',')})`
+    : '';
+  const columnas = await db.query(
+    `SELECT id, nombre, vector_store_docs_id
+       FROM kanban_columnas
+      WHERE id_configuracion = ? AND vector_store_docs_id IS NOT NULL${filtro}`,
+    {
+      replacements: [id_configuracion, ...(opts.soloColumnas || [])],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  const resumen = { columnas: 0, archivos: 0, perdidos: [], detalle: [] };
+  // Un mismo archivo puede estar en varias columnas: se sube UNA vez a OpenAI
+  // Files y se adjunta a cada store nuevo.
+  const fileIdNuevo = new Map(); // id_archivo → openai_file_id nuevo (o null)
+
+  for (const col of columnas) {
+    const vsViejo = col.vector_store_docs_id;
+    const vinculos = await db.query(
+      `SELECT kca.id AS id_vinculo, ka.id, ka.nombre_original, ka.mime,
+              ka.storage_path, ka.texto_extraido, ka.openai_file_id
+         FROM kanban_columna_archivos kca
+         JOIN kanban_archivos ka ON ka.id = kca.id_archivo
+        WHERE kca.id_kanban_columna = ? AND ka.deleted_at IS NULL`,
+      { replacements: [col.id], type: db.QueryTypes.SELECT },
+    );
+
+    // 1. Subir (una vez) los bytes de cada archivo con la llave actual.
+    const adjuntables = [];
+    for (const arch of vinculos) {
+      if (!fileIdNuevo.has(arch.id)) {
+        let nuevo = null;
+        try {
+          const bytes = await leerBytesDeArchivo(arch);
+          if (bytes) {
+            nuevo = await subirBytesAOpenAI(arch, bytes, apiKey);
+            await db.query(
+              `UPDATE kanban_archivos SET openai_file_id = ?, status = 'completed' WHERE id = ?`,
+              { replacements: [nuevo, arch.id], type: db.QueryTypes.UPDATE },
+            );
+            await log(
+              `📎 ${arch.nombre_original}: vuelto a subir desde ${bytes.fuente} (${nuevo})`,
+            );
+          } else {
+            await log(
+              `⚠️ ${arch.nombre_original}: sin copia local, sin default ni texto extraído; queda como perdido`,
+            );
+            resumen.perdidos.push(arch.nombre_original);
+            await db.query(
+              `UPDATE kanban_archivos SET status = 'perdido' WHERE id = ?`,
+              { replacements: [arch.id], type: db.QueryTypes.UPDATE },
+            );
+          }
+        } catch (err) {
+          await log(
+            `⚠️ ${arch.nombre_original}: no se pudo volver a subir: ${err?.response?.data?.error?.message || err.message}`,
+          );
+          resumen.perdidos.push(arch.nombre_original);
+        }
+        fileIdNuevo.set(arch.id, nuevo);
+      }
+      const fid = fileIdNuevo.get(arch.id);
+      if (fid) adjuntables.push({ ...arch, openai_file_id: fid });
+      else {
+        await db.query(
+          `UPDATE kanban_columna_archivos SET status = 'perdido',
+                  error_msg = 'El archivo no está en el proyecto de OpenAI de la llave actual y no hay copia para volver a subirlo'
+            WHERE id = ?`,
+          { replacements: [arch.id_vinculo], type: db.QueryTypes.UPDATE },
+        );
+      }
+    }
+
+    // 2. Store nuevo (o ninguno, si no quedó nada que indexar).
+    let vsNuevo = null;
+    if (adjuntables.length) {
+      const res = await axios.post(
+        'https://api.openai.com/v1/vector_stores',
+        { name: `kanban_docs_${id_configuracion}_col${col.id}_${Date.now()}` },
+        { headers: headersJson(apiKey), timeout: 30000 },
+      );
+      vsNuevo = res.data?.id;
+      if (!vsNuevo) throw new Error('OpenAI no devolvió el id del vector store');
+      for (const arch of adjuntables) {
+        try {
+          const { vectorStoreFileId, status } = await adjuntarAVectorStore(
+            vsNuevo,
+            arch.openai_file_id,
+            apiKey,
+            60,
+          );
+          await db.query(
+            `UPDATE kanban_columna_archivos
+                SET vector_store_id = ?, vector_store_file_id = ?, status = ?, error_msg = NULL
+              WHERE id = ?`,
+            {
+              replacements: [vsNuevo, vectorStoreFileId, status, arch.id_vinculo],
+              type: db.QueryTypes.UPDATE,
+            },
+          );
+          resumen.archivos++;
+        } catch (err) {
+          await log(
+            `⚠️ ${arch.nombre_original}: no se pudo indexar en ${vsNuevo}: ${err?.response?.data?.error?.message || err.message}`,
+          );
+          resumen.perdidos.push(arch.nombre_original);
+        }
+      }
+    }
+
+    // 3. La columna apunta al store nuevo (o a ninguno). Se guarda al final
+    //    para que, si algo revienta a medias, la columna siga como estaba.
+    await db.query(
+      `UPDATE kanban_columnas SET vector_store_docs_id = ? WHERE id = ?`,
+      { replacements: [vsNuevo, col.id], type: db.QueryTypes.UPDATE },
+    );
+    resumen.columnas++;
+    resumen.detalle.push({
+      columna: col.id,
+      nombre: col.nombre,
+      antes: vsViejo,
+      ahora: vsNuevo,
+      archivos: adjuntables.length,
+    });
+    await log(
+      `🗂️ Columna «${col.nombre}» (${col.id}): documentos ${vsViejo} → ${vsNuevo || 'ninguno'} (${adjuntables.length} archivo(s))`,
+    );
+  }
+
+  return resumen;
+}
+
+/* ¿Los stores de documentos de la cuenta existen para esta llave? Devuelve
+   los ids de columna cuyo store da 404. Un error de red no cuenta. */
+async function columnasConDocsInvisibles(id_configuracion, apiKey) {
+  const columnas = await db.query(
+    `SELECT id, vector_store_docs_id FROM kanban_columnas
+      WHERE id_configuracion = ? AND vector_store_docs_id IS NOT NULL`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const rotas = [];
+  for (const col of columnas) {
+    try {
+      await axios.get(
+        `https://api.openai.com/v1/vector_stores/${col.vector_store_docs_id}`,
+        { headers: headersJson(apiKey), timeout: 15000 },
+      );
+    } catch (err) {
+      if (err?.response?.status === 404) rotas.push(col.id);
+    }
+  }
+  return rotas;
+}
+
 module.exports = {
+  esVectorStoreNoExiste,
+  recrearVectorStoresDocs,
+  columnasConDocsInvisibles,
   MIME_TYPES_PERMITIDOS,
   FORMATOS_LEGIBLES,
   MAX_BYTES,

@@ -131,16 +131,29 @@ async function esperarRafaga(id_cliente, texto, ventanaMs = VENTANA_MS) {
  * Panel "Probar como cliente" (wamid.PANEL…): quien prueba escribe un mensaje
  * y espera; la ventana baja a 1,5 s para que la prueba no se sienta lenta sin
  * cambiar nada del camino de producción. */
-const VENTANA_CORTA_MS = 3500;
+/* 2026-11-05: la ventana corta sube de 3,5 s a 7 s (decisión de Daniel: mejor
+   tardar hasta 7-8 s que contestar dos veces). Con 3,5 s el caso típico se
+   partía igual: "Buenos dias" (2 palabras) y 7 s después "Ya hoy lo retiro
+   estimado" → dos turnos, y el primero preguntaba "¿Ya retiraste tu pedido?"
+   cuando el cliente acababa de decir que lo retira hoy (cfg 1549, chat
+   593982544339, 2026-11-04). Un saludo suelto, además, casi siempre tiene
+   continuación: va directo a la ventana larga. */
+const VENTANA_CORTA_MS = 7000;
 const VENTANA_PRUEBA_MS = 1500;
 
 const RE_RESPUESTA_CORTA =
   /^\s*(?:\d{1,3}|s[ií]|no|ok|okey|okay|dale|listo|claro|bueno|perfecto|vale|ya|gracias)\b[\s.!,]*$/i;
 
+// Saludo solo ("Buenos días", "Hola", "Buenas tardes bendiciones", "Hola
+// buenas"): es la apertura de lo que viene después, no una respuesta.
+const RE_SALUDO =
+  /^\s*(?:hola|holi|buenas|buen[ao]s?\s+(?:d[ií]as?|tardes?|noches?)|buen\s+d[ií]a|saludos|que\s+tal|qu[eé]\s+tal)\b[\s\w.!,¡¿?…]{0,25}$/iu;
+
 function ventanaPara(texto, { esPrueba = false } = {}) {
   if (esPrueba) return VENTANA_PRUEBA_MS;
   const t = String(texto ?? '').trim();
   if (!t) return VENTANA_MS; // foto/audio sin texto: el pie puede venir aparte
+  if (RE_SALUDO.test(t)) return VENTANA_MS;
   if (/[.!?…]$/.test(t)) return VENTANA_CORTA_MS;
   if (RE_RESPUESTA_CORTA.test(t)) return VENTANA_CORTA_MS;
   // Una sola palabra ("Quito", "domicilio", "dos") es una respuesta, no un

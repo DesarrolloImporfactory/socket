@@ -694,6 +694,34 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
     );
   }
 
+  // 2.d) Lo mismo con los DOCUMENTOS de las columnas: los vector stores y los
+  //      archivos viven por proyecto de OpenAI. Con una llave de otro proyecto
+  //      el store de documentos deja de existir y el bot se queda mudo en esa
+  //      columna (404 "Vector store … not found") hasta que alguien vuelva a
+  //      subir los archivos; nadie lo hacía (cfg 1511, 29-10 → 05-11-2026).
+  //      Se comprueba acá, al guardar, y se recrean con la llave nueva desde
+  //      la copia local o el default de la plataforma. Nunca frena el guardado.
+  let docs = { columnas: 0, archivos: 0, perdidos: [] };
+  try {
+    const archivosSvc = require('../services/kanban_archivos.service');
+    const rotas = await archivosSvc.columnasConDocsInvisibles(
+      id_configuracion,
+      api_key,
+    );
+    if (rotas.length) {
+      docs = await archivosSvc.recrearVectorStoresDocs(id_configuracion, {
+        apiKey: api_key,
+        soloColumnas: rotas,
+        logger: async (m) => console.log(`[api_key_openai] cfg ${id_configuracion}: ${m}`),
+      });
+    }
+  } catch (e) {
+    console.error(
+      `[api_key_openai] cfg ${id_configuracion}: no se pudieron revisar los documentos:`,
+      e?.message,
+    );
+  }
+
   // 3) Bootstrap assistants (crear clones en la cuenta del cliente)
   const bootstrap = await bootstrapAssistantsForClient(
     id_configuracion,
@@ -721,10 +749,18 @@ exports.actualizar_api_key_openai = catchAsync(async (req, res, next) => {
       'API key actualizada y assistants creados/asegurados correctamente' +
       (cadenas.reiniciadas
         ? `. La llave es de otro proyecto de OpenAI: se reinició la memoria de ${cadenas.reiniciadas} conversaciones (el bot las retoma con el historial del chat)`
+        : '') +
+      (docs.columnas
+        ? `. Los documentos de ${docs.columnas} columna(s) se volvieron a indexar con la llave nueva` +
+          (docs.perdidos.length
+            ? ` (no se pudo recuperar: ${docs.perdidos.join(', ')}; súbelos de nuevo)`
+            : '')
         : ''),
     bootstrap, // created / skipped / failed
     cuenta,
     cadenas_reiniciadas: cadenas.reiniciadas,
+    documentos_reindexados: docs.columnas,
+    documentos_perdidos: docs.perdidos,
   });
 });
 

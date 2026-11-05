@@ -36,4 +36,49 @@ function calloDespuesDe(id_configuracion, id_cliente, fechaMensaje) {
   return Number.isFinite(t) && ts >= t;
 }
 
-module.exports = { anotarSilencio, calloDespuesDe };
+/* Respuesta que el bot generó y NO mandó porque una persona del negocio
+   contestó antes (kanban_ia paso 9.4). OpenAI ya la guardó en la cadena como
+   si hubiera salido, así que en el próximo turno el bot "recuerda" haberla
+   dicho. Se anota acá para avisarle en ese turno que el cliente nunca la
+   leyó (pedido de Daniel, 05-11-2026: que al retomar sea coherente con lo
+   que escribió la persona). Se borra cuando el bot vuelve a mandar algo. */
+const TTL_DESCARTADA_MS = 24 * 60 * 60 * 1000;
+// 'cfg:cliente' → { texto, por, ts }
+const descartadas = new Map();
+
+function anotarRespuestaDescartada(id_configuracion, id_cliente, { texto, por }) {
+  const k = clave(id_configuracion, id_cliente);
+  descartadas.delete(k);
+  descartadas.set(k, {
+    texto: String(texto || '').trim().slice(0, 400),
+    por: String(por || '').trim(),
+    ts: Date.now(),
+  });
+  if (descartadas.size > MAX_ENTRADAS) {
+    descartadas.delete(descartadas.keys().next().value);
+  }
+}
+
+/** La respuesta descartada vigente de este chat, o null. No la borra. */
+function verRespuestaDescartada(id_configuracion, id_cliente) {
+  const k = clave(id_configuracion, id_cliente);
+  const d = descartadas.get(k);
+  if (!d) return null;
+  if (Date.now() - d.ts > TTL_DESCARTADA_MS || !d.texto) {
+    descartadas.delete(k);
+    return null;
+  }
+  return d;
+}
+
+function olvidarRespuestaDescartada(id_configuracion, id_cliente) {
+  descartadas.delete(clave(id_configuracion, id_cliente));
+}
+
+module.exports = {
+  anotarSilencio,
+  calloDespuesDe,
+  anotarRespuestaDescartada,
+  verRespuestaDescartada,
+  olvidarRespuestaDescartada,
+};
