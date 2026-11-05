@@ -18,6 +18,7 @@ const MensajesClientes = require('../models/mensaje_cliente.model');
 const { obtenerOCrearContactoWa } = require('../utils/unified/dedupeContacto');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 const { estaBloqueado } = require('../utils/contactosBloqueados');
+const { esResponsableHumano } = require('../utils/ajustesIA');
 // Mismo interruptor que kanban y que el remarketing de IG: acá NO se decide nada.
 const { usaResponsesApi } = require('../utils/openia/responsesApi');
 const {
@@ -869,6 +870,59 @@ cron.schedule('*/1 * * * *', async () => {
             continue;
           }
 
+          /* 2.58) Una persona del negocio escribió DESPUÉS de agendarse este
+             remarketing → ya lo está atendiendo; el seguimiento automático
+             sobra. Cubre lo que el webhook no ve: lo escrito desde el panel
+             (unified.gateway no cancela) y, de rebote, la app de WhatsApp
+             Business si el eco llegó tarde. Caso cfg 1549, 2026-11-04: la
+             dueña mandó "Aquí está la guía" a las 17:28 y a las 17:43 salió
+             "¿Tienes alguna pregunta sobre el producto?" encima. Solo
+             personas: IA_, cron_, sistema… no cuentan (esResponsableHumano).
+             Se compara contra creado_en en SQL para no pelear con zonas
+             horarias. Solo columnas con IA activa (mismo criterio que 2.6):
+             ahí el seguimiento es conversación del bot y la persona lo
+             reemplaza; en una columna logística sin IA la secuencia (guía,
+             en tránsito) sigue aunque alguien haya escrito. */
+          const [columnaIA] = await db.query(
+            `SELECT 1 AS x FROM kanban_columnas
+              WHERE id_configuracion = ? AND estado_db = ? AND activa_ia = 1
+              LIMIT 1`,
+            {
+              replacements: [record.id_configuracion, record.estado_contacto_origen],
+              type: db.QueryTypes.SELECT,
+            },
+          );
+          const personasDespues = !columnaIA
+            ? []
+            : await db.query(
+            `SELECT responsable FROM mensajes_clientes m
+              WHERE m.id_configuracion = ? AND m.celular_recibe = ?
+                AND m.rol_mensaje = 1 AND m.deleted_at IS NULL
+                AND m.created_at >= (SELECT rp.creado_en FROM remarketing_pendientes rp WHERE rp.id = ?)
+              ORDER BY m.id DESC LIMIT 30`,
+            {
+              replacements: [record.id_configuracion, String(cliente.id), record.id],
+              type: db.QueryTypes.SELECT,
+            },
+          );
+          const personaAtiende = personasDespues.find((m) =>
+            esResponsableHumano(m.responsable),
+          );
+          if (personaAtiende) {
+            console.log(
+              `🟦 [DEBUG] 🧑‍💼 ${personaAtiende.responsable} escribió en el chat ${cliente.id} después de agendar el remarketing id=${record.id} — cancelando`,
+            );
+            await db.query(
+              `UPDATE remarketing_pendientes
+               SET cancelado = 1,
+                   error_message = 'Una persona ya atendió el chat',
+                   ultimo_intento_at = NOW()
+               WHERE id = ?`,
+              { replacements: [record.id], type: db.QueryTypes.UPDATE },
+            );
+            continue;
+          }
+
           /* 2.6) El chat está ESPERANDO respuesta → no es remarketing.
              El seguimiento de una columna con IA se agenda apenas entra el
              mensaje del cliente, aunque el turno de IA haya fallado (sin
@@ -881,16 +935,7 @@ cron.schedule('*/1 * * * *', async () => {
              sin respuesta significa que el bot falló. En columnas sin IA el
              silencio es normal y la secuencia sigue como siempre. Los
              remarketings anteriores del cron y los avisos del sistema no
-             cuentan como respuesta. */
-          const [columnaIA] = await db.query(
-            `SELECT 1 AS x FROM kanban_columnas
-              WHERE id_configuracion = ? AND estado_db = ? AND activa_ia = 1
-              LIMIT 1`,
-            {
-              replacements: [record.id_configuracion, record.estado_contacto_origen],
-              type: db.QueryTypes.SELECT,
-            },
-          );
+             cuentan como respuesta. (columnaIA se consultó en 2.58.) */
           if (columnaIA) {
             const [sinResponder] = await db.query(
               `SELECT c.id FROM mensajes_clientes c
