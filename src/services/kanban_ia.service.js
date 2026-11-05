@@ -3125,12 +3125,99 @@ async function procesarMensajeKanban(params) {
       return { ok: false, motivo: 'key_invalida_openai' };
     }
 
+    /* Vector store inexistente para esta llave (404 "Vector store vs_… not
+       found in organization …"). Pasa cuando la cuenta cambia la API Key por
+       una de otro proyecto de OpenAI: el catálogo lo recrea la sincronización,
+       pero el store de DOCUMENTOS quedaba apuntando al proyecto viejo y el bot
+       se quedaba mudo en esa columna para siempre, con el aviso de /conexiones
+       prometiendo que "se reintenta solo" (cfg 1511 MaeliShop, 29-10 →
+       05-11-2026: 111 turnos perdidos; cfg 613 ImporVerito, 29 turnos). Acá
+       se cura en el mismo turno: documentos → se recrea el store con la llave
+       actual desde la copia local / el default de la plataforma; catálogo →
+       se suelta (el inline sigue en el prompt y la próxima sincronización lo
+       vuelve a crear). Luego se reintenta UNA vez con los ids nuevos. */
+    const vsPerdido = USAR_RESPONSES_API
+      ? require('./kanban_archivos.service').esVectorStoreNoExiste(err)
+      : null;
+    if (vsPerdido) {
+      const archivosSvc = require('./kanban_archivos.service');
+      await log(
+        `🩹 OpenAI no encuentra el vector store ${vsPerdido} (${
+          vsPerdido === columna.vector_store_docs_id ? 'documentos' : 'catálogo'
+        }) con la llave actual de config=${id_configuracion}: se repara y se reintenta`,
+      );
+      try {
+        if (vsPerdido === columna.vector_store_docs_id) {
+          const r = await archivosSvc.recrearVectorStoresDocs(id_configuracion, {
+            logger: log,
+            apiKey: api_key_openai,
+          });
+          await log(
+            `🩹 documentos recreados: ${r.columnas} columna(s), ${r.archivos} archivo(s)` +
+              (r.perdidos.length ? `, perdidos: ${r.perdidos.join(', ')}` : ''),
+          );
+        } else {
+          await db.query(
+            `UPDATE kanban_columnas SET vector_store_id = NULL WHERE id = ? AND vector_store_id = ?`,
+            { replacements: [columna.id, vsPerdido], type: db.QueryTypes.UPDATE },
+          );
+        }
+        const [fresca] = await db.query(
+          `SELECT vector_store_id, vector_store_docs_id FROM kanban_columnas WHERE id = ? LIMIT 1`,
+          { replacements: [columna.id], type: db.QueryTypes.SELECT },
+        );
+        columna.vector_store_id = fresca?.vector_store_id || null;
+        columna.vector_store_docs_id = fresca?.vector_store_docs_id || null;
+
+        let instruccionesReintento = bloqueCatalogo
+          ? `${assistantInfo.instructions}\n\n${bloqueCatalogo}`
+          : assistantInfo.instructions;
+        if (prefacioWizard) {
+          instruccionesReintento = `${prefacioWizard}\n\n${instruccionesReintento}`;
+        }
+        resultado = await ejecutarConResponsesAPI({
+          previous_response_id,
+          instructions: instruccionesReintento,
+          additional_instructions: prefacioWizard
+            ? null
+            : instruccionesProducto || null,
+          input: inputFinal,
+          model: assistantInfo.model,
+          max_tokens: columna.max_tokens || 500,
+          vector_store_id:
+            usarInline || prefacioWizard ? null : columna.vector_store_id || null,
+          vector_store_docs_id: columna.vector_store_docs_id || null,
+          api_key_openai,
+          id_configuracion,
+        });
+        await log(`🩹 reintento tras reparar el vector store: respondió`);
+      } catch (err2) {
+        await log(
+          `❌ Error tras reparar el vector store: ${err2?.response?.data?.error?.message || err2.message}`,
+        );
+        registrarFalloIA({
+          id_configuracion,
+          proveedor: 'OpenAI',
+          modelo: assistantInfo?.model,
+          columna,
+          err: err2,
+        });
+        await avisarEnChatBotSinRespuesta({
+          id_configuracion,
+          id_cliente,
+          texto: avisoErrorOpenAI(err2),
+        });
+        await enviarRespaldoAlCliente({ ajustesIA, canal, id_configuracion, id_cliente });
+        throw err2;
+      }
+    }
+
     // Contexto excedido o cadena rota (solo Responses API): reintentar UNA vez
     // SIN encadenar, pero RE-SEMBRANDO el hilo con un resumen de la
     // conversación (desde nuestra BD) para no perder el producto ni los datos
     // del cliente. Se auto-cura: al responder se guarda el response_id nuevo y
     // la cadena vieja deja de usarse.
-    if (
+    else if (
       USAR_RESPONSES_API &&
       previous_response_id &&
       (esContextoExcedido(err) || esCadenaInvalida(err))
