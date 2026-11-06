@@ -4,6 +4,7 @@ const router = express.Router();
 
 const whatsappCtrl = require('../controllers/whatsapp.controller');
 const { protect, protectConfigOwner } = require('../middlewares/auth.middleware');
+const restrictToRoles = require('../middlewares/restrictTo.middleware');
 
 /* ────────────────────────────────────────────────
    Multer (memoria) + wrapper de errores limpio
@@ -109,6 +110,16 @@ router.post(
 router.post(
   '/actualizarConfiguracionMeta',
   whatsappCtrl.actualizarConfiguracionMeta,
+);
+// «Desconectar número» del menú de la conexión: suelta el número en Meta
+// (deregister / unsubscribe) y en la BD sin borrar la conexión. Solo el
+// administrador de la cuenta dueña.
+router.post(
+  '/desconectarNumero',
+  protect,
+  restrictToRoles('administrador', 'super_administrador'),
+  protectConfigOwner,
+  whatsappCtrl.desconectarNumero,
 );
 
 /* ════════════════════════════════════════════════

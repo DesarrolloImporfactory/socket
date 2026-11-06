@@ -15,7 +15,11 @@ const {
 } = require('../services/suspension_audit.service');
 const {
   SQL_STATUS_WHATSAPP,
+  ESTADOS_RECONECTAR,
 } = require('../services/whatsapp_numero_health.service');
+const {
+  registrarCambioConexion,
+} = require('../services/conexion_numero_audit.service');
 const { codigoErrorIA } = require('../utils/openia/sinSaldo');
 
 /* Columnas de estado de la IA que /conexiones necesita para decir QUÉ pasa
@@ -278,16 +282,25 @@ exports.listarConexionesSubUser = catchAsync(async (req, res) => {
       c.wa_status,
       c.wa_status_at,
 
-      -- ¿Alguna vez estuvo vinculada a WhatsApp? Si sí, su número y nombre
-      -- quedan bloqueados para siempre: cambiarlos partiría el historial
-      -- entre el número viejo y el nuevo. Un número desconectado o
-      -- suspendido sigue contando como vinculado.
+      -- ¿Alguna vez estuvo vinculada a WhatsApp? Un número desconectado o
+      -- suspendido sigue contando como vinculado. Con esto el front avisa,
+      -- antes de dejar cambiar el número, que los chats del número viejo y
+      -- del nuevo van a convivir en la misma bandeja (ver editarConexion).
       CASE
         WHEN COALESCE(c.wa_status,'') <> ''
           OR COALESCE(c.id_telefono,'') <> ''
           OR COALESCE(c.id_whatsapp,'') <> '' THEN 1
         ELSE 0
       END AS ya_vinculado,
+
+      -- Conversaciones que ya tiene la conexión (sin el contacto propietario),
+      -- para el aviso de mezcla al cambiar el número.
+      (
+        SELECT COUNT(*)
+          FROM clientes_chat_center ccc
+         WHERE ccc.id_configuracion = c.id
+           AND ccc.celular_cliente <> c.telefono
+      ) AS total_chats,
 
       EXISTS (
         SELECT 1
@@ -594,16 +607,35 @@ function generarClaveUnica() {
   return `key_${Date.now()}_${randomStr}`;
 }
 
-// Editar SOLO nombre y teléfono de una conexión (para corregir un número
-// mal escrito sin tener que eliminarla y recrearla). Restricciones:
+// Editar nombre y teléfono de una conexión. Restricciones:
 //  - la conexión debe pertenecer al usuario y estar activa,
-//  - NO se puede editar el número si ya está vinculada a WhatsApp/Meta
-//    (id_telefono + id_whatsapp), porque el número ya está en uso real,
 //  - el nuevo número no puede chocar con otra conexión activa (misma regla
 //    de unicidad de agregarConfiguracion, excluyéndose a sí misma).
+//
+// Conexiones que ya estuvieron vinculadas a WhatsApp (wa_status o ids de
+// Meta): hasta 2026-11-06 el número quedaba bloqueado para siempre y la única
+// salida era crear una conexión nueva, con lo que el cliente perdía Dropi,
+// OpenAI, el tablero y todo lo configurado sobre ese id_configuracion. Ahora
+// se permite cambiarlo, con dos condiciones:
+//  - el front avisa que los chats del número anterior y del nuevo van a
+//    convivir en la misma bandeja (es el mismo id_configuracion) y manda
+//    confirmar_mezcla: true; sin esa confirmación se responde 409
+//    CONFIRMAR_MEZCLA con el total de chats, por si el aviso no se mostró,
+//  - al cambiar el número se sueltan los ids de Meta del número viejo y la
+//    conexión queda NUMERO_CAMBIADO (pendiente de reconectar): el webhook
+//    del número viejo deja de caer aquí, el cron de salud no la revisa, y
+//    /conexiones pide «Conectar». Al vincular el número nuevo
+//    (embeddedSignupComplete / actualizarConfiguracionMeta) la WABA cambia
+//    y plantillas_reconexion.service recrea las plantillas del tablero.
+// Cambiar solo el nombre de una conexión vinculada no toca nada de Meta.
 exports.editarConexion = catchAsync(async (req, res, next) => {
-  const { id_configuracion, id_usuario, nombre_configuracion, telefono } =
-    req.body;
+  const {
+    id_configuracion,
+    id_usuario,
+    nombre_configuracion,
+    telefono,
+    confirmar_mezcla,
+  } = req.body;
 
   if (!id_configuracion || !id_usuario || !nombre_configuracion || !telefono) {
     return res.status(400).json({
@@ -614,7 +646,8 @@ exports.editarConexion = catchAsync(async (req, res, next) => {
 
   // 1) Traer la conexión y validar pertenencia + estado
   const rows = await db.query(
-    `SELECT id, id_usuario, id_telefono, id_whatsapp, wa_status
+    `SELECT id, id_usuario, nombre_configuracion, telefono, id_telefono,
+            id_whatsapp, wa_status
        FROM configuraciones
       WHERE id = ? AND suspendido = 0`,
     { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
@@ -633,29 +666,6 @@ exports.editarConexion = catchAsync(async (req, res, next) => {
     });
   }
 
-  /* 2) Solo editable si la conexión NUNCA estuvo vinculada a WhatsApp.
-     No basta con mirar si está conectada AHORA: cuando un número se
-     desconecta o queda suspendido, la conexión se "libera" y el cliente
-     podía editarla para poner otro número. Eso es justo lo que rompe el
-     historial — los mensajes ya guardados quedan colgando del contacto
-     viejo y el chat se mezcla con el número nuevo. Basta con que haya
-     habido un estado previo (wa_status) o que queden los ids de Meta. */
-  const tuvoVinculo = Boolean(
-    String(cfg.wa_status || '').trim() ||
-      String(cfg.id_telefono || '').trim() ||
-      String(cfg.id_whatsapp || '').trim(),
-  );
-  if (tuvoVinculo) {
-    return res.status(409).json({
-      status: 409,
-      code: 'CONEXION_CONECTADA',
-      message:
-        'Esta conexión ya estuvo vinculada a WhatsApp, así que su número y nombre no se pueden cambiar: el historial de conversaciones quedaría partido entre el número viejo y el nuevo. Si necesitas otro número, crea una conexión nueva.',
-    });
-  }
-
-  // 3) Unicidad del número (comparación directa con índice; excluye la
-  //    propia conexión). El front manda el número como solo-dígitos.
   const telefonoDigitos = String(telefono).replace(/\D/g, '');
   if (!telefonoDigitos) {
     return res.status(400).json({
@@ -663,6 +673,68 @@ exports.editarConexion = catchAsync(async (req, res, next) => {
       message: 'El número de teléfono no es válido.',
     });
   }
+
+  /* 2) ¿Estuvo vinculada alguna vez? No basta con mirar si está conectada
+     AHORA: un número desconectado o suspendido también tiene historial. */
+  const tuvoVinculo = Boolean(
+    String(cfg.wa_status || '').trim() ||
+      String(cfg.id_telefono || '').trim() ||
+      String(cfg.id_whatsapp || '').trim(),
+  );
+  const cambiaNumero =
+    telefonoDigitos !== String(cfg.telefono || '').replace(/\D/g, '');
+
+  /* El número solo se cambia con la conexión desconectada (misma regla que
+     SQL_STATUS_WHATSAPP para decir CONNECTED): mientras Meta la tenga viva,
+     el usuario primero usa «Desconectar número» (whatsapp.controller
+     desconectarNumero), que suelta el número también del lado de Meta. Así
+     no queda un número registrado en Cloud API apuntando a una conexión que
+     ya espera otro. El nombre sí se puede cambiar siempre. */
+  const conectadaAhora =
+    String(cfg.id_telefono || '').trim() &&
+    String(cfg.id_whatsapp || '').trim() &&
+    !ESTADOS_RECONECTAR.includes(String(cfg.wa_status || '').toUpperCase());
+  if (cambiaNumero && conectadaAhora) {
+    return res.status(409).json({
+      status: 409,
+      code: 'NUMERO_CONECTADO',
+      message:
+        'Esta conexión está conectada con WhatsApp. Desconecta el número desde el menú de la conexión y después cámbialo.',
+    });
+  }
+
+  let totalChats = 0;
+  if (tuvoVinculo && cambiaNumero) {
+    const [{ total } = {}] = await db.query(
+      `SELECT COUNT(*) AS total
+         FROM clientes_chat_center
+        WHERE id_configuracion = ? AND celular_cliente <> ?`,
+      {
+        replacements: [id_configuracion, String(cfg.telefono || '')],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    totalChats = Number(total) || 0;
+
+    const confirmado =
+      confirmar_mezcla === true ||
+      confirmar_mezcla === 1 ||
+      confirmar_mezcla === '1' ||
+      String(confirmar_mezcla).toLowerCase() === 'true';
+    if (!confirmado) {
+      return res.status(409).json({
+        status: 409,
+        code: 'CONFIRMAR_MEZCLA',
+        total_chats: totalChats,
+        message:
+          `Esta conexión ya recibió conversaciones con el número ${cfg.telefono}. ` +
+          'Si cambias el número, los chats nuevos llegarán a esta misma bandeja y se verán junto a los anteriores. Confirma para continuar.',
+      });
+    }
+  }
+
+  // 3) Unicidad del número (comparación directa con índice; excluye la
+  //    propia conexión). El front manda el número como solo-dígitos.
   const enUso = await db.query(
     `SELECT id
        FROM configuraciones
@@ -682,21 +754,99 @@ exports.editarConexion = catchAsync(async (req, res, next) => {
     });
   }
 
-  // 4) Update SOLO nombre y teléfono
-  await db.query(
-    `UPDATE configuraciones
-        SET nombre_configuracion = ?, telefono = ?, updated_at = NOW()
-      WHERE id = ?`,
-    { replacements: [nombre_configuracion, telefonoDigitos, id_configuracion] },
-  );
+  // 4) Update
+  const requiereReconexion = tuvoVinculo && cambiaNumero;
+  if (requiereReconexion) {
+    /* Se sueltan los ids de Meta del número viejo (token y webhook se
+       quedan: el token es el de sistema y la reconexión los vuelve a
+       escribir). sincronizo_coexistencia vuelve a 0: el número nuevo puede
+       traer sus propios chats de la app. */
+    await db.query(
+      `UPDATE configuraciones
+          SET nombre_configuracion = ?,
+              telefono = ?,
+              id_telefono = NULL,
+              id_whatsapp = NULL,
+              wa_status = 'NUMERO_CAMBIADO',
+              wa_status_at = NOW(),
+              sincronizo_coexistencia = 0,
+              updated_at = NOW()
+        WHERE id = ?`,
+      {
+        replacements: [nombre_configuracion, telefonoDigitos, id_configuracion],
+      },
+    );
+    console.log(
+      `[editarConexion] cfg ${id_configuracion}: número ${cfg.telefono} → ${telefonoDigitos} ` +
+        `(WABA anterior ${cfg.id_whatsapp || '-'}, phone_id ${cfg.id_telefono || '-'}, ${totalChats} chats). Queda NUMERO_CAMBIADO hasta reconectar.`,
+    );
+  } else {
+    await db.query(
+      `UPDATE configuraciones
+          SET nombre_configuracion = ?, telefono = ?, updated_at = NOW()
+        WHERE id = ?`,
+      {
+        replacements: [nombre_configuracion, telefonoDigitos, id_configuracion],
+      },
+    );
+  }
+
+  /* Historial para soporte («yo no puse ese número»): quién, desde dónde y
+     cómo quedó. Nunca interrumpe la operación. */
+  const cambiaNombre =
+    String(nombre_configuracion).trim() !==
+    String(cfg.nombre_configuracion || '').trim();
+  if (cambiaNumero || cambiaNombre) {
+    await registrarCambioConexion(req, {
+      id_configuracion,
+      id_usuario: cfg.id_usuario,
+      accion: cambiaNumero ? 'cambio_numero' : 'cambio_nombre',
+      origen: 'panel',
+      antes: {
+        telefono: cfg.telefono,
+        id_telefono: cfg.id_telefono,
+        id_whatsapp: cfg.id_whatsapp,
+        wa_status: cfg.wa_status,
+        nombre: cfg.nombre_configuracion,
+      },
+      despues: {
+        telefono: telefonoDigitos,
+        id_telefono: requiereReconexion ? null : cfg.id_telefono,
+        id_whatsapp: requiereReconexion ? null : cfg.id_whatsapp,
+        wa_status: requiereReconexion ? 'NUMERO_CAMBIADO' : cfg.wa_status,
+        nombre: nombre_configuracion,
+      },
+      detalle: cambiaNumero
+        ? {
+            total_chats: totalChats,
+            confirmar_mezcla: Boolean(tuvoVinculo && cambiaNumero),
+            requiere_reconexion: requiereReconexion,
+          }
+        : null,
+    });
+  }
 
   return res.status(200).json({
     status: 200,
-    message: 'Conexión actualizada correctamente.',
+    message: requiereReconexion
+      ? 'Número actualizado. Conecta el número nuevo para terminar.'
+      : 'Conexión actualizada correctamente.',
     data: {
       id: id_configuracion,
       nombre_configuracion,
       telefono: telefonoDigitos,
+      requiere_reconexion: requiereReconexion,
+      total_chats: totalChats,
+      ...(requiereReconexion
+        ? {
+            id_telefono: null,
+            id_whatsapp: null,
+            wa_status: 'NUMERO_CAMBIADO',
+            status_whatsapp: 'SIN_VINCULAR',
+            ya_vinculado: 1,
+            sincronizo_coexistencia: 0,
+          }
+        : {}),
     },
   });
 });

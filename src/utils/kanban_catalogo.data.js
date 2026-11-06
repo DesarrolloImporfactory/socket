@@ -26,54 +26,14 @@ function dedent(str) {
     .trim();
 }
 
+/* remarketing_k1 y remarketing_k2 (encabezado de VIDEO alojado en la Video
+   API de Imporsuit) se quitaron el 06-11-2026: nunca se crearon en ninguna
+   cuenta (0 success / 448 error_media en configuraciones_kanban_global_log
+   desde agosto, el video es privado y el instalador no tiene sesión) y el
+   remarketing del asistente va por IA, no por esas plantillas. Las
+   respuestas rápidas remarketing_1 / remarketing_4 de abajo siguen con el
+   video: el chat lo manda con el JWT del usuario y sí funciona. */
 const KANBAN_TEMPLATES_META = [
-  {
-    name: 'remarketing_k1',
-    language: 'es',
-    category: 'MARKETING',
-    components: [
-      {
-        type: 'HEADER',
-        format: 'VIDEO',
-        example: {
-          header_handle: [
-            'https://new.imporsuitpro.com/Videos/stream/3619a3291e1ccfe2388174618b50b550',
-          ],
-        },
-      },
-      {
-        type: 'BODY',
-        text: 'Tu pedido ya está listo para salir. Compárteme tu ubicación para coordinar el envío de inmediato.',
-      },
-    ],
-  },
-  {
-    name: 'remarketing_k2',
-    language: 'es',
-    category: 'MARKETING',
-    components: [
-      {
-        type: 'HEADER',
-        format: 'VIDEO',
-        example: {
-          header_handle: [
-            'https://new.imporsuitpro.com/Videos/stream/58b0a69a64359e85d12dd722f27f7afe',
-          ],
-        },
-      },
-      {
-        type: 'BODY',
-        text: 'Tu pedido está listo y tenemos cupos de envío GRATIS disponibles por poco tiempo.\nRecuerda, el pago lo realizas directamente al transportista al momento de la entrega.',
-      },
-      {
-        type: 'BUTTONS',
-        buttons: [
-          { type: 'QUICK_REPLY', text: 'Quiero envío hoy' },
-          { type: 'QUICK_REPLY', text: 'Tengo una consulta' },
-        ],
-      },
-    ],
-  },
   {
     name: 'remarketing_k3',
     language: 'es',
