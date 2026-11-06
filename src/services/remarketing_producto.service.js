@@ -1458,7 +1458,19 @@ async function enviarPrueba({ id_configuracion, id_producto, telefono, paso = 1,
   const to = String(telefono || '').replace(/\D/g, '');
   if (to.length < 8) throw error('Número de prueba inválido');
 
-  const texto = rellenar(p.mensaje, { nombre: 'Daniela', producto: producto.nombre, precio: fmtPrecio(producto.precio) }).slice(0, MAX_CUERPO);
+  // El número de prueba suele ser un contacto de la cuenta (el dueño le
+  // escribió al negocio para abrir la ventana): se usa SU nombre, como en
+  // un envío real, y «Daniela» solo si no existe. Y se registra el mensaje
+  // en el chat, con su wamid, para que en /chat se vea el recordatorio y la
+  // respuesta del botón lo cite en vez de «Mensaje original no disponible».
+  const [contacto] = await db.query(
+    `SELECT id, nombre_cliente FROM clientes_chat_center
+      WHERE id_configuracion = ? AND REPLACE(celular_cliente, ' ', '') = ?
+      ORDER BY id DESC LIMIT 1`,
+    { replacements: [id_configuracion, to], type: T.SELECT },
+  );
+  const nombre = primerNombre(contacto?.nombre_cliente) || 'Daniela';
+  const texto = rellenar(p.mensaje, { nombre, producto: producto.nombre, precio: fmtPrecio(producto.precio) }).slice(0, MAX_CUERPO);
   const imagen = p.con_imagen ? imagenDe(config, p) || producto.imagen_url || null : null;
   const botones = p.con_botones ? botonesDe(config, p) : [];
   const interactive = {
@@ -1485,7 +1497,24 @@ async function enviarPrueba({ id_configuracion, id_producto, telefono, paso = 1,
       body,
       { headers: { Authorization: `Bearer ${cfg.ACCESS_TOKEN}`, 'Content-Type': 'application/json' }, timeout: 30000 },
     );
-    return { ok: true, wamid: resp.data?.messages?.[0]?.id || null, texto };
+    const wamid = resp.data?.messages?.[0]?.id || null;
+    if (contacto?.id && wamid) {
+      await registrarMensajeSaliente({
+        record: {
+          id_configuracion,
+          id_cliente_chat_center: contacto.id,
+          telefono_configuracion: cfg.telefono_configuracion || null,
+        },
+        cfg,
+        telefonoLimpio: to,
+        tipo_mensaje: imagen ? 'image' : 'text',
+        texto_mensaje: botones.length ? `${texto}\n\n${botones.map((b) => `[ ${b.titulo} ]`).join('  ')}` : texto,
+        ruta_archivo: imagen || null,
+        wamid,
+        responsable: 'prueba_remarketing_producto',
+      }).catch((e) => console.warn('[remarketing_producto] prueba sin registrar en el chat:', e.message));
+    }
+    return { ok: true, wamid, texto, nombre };
   } catch (e) {
     const err = e.response?.data?.error;
     const msg = err?.message || e.message;
