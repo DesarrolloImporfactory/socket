@@ -673,10 +673,17 @@ exports.listarGlobales = catchAsync(async (req, res) => {
 
 const mediaCache = new Map();
 
+/* El medio del encabezado debe ser una URL pública (S3): los videos
+   privados de la Video API de Imporsuit (/Videos/stream/<id>) responden 404
+   sin sesión, por eso remarketing_k1/k2 se quitaron del catálogo el
+   06-11-2026 (ver kanban_catalogo.data). */
 async function getBufferFromUrl(url) {
   const resp = await axios.get(url, {
     responseType: 'arraybuffer',
-    timeout: 15000,
+    // Un video de encabezado puede pesar decenas de MB: 15 s no alcanzaba.
+    timeout: 90000,
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
   });
   return Buffer.from(resp.data);
 }
@@ -733,7 +740,10 @@ async function uploadResumableAndGetHandle({
       'Content-Type': 'application/octet-stream',
       file_offset: '0',
     },
-    timeout: 30000,
+    // El video completo sube en una sola petición; 30 s cortaban los grandes.
+    timeout: 180000,
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
     validateStatus: () => true,
   });
 
@@ -787,7 +797,12 @@ async function prepareComponentsWithHandles(components, ACCESS_TOKEN) {
           example: { header_handle: [handle] },
         });
       } catch (err) {
-        throw new Error(`MEDIA_ERROR: ${url}`);
+        // Con el motivo real: antes solo salía la URL y tocaba adivinar
+        // si era descarga (404 privado) o subida a Meta.
+        const motivo = err?.response?.status
+          ? `HTTP ${err.response.status} al descargar`
+          : err?.message || 'error';
+        throw new Error(`MEDIA_ERROR: ${url} (${motivo})`);
       }
     } else {
       newComponents.push(comp);
@@ -3332,6 +3347,11 @@ async function _instalarFaltantes(id_configuracion) {
 
 exports._instalarFaltantes = _instalarFaltantes;
 exports._resincronizarUnaConfiguracion = _resincronizarUnaConfiguracion;
+/* Los usa plantillas_reconexion.service: al cambiar el número de WhatsApp
+   de una conexión con tablero, la WABA nueva nace sin plantillas y hay que
+   volver a crear las que el tablero y las automatizaciones referencian. */
+exports._crearTemplatesMeta = _crearTemplatesMeta;
+exports._setupDeLaPlantillaInstalada = _setupDeLaPlantillaInstalada;
 
 /* ══════════════════════════════════════════════════════════════
    MEJORAS DISPONIBLES

@@ -1,6 +1,9 @@
 const crypto = require('crypto');
 const axios = require('axios');
 const { db } = require('../database/config');
+const {
+  registrarCambioConexion,
+} = require('../services/conexion_numero_audit.service');
 const { DateTime } = require('luxon');
 const FormData = require('form-data');
 const catchAsync = require('../utils/catchAsync');
@@ -61,6 +64,54 @@ const {
 } = require('../services/whatsapp.service');
 const { getTemplatesMetaMerged } = require('../utils/kanban_catalogo.provider');
 const { paisDesdeTelefono } = require('../utils/paisDesdeTelefono');
+const {
+  tienePlantillasQueRecrear,
+  recrearPlantillasTrasReconexion,
+} = require('../services/plantillas_reconexion.service');
+
+/* Tras vincular un número a una conexión que ya existía: si la WABA es
+   distinta de la que la fila tenía (el cliente cambió el número desde
+   /conexiones, o Meta migró el número), las plantillas del tablero y de las
+   automatizaciones se quedaron en la WABA anterior y el notifier de Dropi,
+   el remarketing, etc. dejan de enviar sin que nadie lo note (cfg 793,
+   2026-11-06). Decide rápido (solo BD) qué contestarle al front y lanza la
+   recreación en segundo plano. Devuelve null si no hay nada que recrear. */
+async function programarRecreacionPlantillas({
+  id_configuracion,
+  waba_anterior,
+  waba_nueva,
+  wa_status_anterior,
+  motivo,
+}) {
+  if (!id_configuracion || !waba_nueva) return null;
+  if (String(waba_anterior || '') === String(waba_nueva)) return null;
+  try {
+    const total = await tienePlantillasQueRecrear(id_configuracion);
+    if (!total) return null;
+    console.log(
+      `[plantillas_reconexion] cfg ${id_configuracion}: WABA ${waba_anterior || '(ninguna)'} → ${waba_nueva} ` +
+        `(estado previo ${wa_status_anterior || 'ninguno'}); ${total} plantilla(s) referenciadas, se recrean en segundo plano`,
+    );
+    setImmediate(() => {
+      recrearPlantillasTrasReconexion(id_configuracion, {
+        motivo,
+        waba_anterior: waba_anterior || null,
+      }).catch((e) =>
+        console.error(
+          `[plantillas_reconexion] cfg ${id_configuracion}: falló la recreación:`,
+          e.message,
+        ),
+      );
+    });
+    return { estado: 'recreando', total };
+  } catch (e) {
+    console.error(
+      `[plantillas_reconexion] cfg ${id_configuracion}: no se pudo programar:`,
+      e.message,
+    );
+    return null;
+  }
+}
 const {
   revisarConfiguracion,
   persistirEstado,
@@ -1875,6 +1926,13 @@ exports.actualizarConfiguracionMeta = async (req, res) => {
     const webhook_url =
       'https://chat.imporfactory.app/api/v1/webhook_meta/webhook_whatsapp?webhook=wh_clfgshu99';
 
+    // WABA previa: si cambia, las plantillas del tablero hay que recrearlas.
+    const [previo] = await db.query(
+      `SELECT id_usuario, nombre_configuracion, telefono, id_telefono, id_whatsapp, wa_status
+         FROM configuraciones WHERE id = ? LIMIT 1`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+
     const updateSql = `
       UPDATE configuraciones
       SET
@@ -1916,9 +1974,41 @@ exports.actualizarConfiguracionMeta = async (req, res) => {
       id_plataforma: null,
     });
 
+    const plantillas_asistente = await programarRecreacionPlantillas({
+      id_configuracion,
+      waba_anterior: previo?.id_whatsapp || null,
+      waba_nueva: id_whatsapp,
+      wa_status_anterior: previo?.wa_status || null,
+      motivo: 'conexion_manual',
+    });
+
+    await registrarCambioConexion(req, {
+      id_configuracion,
+      id_usuario: previo?.id_usuario || null,
+      actor_id_usuario: previo?.id_usuario || null,
+      accion: 'conectar',
+      origen: 'conexion_manual',
+      antes: {
+        telefono: previo?.telefono,
+        id_telefono: previo?.id_telefono,
+        id_whatsapp: previo?.id_whatsapp,
+        wa_status: previo?.wa_status,
+        nombre: previo?.nombre_configuracion,
+      },
+      despues: {
+        telefono,
+        id_telefono,
+        id_whatsapp,
+        wa_status: 'CONNECTED',
+        nombre: nombre_configuracion,
+      },
+      detalle: { plantillas_asistente },
+    });
+
     return res.status(200).json({
       status: 200,
       owner_id: ownerId,
+      plantillas_asistente,
       message:
         'Configuración actualizada y cliente propietario insertado/actualizado correctamente.',
     });
@@ -1929,6 +2019,180 @@ exports.actualizarConfiguracionMeta = async (req, res) => {
       message: 'Hubo un problema al actualizar la configuración.',
     });
   }
+};
+
+/* ─────────── DESCONECTAR NÚMERO ───────────
+   «Desconectar número» del menú de la conexión (06-11-2026). Antes la única
+   forma de soltar un número era eliminar la conexión entera (y con ella
+   Dropi, el asistente y el tablero); el número se cambia solo con la
+   conexión desconectada (configuraciones.controller editarConexion), así
+   que hacía falta un botón que la desconecte sin borrar nada.
+
+   Del lado de Meta se hace lo que la API permite al partner:
+   - Número solo de Cloud API: POST /{phone_id}/deregister, queda fuera de
+     Cloud API (el historial no se borra; para usarlo otra vez se registra
+     de nuevo, Embedded Signup lo hace).
+   - Número en coexistencia (is_on_biz_app = true, sigue en la app de
+     WhatsApp Business): Meta NO deja desregistrarlo por API («You cannot
+     use the Deregister API to deregister a business phone number ... in
+     use with both Cloud API and the WhatsApp Business app»); el cliente lo
+     desconecta desde la app: Ajustes > Cuenta > Plataforma empresarial >
+     Desconectar cuenta. Se le dice en la respuesta (coexistencia: true).
+   - DELETE /{waba}/subscribed_apps para dejar de recibir sus webhooks, solo
+     si ninguna otra conexión activa usa la misma WABA (una WABA puede tener
+     varios números).
+   Todo lo de Meta es de mejor esfuerzo: la conexión se suelta en la BD
+   aunque Graph falle, porque el objetivo del usuario es poder cambiar el
+   número. Queda wa_status = 'DESCONECTADO' con los ids en NULL: la tarjeta
+   pasa a «Conectar» (ya_vinculado = 1 para el aviso de mezcla de chats). */
+exports.desconectarNumero = async (req, res) => {
+  const id_configuracion = Number(req.body?.id_configuracion);
+  if (!id_configuracion) {
+    return res
+      .status(400)
+      .json({ status: 400, message: 'Falta id_configuracion.' });
+  }
+
+  const [cfg] = await db.query(
+    `SELECT id, nombre_configuracion, telefono, id_telefono, id_whatsapp, token,
+            wa_status, sincronizo_coexistencia
+       FROM configuraciones
+      WHERE id = ? AND suspendido = 0
+      LIMIT 1`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  if (!cfg) {
+    return res
+      .status(404)
+      .json({ status: 404, message: 'No existe la conexión o fue eliminada.' });
+  }
+
+  const phoneId = String(cfg.id_telefono || '').trim();
+  const wabaId = String(cfg.id_whatsapp || '').trim();
+  const V = process.env.GRAPH_VERSION;
+  const tokens = [process.env.FB_PROVIDER_TOKEN, cfg.token].filter(Boolean);
+  const meta = {
+    coexistencia: Number(cfg.sincronizo_coexistencia) === 1,
+    desregistrado: false,
+    desuscrito: false,
+    waba_compartida: false,
+    errores: [],
+  };
+
+  /* Prueba con el token de sistema y, si Meta lo rechaza, con el de la
+     conexión (el manual guarda el del cliente). */
+  const intentar = async (nombre, fn) => {
+    let ultimo = null;
+    for (const tk of tokens) {
+      try {
+        return await fn(tk);
+      } catch (e) {
+        ultimo = e?.response?.data?.error || { message: e.message };
+      }
+    }
+    meta.errores.push({ paso: nombre, error: ultimo });
+    return null;
+  };
+
+  if (phoneId && tokens.length) {
+    const info = await intentar('estado', (tk) =>
+      axios.get(`https://graph.facebook.com/${V}/${phoneId}`, {
+        params: { fields: 'is_on_biz_app,platform_type' },
+        headers: { Authorization: `Bearer ${tk}` },
+      }),
+    );
+    if (info?.data) {
+      meta.coexistencia =
+        info.data.is_on_biz_app === true || meta.coexistencia;
+    }
+
+    if (!meta.coexistencia) {
+      const r = await intentar('deregister', (tk) =>
+        axios.post(`https://graph.facebook.com/${V}/${phoneId}/deregister`, null, {
+          headers: { Authorization: `Bearer ${tk}` },
+        }),
+      );
+      meta.desregistrado = Boolean(r?.data?.success);
+    }
+  }
+
+  if (wabaId && tokens.length) {
+    const [otra] = await db.query(
+      `SELECT id FROM configuraciones
+        WHERE id_whatsapp = ? AND id <> ? AND suspendido = 0
+        LIMIT 1`,
+      { replacements: [wabaId, id_configuracion], type: db.QueryTypes.SELECT },
+    );
+    meta.waba_compartida = Boolean(otra);
+    if (!otra) {
+      const r = await intentar('subscribed_apps', (tk) =>
+        axios.delete(`https://graph.facebook.com/${V}/${wabaId}/subscribed_apps`, {
+          headers: { Authorization: `Bearer ${tk}` },
+        }),
+      );
+      meta.desuscrito = Boolean(r?.data?.success);
+    }
+  }
+
+  await db.query(
+    `UPDATE configuraciones
+        SET id_telefono = NULL,
+            id_whatsapp = NULL,
+            wa_status = 'DESCONECTADO',
+            wa_status_at = NOW(),
+            sincronizo_coexistencia = 0,
+            updated_at = NOW()
+      WHERE id = ?`,
+    { replacements: [id_configuracion] },
+  );
+
+  await registrarCambioConexion(req, {
+    id_configuracion,
+    id_usuario: req.sessionUser?.id_usuario || null,
+    accion: 'desconectar',
+    origen: 'panel',
+    antes: {
+      telefono: cfg.telefono,
+      id_telefono: phoneId || null,
+      id_whatsapp: wabaId || null,
+      wa_status: cfg.wa_status,
+      nombre: cfg.nombre_configuracion,
+    },
+    despues: {
+      telefono: cfg.telefono,
+      id_telefono: null,
+      id_whatsapp: null,
+      wa_status: 'DESCONECTADO',
+      nombre: cfg.nombre_configuracion,
+    },
+    detalle: meta,
+  });
+
+  console.log(
+    `[desconectarNumero] cfg ${id_configuracion} "${cfg.nombre_configuracion || ''}" ` +
+      `tel ${cfg.telefono} phone_id ${phoneId || '-'} waba ${wabaId || '-'} ` +
+      `(${cfg.wa_status || 'sin estado'}): coexistencia=${meta.coexistencia} ` +
+      `deregister=${meta.desregistrado} unsubscribe=${meta.desuscrito} ` +
+      `waba_compartida=${meta.waba_compartida}` +
+      (meta.errores.length ? ` errores=${JSON.stringify(meta.errores)}` : ''),
+  );
+
+  return res.status(200).json({
+    status: 200,
+    message: meta.coexistencia
+      ? 'Número desconectado de ChatCenter. Como sigue en tu app de WhatsApp Business, termina de desvincularlo desde la app.'
+      : 'Número desconectado.',
+    ...meta,
+    data: {
+      id: id_configuracion,
+      id_telefono: null,
+      id_whatsapp: null,
+      wa_status: 'DESCONECTADO',
+      status_whatsapp: 'SIN_VINCULAR',
+      ya_vinculado: 1,
+      sincronizo_coexistencia: 0,
+    },
+  });
 };
 
 /* ─────────── ONBOARDING / COEXISTENCIA ─────────── */
@@ -2356,6 +2620,18 @@ exports.embeddedSignupComplete = async (req, res) => {
       );
     }
 
+    /* Estado previo de la fila (antes de pisarla): si la WABA cambia, las
+       plantillas del tablero quedaron en la anterior y hay que recrearlas. */
+    let previo = null;
+    if (idConfigToUse) {
+      const [p] = await db.query(
+        `SELECT id_usuario, nombre_configuracion, telefono, id_telefono, id_whatsapp, wa_status
+           FROM configuraciones WHERE id = ? LIMIT 1`,
+        { replacements: [idConfigToUse], type: db.QueryTypes.SELECT },
+      );
+      previo = p || null;
+    }
+
     if (idConfigToUse) {
       await db.query(
         `UPDATE configuraciones SET
@@ -2423,6 +2699,46 @@ exports.embeddedSignupComplete = async (req, res) => {
 
     console.log('[DB] OWNER UPSERT (by config) OK. ownerId=', ownerId);
 
+    /* Las plantillas son de la WABA: si esta conexión ya tenía tablero o
+       automatizaciones y la WABA es otra, se recrean en segundo plano. Va
+       antes del return parcial de coexistencia porque la WABA ya quedó
+       guardada aunque el número aún no esté registrado. */
+    const plantillas_asistente = await programarRecreacionPlantillas({
+      id_configuracion: idConfigToUse,
+      waba_anterior: previo?.id_whatsapp || null,
+      waba_nueva: wabaId,
+      wa_status_anterior: previo?.wa_status || null,
+      motivo: 'embedded_signup',
+    });
+
+    // Historial para soporte: con qué número/WABA quedó y quién lo conectó.
+    await registrarCambioConexion(req, {
+      id_configuracion: idConfigToUse,
+      id_usuario: previo?.id_usuario || id_usuario || null,
+      actor_id_usuario: id_usuario || previo?.id_usuario || null,
+      accion: 'conectar',
+      origen: 'embedded_signup',
+      antes: {
+        telefono: previo?.telefono,
+        id_telefono: previo?.id_telefono,
+        id_whatsapp: previo?.id_whatsapp,
+        wa_status: previo?.wa_status,
+        nombre: previo?.nombre_configuracion,
+      },
+      despues: {
+        telefono: displayNumber,
+        id_telefono: phoneNumberId,
+        id_whatsapp: wabaId,
+        wa_status: waStatusNuevo,
+        nombre: nombre_configuracion || previo?.nombre_configuracion,
+      },
+      detalle: {
+        platform_type: info?.platform_type || null,
+        status_meta: info?.status || null,
+        plantillas_asistente,
+      },
+    });
+
     /* Coexistencia: nosotros no registramos el número (Meta responde
        "Register endpoint is not available for SMB businesses"); lo registra
        Meta cuando el cliente completa la vinculación desde la app de
@@ -2439,6 +2755,7 @@ exports.embeddedSignupComplete = async (req, res) => {
         telefono: displayNumber,
         status: info?.status || null,
         platform_type: info?.platform_type || null,
+        plantillas_asistente,
         message:
           'La cuenta quedó vinculada, pero Meta aún no tiene este número activo en la API. Completa la conexión desde la app de WhatsApp Business (mensaje de "Facebook Business" → Conectar → Confirmar) y vuelve a intentar.',
       });
@@ -2452,6 +2769,7 @@ exports.embeddedSignupComplete = async (req, res) => {
       telefono: displayNumber,
       status: info?.status || null,
       matched_by: 'display_number_onboarding',
+      plantillas_asistente,
     });
   } catch (err) {
     console.error(
