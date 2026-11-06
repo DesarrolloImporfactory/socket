@@ -78,7 +78,31 @@ const LIMITE_VENTANA_MIN = 24 * 60;
 const acumuladoHasta = (pasos, idx) =>
   pasos.slice(0, idx + 1).reduce((t, p) => t + (Number(p?.minutos) || 0), 0);
 
-// 1 h → 5 h → 8 h: suman 14 h, todos dentro de la ventana sin plantilla.
+const REMATE_DEFECTO = '¿Te gustaría pedir 1, 2 o 3 unidades? 😊';
+
+/* Botones sugeridos para cada recordatorio: misma intención (ver opiniones /
+   pedir), otra forma de decirlo para que la secuencia no se lea repetida.
+   Las claves 'opiniones' y 'quiero' se mantienen en los tres porque las
+   métricas (metricasPorProducto) cuentan por clave. */
+const BOTONES_DEFECTO_POR_PASO = [
+  BOTONES_DEFECTO,
+  [
+    { clave: 'opiniones', titulo: '👀 Ver qué opinan', accion: 'bloque' },
+    { clave: 'quiero', titulo: '🛒 Pedirlo ahora', accion: 'cerrar' },
+  ],
+  [
+    { clave: 'opiniones', titulo: '⭐ Opiniones reales', accion: 'bloque' },
+    { clave: 'quiero', titulo: '✅ Quiero el mío', accion: 'cerrar' },
+  ],
+];
+
+/* Cada recordatorio lleva SUS botones (texto y acción, `pasos[i].botones`,
+   desde el 06-11-2026; antes había una sola lista por producto y los
+   recordatorios 2 y 3 solo cambiaban el texto con `botones_titulos`, así que
+   al editar el 2 se veía y se pisaba lo del 1). El CONTENIDO (bloques) es
+   uno por producto, por clave de botón: toque el botón del recordatorio que
+   toque, «ver opiniones» manda las mismas capturas (Daniel, 06-11).
+   1 h → 5 h → 8 h suman 14 h, todos dentro de la ventana. */
 const PASOS_DEFECTO = [
   {
     minutos: 60,
@@ -86,6 +110,7 @@ const PASOS_DEFECTO = [
       'Hola {{nombre}} 👋 Vi que te interesó *{{producto}}* y quedó pendiente. ¿Te ayudo a completar tu pedido? Para tu tranquilidad, aquí puedes ver más 👇',
     con_imagen: true,
     con_botones: true,
+    botones: BOTONES_DEFECTO_POR_PASO[0],
   },
   {
     minutos: 300,
@@ -93,8 +118,7 @@ const PASOS_DEFECTO = [
       '{{nombre}}, sigo por aquí 🙂 *{{producto}}* todavía está disponible. ¿Te quedó alguna duda? Te la resuelvo ahora mismo 👇',
     con_imagen: false,
     con_botones: true,
-    // Mismos botones (misma acción), otro texto: que no se lea repetido.
-    botones_titulos: { opiniones: '👀 Ver qué opinan', quiero: '🛒 Pedirlo ahora' },
+    botones: BOTONES_DEFECTO_POR_PASO[1],
   },
   {
     minutos: 480,
@@ -102,22 +126,43 @@ const PASOS_DEFECTO = [
       'Última llamada, {{nombre}} 🙌 Para que no te quedes sin *{{producto}}*, te lo dejo listo para pedir hoy. ¿Lo aseguramos? 👇',
     con_imagen: true,
     con_botones: true,
-    botones_titulos: { opiniones: '⭐ Opiniones reales', quiero: '✅ Quiero el mío' },
+    botones: BOTONES_DEFECTO_POR_PASO[2],
   },
 ];
 
-/* Botones de un paso: los de la configuración (clave + acción) con el texto
-   propio del paso si lo definió. Así el 2.º y 3.º recordatorio no repiten
-   «Ver opiniones / Sí, lo quiero» aunque hagan lo mismo. */
-function botonesDelPaso(config, paso) {
+const copiaJson = (v) => JSON.parse(JSON.stringify(v));
+
+/* Compatibilidad con lo guardado antes del 06-11-2026: un paso sin `botones`
+   usa los del producto (config.botones) con el texto propio del paso
+   (`botones_titulos`). Así una fila vieja sigue mandando lo mismo. */
+function botonesDe(config, paso) {
+  if (Array.isArray(paso?.botones)) return paso.botones.slice(0, MAX_BOTONES);
   const titulos = paso?.botones_titulos && typeof paso.botones_titulos === 'object' ? paso.botones_titulos : {};
-  return (config.botones || []).slice(0, MAX_BOTONES).map((b) => {
+  return (config?.botones || []).slice(0, MAX_BOTONES).map((b) => {
     const t = String(titulos[b.clave] || '').trim();
     return t ? { ...b, titulo: t } : b;
   });
 }
 
-const REMATE_DEFECTO = '¿Te gustaría pedir 1, 2 o 3 unidades? 😊';
+/* Pasos con botones propios garantizados (hidrata los viejos). */
+function pasosConPropios(config) {
+  return (config?.pasos || []).map((p) => {
+    const { botones_titulos, ...resto } = p || {};
+    return { ...resto, botones: copiaJson(botonesDe(config, p)) };
+  });
+}
+
+/* Botones «manda contenido» de todos los pasos, uno por clave: son las
+   entradas que el contenido del producto tiene que cubrir. */
+function botonesBloqueDe(pasos) {
+  const vistos = new Map();
+  for (const p of pasos) {
+    for (const b of p?.botones || []) {
+      if (b.accion === 'bloque' && !vistos.has(b.clave)) vistos.set(b.clave, b);
+    }
+  }
+  return [...vistos.values()];
+}
 
 /* ── Utilidades ───────────────────────────────────────────────────────── */
 
@@ -189,44 +234,46 @@ function normalizarPlantilla(pl) {
   };
 }
 
-function normalizarPasos(pasos) {
+/**
+ * Pasos tal como los manda el front, cada uno con SUS botones. `body` es la
+ * configuración completa: si un paso llega sin `botones` (front anterior al
+ * 06-11-2026) se toman los del producto con el texto propio del paso, igual
+ * que se leían antes. Los botones solo se exigen completos en los pasos que
+ * de verdad los mandan (con botones y dentro de las 24 h); en los demás se
+ * guardan como están, sin vacíos, para no perder lo configurado si el dueño
+ * apaga «Con botones» y lo vuelve a prender.
+ */
+function normalizarPasos(pasos, body = {}) {
   const lista = Array.isArray(pasos) ? pasos : [];
   const recortada = lista.slice(0, MAX_PASOS);
   const out = recortada.map((p, i) => {
+    const etiqueta = `recordatorio ${i + 1}`;
     const minutos = Math.round(Number(p?.minutos));
     if (!Number.isFinite(minutos) || minutos < 5 || minutos > 3 * 1440) {
-      throw error(`El recordatorio ${i + 1} necesita un tiempo entre 5 minutos y 3 días`);
+      throw error(`El ${etiqueta} necesita un tiempo entre 5 minutos y 3 días`);
     }
     const mensaje = String(p?.mensaje || '').trim();
     if (mensaje.length > MAX_CUERPO) {
-      throw error(`El mensaje del recordatorio ${i + 1} supera ${MAX_CUERPO} caracteres`);
+      throw error(`El mensaje del ${etiqueta} supera ${MAX_CUERPO} caracteres`);
     }
     const plantilla = normalizarPlantilla(p?.plantilla);
-    const botones_titulos = {};
-    if (p?.botones_titulos && typeof p.botones_titulos === 'object') {
-      for (const [clave, titulo] of Object.entries(p.botones_titulos)) {
-        const t = String(titulo || '').trim();
-        if (!t) continue;
-        if ([...t].length > MAX_TITULO) {
-          throw error(`El botón «${t}» del recordatorio ${i + 1} supera ${MAX_TITULO} caracteres (límite de WhatsApp)`);
-        }
-        botones_titulos[String(clave).slice(0, 40)] = t;
-      }
-    }
     const fueraDeVentana = acumuladoHasta(recortada, i) > LIMITE_VENTANA_MIN;
     if (fueraDeVentana && !plantilla) {
       throw error(
-        `El recordatorio ${i + 1} llegaría más de 24 h después del último mensaje del cliente; ` +
+        `El ${etiqueta} llegaría más de 24 h después del último mensaje del cliente; ` +
           'WhatsApp solo permite plantillas aprobadas ahí. Elige una plantilla para ese recordatorio o acorta los tiempos.',
       );
     }
-    if (!fueraDeVentana && !mensaje) throw error(`El recordatorio ${i + 1} no tiene mensaje`);
+    if (!fueraDeVentana && !mensaje) throw error(`El ${etiqueta} no tiene mensaje`);
+    const con_botones = p?.con_botones !== false && p?.con_botones !== 0;
+    const usaBotones = con_botones && !fueraDeVentana;
+    const botones = normalizarBotones(botonesDe(body, p), { exigir: usaBotones, etiqueta });
     return {
       minutos,
       mensaje,
       con_imagen: p?.con_imagen !== false && p?.con_imagen !== 0,
-      con_botones: p?.con_botones !== false && p?.con_botones !== 0,
-      ...(Object.keys(botones_titulos).length ? { botones_titulos } : {}),
+      con_botones,
+      botones,
       ...(plantilla ? { plantilla } : {}),
     };
   });
@@ -285,14 +332,22 @@ async function validarPlantillasDePasos(id_configuracion, pasos) {
   }
 }
 
-function normalizarBotones(botones) {
-  const lista = Array.isArray(botones) && botones.length ? botones : BOTONES_DEFECTO;
+/* `exigir`: el paso manda estos botones de verdad → texto obligatorio y
+   límite de WhatsApp; sin botones → BOTONES_DEFECTO. Sin exigir (paso de
+   plantilla o con los botones apagados) se guardan los que tengan texto,
+   recortados, y puede quedar vacío. */
+function normalizarBotones(botones, { exigir = true, etiqueta = '' } = {}) {
+  const donde = etiqueta ? ` del ${etiqueta}` : '';
+  let lista = Array.isArray(botones) ? botones : [];
+  if (!exigir) lista = lista.filter((b) => String(b?.titulo || '').trim());
+  else if (!lista.length) lista = BOTONES_DEFECTO;
   const vistos = new Set();
   const out = lista.slice(0, MAX_BOTONES).map((b, i) => {
-    const titulo = String(b?.titulo || '').trim();
-    if (!titulo) throw error(`El botón ${i + 1} no tiene texto`);
+    let titulo = String(b?.titulo || '').trim();
+    if (!titulo) throw error(`El botón ${i + 1}${donde} no tiene texto`);
     if ([...titulo].length > MAX_TITULO) {
-      throw error(`El botón «${titulo}» supera ${MAX_TITULO} caracteres (límite de WhatsApp)`);
+      if (exigir) throw error(`El botón «${titulo}»${donde} supera ${MAX_TITULO} caracteres (límite de WhatsApp)`);
+      titulo = [...titulo].slice(0, MAX_TITULO).join('');
     }
     // Dos acciones nada más: mandar contenido o que el bot siga cerrando la
     // venta como siempre (respuestas rápidas del wizard → IA). 'ia' quedó de
@@ -306,7 +361,12 @@ function normalizarBotones(botones) {
   return out;
 }
 
-function normalizarBloques(bloques, botones) {
+/* Contenido de los botones «manda contenido». La pregunta de cierre
+   (remate) se guarda tal como la escribió el dueño: vacía queda null (no se
+   manda nada después del último archivo); solo un bloque que no llega con
+   el campo (front viejo) recibe la sugerida. */
+function normalizarBloques(bloques, botones, { exigir = true, etiqueta = '' } = {}) {
+  const donde = etiqueta ? ` (${etiqueta})` : '';
   const src = bloques && typeof bloques === 'object' ? bloques : {};
   const out = {};
   for (const b of botones) {
@@ -319,10 +379,12 @@ function normalizarBloques(bloques, botones) {
         const url = String(it?.url || '').trim();
         const texto = String(it?.texto || '').trim();
         if (tipo !== 'text' && !/^https?:\/\//i.test(url)) {
-          throw error(`Un elemento de «${b.titulo}» no tiene archivo`);
+          if (!exigir) return null;
+          throw error(`Un elemento de «${b.titulo}»${donde} no tiene archivo`);
         }
         if (tipo === 'text' && !texto) {
-          throw error(`Un texto de «${b.titulo}» está vacío`);
+          if (!exigir) return null;
+          throw error(`Un texto de «${b.titulo}»${donde} está vacío`);
         }
         const retraso = Math.round(Number(it?.retraso_seg));
         return {
@@ -331,7 +393,8 @@ function normalizarBloques(bloques, botones) {
           texto: texto.slice(0, 4000) || null,
           retraso_seg: Number.isFinite(retraso) ? Math.min(Math.max(retraso, 0), 30) : 2,
         };
-      });
+      })
+      .filter(Boolean);
     out[b.clave] = {
       items,
       remate: String(bl.remate ?? REMATE_DEFECTO).trim().slice(0, MAX_CUERPO) || null,
@@ -340,23 +403,29 @@ function normalizarBloques(bloques, botones) {
   return out;
 }
 
+/* La columna `botones` de la tabla queda como espejo del recordatorio 1 (es
+   NOT NULL y /listar la muestra); lo que manda al enviar son los de cada
+   paso. `bloques` es el contenido del producto, cubriendo las claves de los
+   botones «manda contenido» de todos los pasos que de verdad los mandan. */
 function normalizarConfig(body) {
-  const botones = normalizarBotones(body?.botones);
+  const pasos = normalizarPasos(body?.pasos, body || {});
+  const primero = pasos[0];
+  const mandan = pasos.filter((p, i) => p.con_botones && acumuladoHasta(pasos, i) <= LIMITE_VENTANA_MIN);
   return {
     activo: body?.activo === false || body?.activo === 0 ? 0 : 1,
-    pasos: normalizarPasos(body?.pasos),
+    pasos,
     imagen_url: /^https?:\/\//i.test(String(body?.imagen_url || ''))
       ? String(body.imagen_url).trim().slice(0, 1000)
       : null,
-    botones,
-    bloques: normalizarBloques(body?.bloques, botones),
+    botones: primero.botones.length ? primero.botones : BOTONES_DEFECTO,
+    bloques: normalizarBloques(body?.bloques, botonesBloqueDe(mandan)),
     estado_destino: body?.estado_destino ? String(body.estado_destino).trim().slice(0, 100) : null,
   };
 }
 
 function filaAConfig(fila) {
   if (!fila) return null;
-  return {
+  const base = {
     id: fila.id,
     id_configuracion: fila.id_configuracion,
     id_producto: fila.id_producto,
@@ -369,6 +438,9 @@ function filaAConfig(fila) {
     created_at: fila.created_at,
     updated_at: fila.updated_at,
   };
+  // Siempre con botones por paso, también en filas guardadas antes del
+  // 06-11-2026 (reciben los del producto, que es lo que mandaban).
+  return { ...base, pasos: pasosConPropios(base) };
 }
 
 /* ── Lecturas ─────────────────────────────────────────────────────────── */
@@ -407,9 +479,9 @@ function configPorDefecto(producto, columnas = []) {
     id: null,
     id_producto: producto.id,
     activo: true,
-    pasos: PASOS_DEFECTO.map((p) => ({ ...p })),
+    pasos: copiaJson(PASOS_DEFECTO),
     imagen_url: null, // null = foto del producto
-    botones: BOTONES_DEFECTO.map((b) => ({ ...b })),
+    botones: copiaJson(PASOS_DEFECTO[0].botones),
     bloques: { opiniones: { items: [], remate: REMATE_DEFECTO } },
     // Tras el último recordatorio el cliente pasa a Remarketing (si la
     // columna existe): así no choca con el flujo de Contacto inicial.
@@ -504,7 +576,10 @@ async function listar(id_configuracion, { dias = 30 } = {}) {
         wizard_flujo: Number(p.wizard_flujo || 0) === 1,
         estado: !c ? 'sin_configurar' : Number(c.activo) === 1 ? 'activo' : 'pausado',
         pasos: c ? leerJson(c.pasos, []).length : 0,
-        botones: c ? leerJson(c.botones, []).map((b) => b.titulo) : [],
+        // Los del recordatorio 1 (cada paso tiene los suyos).
+        botones: c
+          ? botonesDe({ botones: leerJson(c.botones, []) }, leerJson(c.pasos, [])[0]).map((b) => b.titulo)
+          : [],
         actualizado: c?.updated_at || null,
         metricas: m,
       };
@@ -1011,7 +1086,7 @@ async function enviarPasoProducto({ record, cfg, telefonoLimpio }) {
   }).slice(0, MAX_CUERPO);
 
   const imagen = paso.con_imagen ? config.imagen_url || producto.imagen_url || null : null;
-  const botones = paso.con_botones ? botonesDelPaso(config, paso) : [];
+  const botones = paso.con_botones ? botonesDe(config, paso) : [];
 
   const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${cfg.PHONE_NUMBER_ID}/messages`;
   const headers = {
@@ -1183,7 +1258,16 @@ async function atenderBotonProducto({
   const config = await cargarConfig(pend.id_remarketing_producto);
   const producto = await productoDe(id_configuracion, pend.id_producto);
   if (!config || !producto) return nada;
-  const boton = config.botones.find((b) => b.clave === clave) || { clave, titulo, accion: 'cerrar' };
+  // El botón pertenece al recordatorio que se le mandó (paso_producto de la
+  // fila): cada paso tiene sus botones. Si el dueño quitó ese paso después
+  // del envío, se busca la clave en cualquier paso. El contenido (bloques)
+  // es el mismo del producto para todos.
+  const paso = config.pasos[Number(pend.paso_producto || 1) - 1] || null;
+  const boton =
+    botonesDe(config, paso).find((b) => b.clave === clave) ||
+    botonesBloqueDe(config.pasos).find((b) => b.clave === clave) ||
+    { clave, titulo, accion: 'cerrar' };
+  const bloques = config.bloques || {};
   const base = {
     id_configuracion,
     id_producto: producto.id,
@@ -1209,7 +1293,7 @@ async function atenderBotonProducto({
   const refProducto = `"${producto.nombre}"${precio ? ` (${precio})` : ''}`;
 
   if (boton.accion === 'bloque') {
-    const bloque = config.bloques?.[boton.clave];
+    const bloque = bloques?.[boton.clave];
     if (bloque && ((bloque.items || []).length || bloque.remate)) {
       if (!(bloque.items || []).length) {
         // El dueño todavía no cargó contenido real. No se inventa nada: se
@@ -1328,7 +1412,7 @@ async function enviarPrueba({ id_configuracion, id_producto, telefono, paso = 1,
 
   const texto = rellenar(p.mensaje, { nombre: 'Daniela', producto: producto.nombre, precio: fmtPrecio(producto.precio) }).slice(0, MAX_CUERPO);
   const imagen = p.con_imagen ? config.imagen_url || producto.imagen_url || null : null;
-  const botones = p.con_botones ? botonesDelPaso(config, p) : [];
+  const botones = p.con_botones ? botonesDe(config, p) : [];
   const interactive = {
     type: 'button',
     body: { text: texto },
@@ -1366,6 +1450,7 @@ module.exports = {
   RESPONSABLE_BLOQUE,
   PREFIJO_BOTON,
   BOTONES_DEFECTO,
+  BOTONES_DEFECTO_POR_PASO,
   PASOS_DEFECTO,
   LIMITE_VENTANA_MIN,
   normalizarConfig,
@@ -1373,8 +1458,7 @@ module.exports = {
   acumuladoHasta,
   cuentaEnPiloto,
   rellenar,
-  normalizarConfig,
-  validarPlantillasDePasos,
+  botonesDe,
   listar,
   obtener,
   guardar,
