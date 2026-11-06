@@ -95,14 +95,13 @@ const CATALOGO = [
     porque:
       'Meta obliga a que un administrador del portafolio acepte esa política una sola vez antes de que la cuenta pueda publicar cualquier anuncio. Es papeleo pendiente, no una sanción: se firma una vez y vale para siempre.',
     pasos: [
-      'Entra a Configuración del negocio con un usuario ADMINISTRADOR del portafolio (no basta con ser empleado).',
-      'Ve a Información del negocio y busca "Política de no discriminación".',
-      'Acéptala y vuelve a lanzar.',
+      'Abre facebook.com/certification/nondiscrimination con el perfil que ADMINISTRA el portafolio (ojo si tienes varios perfiles en la misma cuenta de Meta: tiene que ser el del portafolio, no el personal).',
+      'Si sale el botón "Acepto", púlsalo y vuelve a lanzar.',
+      'Si ya pone "Aceptado", avísanos: en ese caso el bloqueo está del lado de Meta y lo reclamamos nosotros.',
     ],
-    // Este enlace lo da Meta en el propio error, no es inventado.
     enlace: {
-      texto: 'Guía de Meta sobre esta política',
-      url: 'https://www.facebook.com/business/help/338925176776440',
+      texto: 'Abrir la página de certificación',
+      url: 'https://www.facebook.com/certification/nondiscrimination',
     },
   },
   {
