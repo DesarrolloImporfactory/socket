@@ -144,11 +144,22 @@ function botonesDe(config, paso) {
   });
 }
 
-/* Pasos con botones propios garantizados (hidrata los viejos). */
+const urlValida = (v) =>
+  /^https?:\/\//i.test(String(v || '')) ? String(v).trim().slice(0, 1000) : null;
+
+/* Foto de cabecera del paso: la suya (pasos[i].imagen_url, desde el
+   06-11-2026), si no la del producto guardada antes (config.imagen_url, una
+   sola para todos) y si no la foto del producto. null = sin foto propia. */
+function imagenDe(config, paso) {
+  if (paso && 'imagen_url' in paso) return urlValida(paso.imagen_url);
+  return urlValida(config?.imagen_url);
+}
+
+/* Pasos con botones y foto propios garantizados (hidrata los viejos). */
 function pasosConPropios(config) {
   return (config?.pasos || []).map((p) => {
     const { botones_titulos, ...resto } = p || {};
-    return { ...resto, botones: copiaJson(botonesDe(config, p)) };
+    return { ...resto, botones: copiaJson(botonesDe(config, p)), imagen_url: imagenDe(config, p) };
   });
 }
 
@@ -272,6 +283,7 @@ function normalizarPasos(pasos, body = {}) {
       minutos,
       mensaje,
       con_imagen: p?.con_imagen !== false && p?.con_imagen !== 0,
+      imagen_url: imagenDe(body, p),
       con_botones,
       botones,
       ...(plantilla ? { plantilla } : {}),
@@ -414,9 +426,8 @@ function normalizarConfig(body) {
   return {
     activo: body?.activo === false || body?.activo === 0 ? 0 : 1,
     pasos,
-    imagen_url: /^https?:\/\//i.test(String(body?.imagen_url || ''))
-      ? String(body.imagen_url).trim().slice(0, 1000)
-      : null,
+    // Espejo del paso 1; la foto que manda es la de cada paso.
+    imagen_url: primero.imagen_url || null,
     botones: primero.botones.length ? primero.botones : BOTONES_DEFECTO,
     bloques: normalizarBloques(body?.bloques, botonesBloqueDe(mandan)),
     estado_destino: body?.estado_destino ? String(body.estado_destino).trim().slice(0, 100) : null,
@@ -1085,7 +1096,7 @@ async function enviarPasoProducto({ record, cfg, telefonoLimpio }) {
     precio: fmtPrecio(producto.precio),
   }).slice(0, MAX_CUERPO);
 
-  const imagen = paso.con_imagen ? config.imagen_url || producto.imagen_url || null : null;
+  const imagen = paso.con_imagen ? imagenDe(config, paso) || producto.imagen_url || null : null;
   const botones = paso.con_botones ? botonesDe(config, paso) : [];
 
   const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${cfg.PHONE_NUMBER_ID}/messages`;
@@ -1411,7 +1422,7 @@ async function enviarPrueba({ id_configuracion, id_producto, telefono, paso = 1,
   if (to.length < 8) throw error('Número de prueba inválido');
 
   const texto = rellenar(p.mensaje, { nombre: 'Daniela', producto: producto.nombre, precio: fmtPrecio(producto.precio) }).slice(0, MAX_CUERPO);
-  const imagen = p.con_imagen ? config.imagen_url || producto.imagen_url || null : null;
+  const imagen = p.con_imagen ? imagenDe(config, p) || producto.imagen_url || null : null;
   const botones = p.con_botones ? botonesDe(config, p) : [];
   const interactive = {
     type: 'button',
@@ -1459,6 +1470,7 @@ module.exports = {
   cuentaEnPiloto,
   rellenar,
   botonesDe,
+  imagenDe,
   listar,
   obtener,
   guardar,
