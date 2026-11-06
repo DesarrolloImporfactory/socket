@@ -62,9 +62,10 @@ exports.listUserPages = catchAsync(async (req, res, next) => {
     return next(new AppError('oauth_session_id es requerido', 400));
   }
 
-  const pages = await InstagramOAuthService.listPagesFromSession(
-    oauth_session_id
-  );
+  // El page token nunca sale al navegador.
+  const pages = (
+    await InstagramOAuthService.listPagesFromSession(oauth_session_id)
+  ).map(({ page_access_token, ...p }) => p);
 
   const withIG = pages.filter((p) => p.has_ig);
   const withoutIG = pages.filter((p) => !p.has_ig);
