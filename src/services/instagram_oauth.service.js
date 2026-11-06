@@ -5,6 +5,28 @@ const { db } = require('../database/config');
 const FB_VERSION = 'v22.0';
 const FB_APP_ID = process.env.FB_APP_ID;
 const FB_APP_SECRET = process.env.FB_APP_SECRET;
+const {
+  listarPaginasConcedidas,
+  obtenerPaginaConcedida,
+} = require('../utils/meta/paginasConcedidas');
+
+const PAGE_FIELDS =
+  'id,name,access_token,connected_instagram_account{id,username},' +
+  'instagram_business_account{id,username}';
+
+// connected_instagram_account e instagram_business_account suelen coincidir;
+// se toma el que venga.
+const mapPage = (p) => {
+  const ig = p.connected_instagram_account || p.instagram_business_account;
+  return {
+    page_id: p.id,
+    page_name: p.name,
+    page_access_token: p.access_token,
+    has_ig: !!ig?.id,
+    ig_id: ig?.id || null,
+    ig_username: ig?.username || null,
+  };
+};
 
 /* ─────────────────────────────── Helpers SQL ─────────────────────────────── */
 async function insertOAuthSession({
@@ -150,52 +172,41 @@ class InstagramOAuthService {
   }
 
   /**
-   * Devuelve las páginas a las que el usuario tiene acceso,
-   * incluyendo el `connected_instagram_account` si existe.
+   * Páginas que el usuario concedió (incluye las de portafolio elegidas con
+   * "solo las actuales", que /me/accounts no devuelve) con su IG vinculado.
    */
   static async listPagesFromSession(oauth_session_id) {
     const session = await getSessionById(oauth_session_id);
     if (!session) throw new Error('Sesión OAuth inválida o expirada');
 
-    const { data } = await axios.get(
-      `https://graph.facebook.com/${FB_VERSION}/me/accounts`,
-      {
-        params: {
-          access_token: session.user_token_long,
-          fields:
-            'id,name,access_token,connected_instagram_account{id,username}',
-        },
-      }
+    const paginas = await listarPaginasConcedidas({
+      userToken: session.user_token_long,
+      app: { id: FB_APP_ID, secret: FB_APP_SECRET },
+      version: FB_VERSION,
+      fields: PAGE_FIELDS,
+    });
+    const pages = paginas.map(mapPage);
+    console.log(
+      `[IG_CONNECT] páginas cfg=${session.id_configuracion}: ` +
+        (pages
+          .map((p) => `"${p.page_name}"${p.has_ig ? ` @${p.ig_username}` : ''}`)
+          .join(', ') || '(ninguna)'),
     );
-
-    const pages = (data?.data || []).map((p) => ({
-      page_id: p.id,
-      page_name: p.name,
-      page_access_token: p.access_token, 
-      has_ig: !!p.connected_instagram_account?.id,
-      ig_id: p.connected_instagram_account?.id || null,
-      ig_username: p.connected_instagram_account?.username || null,
-    }));
-
     return pages;
   }
 
-  /**
-   * Obtiene el page token + datos IG de una página concreta desde la sesión.
-   * Útil para /facebook/connect.
-   */
+  /** Page token + IG de una página concreta concedida en la sesión. */
   static async getPageTokenFromSession(oauth_session_id, page_id) {
-    const pages = await this.listPagesFromSession(oauth_session_id);
-    const page = pages.find((p) => String(p.id) === String(page_id));
-    if (!page) throw new Error('El usuario no tiene acceso a esa página');
-
-    const ig = page.connected_instagram_account || null;
-    return {
-      page_access_token: page.access_token,
-      page_name: page.name,
-      ig_id: ig?.id || null,
-      ig_username: ig?.username || null,
-    };
+    const session = await getSessionById(oauth_session_id);
+    if (!session) throw new Error('Sesión OAuth inválida o expirada');
+    const p = await obtenerPaginaConcedida({
+      userToken: session.user_token_long,
+      pageId: page_id,
+      version: FB_VERSION,
+      fields: PAGE_FIELDS,
+    });
+    if (!p) throw new Error('El usuario no tiene acceso a esa página');
+    return { session, ...mapPage(p) };
   }
 
   /**

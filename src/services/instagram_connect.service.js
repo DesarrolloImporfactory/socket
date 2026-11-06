@@ -3,40 +3,23 @@ const { db } = require('../database/config');
 const {
   verificarCuentaInstagramDisponible,
 } = require('../utils/unified/conexionCanal');
+const InstagramOAuthService = require('./instagram_oauth.service');
 
 const FB_VERSION = 'v23.0';
 
 module.exports = {
   async connect({ oauth_session_id, id_configuracion, page_id }) {
-    // 1) sesión
-    const sessions = await db.query(
-      'SELECT * FROM instagram_oauth_sessions WHERE id_oauth_session = ? AND used = 0 LIMIT 1',
-      { replacements: [oauth_session_id], type: db.QueryTypes.SELECT }
+    // 1-2) sesión + página concedida (directo por id: las de portafolio con
+    // "solo las actuales" no salen en /me/accounts)
+    const page = await InstagramOAuthService.getPageTokenFromSession(
+      oauth_session_id,
+      page_id,
     );
-    const session = sessions?.[0] || null;
-    if (!session) throw new Error('OAuth session no encontrada o ya usada');
+    const { session } = page;
 
-    const userToken = session.user_token_long;
-
-    // 2) pages del usuario
-    const pagesResp = await axios.get(
-      `https://graph.facebook.com/${FB_VERSION}/me/accounts`,
-      {
-        params: {
-          fields:
-            'id,name,access_token,connected_instagram_account{id,username}',
-          access_token: userToken,
-        },
-      }
-    );
-
-    const pages = pagesResp.data?.data || [];
-    const page = pages.find((p) => String(p.id) === String(page_id));
-    if (!page) throw new Error('La página no pertenece al usuario autenticado');
-
-    if (!page.connected_instagram_account?.id) {
+    if (!page.has_ig) {
       throw new Error(
-        `La Página "${page.name}" no tiene una cuenta de Instagram vinculada.
+        `La Página "${page.page_name}" no tiene una cuenta de Instagram vinculada.
 
         1) Asegúrate que la cuenta IG es Profesional (Business/Creator).
         2) Vincúlala a esta Página en Instagram app o Business Suite.
@@ -44,10 +27,10 @@ module.exports = {
       );
     }
 
-    const pageAccessToken = page.access_token;
-    const pageName = page.name;
-    const igId = page.connected_instagram_account.id;
-    const igUser = page.connected_instagram_account.username;
+    const pageAccessToken = page.page_access_token;
+    const pageName = page.page_name;
+    const igId = page.ig_id;
+    const igUser = page.ig_username;
 
     // 2.5) Ni la cuenta de IG ni su página pueden estar ya conectadas a otra
     // conexión activa: el webhook enruta por ig_id con LIMIT 1 y la segunda

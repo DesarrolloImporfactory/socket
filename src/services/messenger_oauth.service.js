@@ -3,6 +3,10 @@ const crypto = require('crypto');
 const { db } = require('../database/config');
 
 const { defaultMessengerApp, resolveApp } = require('../config/metaApps');
+const {
+  listarPaginasConcedidas,
+  obtenerPaginaConcedida,
+} = require('../utils/meta/paginasConcedidas');
 
 const FB_VERSION = 'v22.0';
 
@@ -238,17 +242,18 @@ class MessengerOAuthService {
     const session = await getSessionById(oauth_session_id);
     if (!session) throw new Error('Sesión OAuth inválida o expirada');
 
-    // /me/accounts trae páginas + tokens de página del usuario.
+    // /me/accounts (paginado) + las de portafolio concedidas con "solo las
+    // actuales", que Meta deja fuera de /me/accounts.
     // Requiere pages_show_list: sin ese permiso Meta responde error y, como el
     // manejador global no loguea, el flujo moría en silencio justo acá.
-    let data;
+    let paginas;
     try {
-      ({ data } = await axios.get(
-        `https://graph.facebook.com/${FB_VERSION}/me/accounts`,
-        {
-          params: { access_token: session.user_token_long },
-        }
-      ));
+      paginas = await listarPaginasConcedidas({
+        userToken: session.user_token_long,
+        app: resolveApp(session.fb_app_id),
+        version: FB_VERSION,
+        fields: 'id,name,access_token',
+      });
     } catch (err) {
       const meta = err.response?.data?.error;
       console.error(
@@ -261,7 +266,6 @@ class MessengerOAuthService {
       );
       throw err;
     }
-    const paginas = data.data || [];
     // Sólo id y nombre: /me/accounts devuelve el access_token de cada página
     // y eso no debe terminar nunca en un log.
     console.log(
@@ -279,8 +283,14 @@ class MessengerOAuthService {
 
   // Para connectPage, necesitamos: page token concreto
   static async getPageTokenFromSession(oauth_session_id, page_id) {
-    const pages = await this.listPagesFromSession(oauth_session_id);
-    const page = pages.find((p) => String(p.id) === String(page_id));
+    const session = await getSessionById(oauth_session_id);
+    if (!session) throw new Error('Sesión OAuth inválida o expirada');
+    const page = await obtenerPaginaConcedida({
+      userToken: session.user_token_long,
+      pageId: page_id,
+      version: FB_VERSION,
+      fields: 'id,name,access_token',
+    });
     if (!page) throw new Error('El usuario no tiene acceso a esa página');
     return { page_access_token: page.access_token, page_name: page.name };
   }
