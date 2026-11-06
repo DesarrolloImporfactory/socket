@@ -1,5 +1,6 @@
 const cron = require('node-cron');
 const espia = require('../services/espia_mercado.service');
+const { ZONAS } = require('../utils/espiaMercadoCalc');
 
 /**
  * ImporKiller (Dropkiller propio) — tareas programadas.
@@ -15,8 +16,11 @@ const espia = require('../services/espia_mercado.service');
  *      EC 02:15 y 21:15 America/Guayaquil (termina ~22:45, antes del recálculo de 00:10)
  *      MX 02:52 y 21:52 America/Mexico_City (no se cruza con la de EC ni con el sync de órdenes de :45)
  *      CO 04:05 y 22:05 America/Bogota (= 04:05 EC: la de EC ya terminó; lejos de :45)
- *    Un país sin cuenta de Dropi registrada (pantalla → «Cuentas de mapeo»)
- *    no arranca: queda en el log, sin fila de error.
+ *      Demás países de Dropi (GT, PA, CR, PE, VE, PY, AR, CL): una cadena a las
+ *      00:20 EC, uno tras otro (son catálogos chicos y no comparten API con los
+ *      clientes de ChatCenter; va de noche igual por prudencia con la IP).
+ *    Un país sin cuenta de Dropi registrada (pantalla → «Cuentas de mapeo») o
+ *    sin DROPI_BASE_URL_<pais> en el .env no arranca: queda en el log, sin fila de error.
  *    Cada pasada ~78 min (46.500 fichas, 40 por página, 3 s entre páginas) y
  *    entra por el limitador global de Dropi (services/dropi.service): nunca
  *    supera el tope por IP del servidor. Ante un 429 espera 5 min y repite la
@@ -56,14 +60,23 @@ if (activo) {
   // :52 y no :45 para no arrancar encima del sync de órdenes de los clientes (cada 15 min).
   cron.schedule('52 2,21 * * *', () => correrPasada('MX'), { timezone: 'America/Mexico_City' });
   cron.schedule('5 4,22 * * *', () => correrPasada('CO'), { timezone: 'America/Bogota' });
+  // Los demás países, en cadena (uno termina, empieza el otro) a las 00:20 EC:
+  // la pasada nocturna de MX acaba ~00:10 EC y la de madrugada de EC empieza 02:15.
+  const CADENA = espia.PAISES_REALES.filter((p) => !['EC', 'MX', 'CO'].includes(p));
+  cron.schedule(
+    '20 0 * * *',
+    async () => {
+      for (const p of CADENA) await correrPasada(p);
+    },
+    { timezone: 'America/Guayaquil' },
+  );
   // Al cambiar el día local se mueven las ventanas de 1/7/30 días: se recalculan las métricas.
   const recalcular = (pais) => espia.recalcularMetricas(pais, log).catch((e) => log(`métricas ${pais} ✖ ${e.message}`));
-  cron.schedule('10 0 * * *', () => recalcular('EC'), { timezone: 'America/Guayaquil' });
-  cron.schedule('10 0 * * *', () => recalcular('MX'), { timezone: 'America/Mexico_City' });
-  cron.schedule('10 0 * * *', () => recalcular('CO'), { timezone: 'America/Bogota' });
-  cron.schedule('30 7 * * *', () => mandarReporte('EC'), { timezone: 'America/Guayaquil' });
-  cron.schedule('30 7 * * *', () => mandarReporte('MX'), { timezone: 'America/Mexico_City' });
-  cron.schedule('30 7 * * *', () => mandarReporte('CO'), { timezone: 'America/Bogota' });
+  for (const p of espia.PAISES_REALES) {
+    const timezone = ZONAS[p] || 'America/Guayaquil';
+    cron.schedule('10 0 * * *', () => recalcular(p), { timezone });
+    cron.schedule('30 7 * * *', () => mandarReporte(p), { timezone });
+  }
   cron.schedule(
     '0 5 * * *',
     async () => {
@@ -77,7 +90,7 @@ if (activo) {
     },
     { timezone: 'America/Guayaquil' },
   );
-  log('programado: catálogo EC 02:15/12:15, MX 02:52/12:52, CO 04:05/14:05, reporte 07:30, mantenimiento 05:00');
+  log(`programado: catálogo EC 02:15/21:15, MX 02:52/21:52, CO 04:05/22:05, cadena ${CADENA.join('→')} 00:20 EC, reporte 07:30, mantenimiento 05:00`);
 } else {
   log('apagado (ESPIA_CRON=false)');
 }

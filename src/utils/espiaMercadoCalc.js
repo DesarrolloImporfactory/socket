@@ -29,6 +29,13 @@ const ZONAS = {
   MX: 'America/Mexico_City',
   CO: 'America/Bogota',
   GT: 'America/Guatemala',
+  PA: 'America/Panama',
+  PE: 'America/Lima',
+  CL: 'America/Santiago',
+  AR: 'America/Argentina/Buenos_Aires',
+  CR: 'America/Costa_Rica',
+  PY: 'America/Asuncion',
+  VE: 'America/Caracas',
 };
 
 /** (stock_previo, stock_nuevo) → [ventas, reabastecido] */

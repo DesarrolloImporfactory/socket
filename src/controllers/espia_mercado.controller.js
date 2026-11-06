@@ -103,7 +103,7 @@ exports.enviarReporte = catchAsync(async (req, res) =>
 // la lista blanca de Dropi) solo funciona con ESPIA_MOCK_DIR o fuente 'mock'.
 exports.pasada = catchAsync(async (req, res, next) => {
   const pais = String(req.body?.pais || req.query.pais || 'EC').toUpperCase();
-  if (!espia.PAISES.includes(pais)) return next(new AppError(`País no soportado: ${pais}. Usa EC, MX o CO.`, 400));
+  if (!espia.PAISES.includes(pais)) return next(new AppError(`País no soportado: ${pais}. Usa ${espia.PAISES_REALES.join(', ')}.`, 400));
   const fuente = req.body?.fuente === 'mock' ? 'mock' : undefined;
   const maxPaginas = Number(req.body?.max_paginas) || 0;
   const fuenteEfectiva = fuente || (process.env.ESPIA_MOCK_DIR ? 'mock' : 'dropi');
