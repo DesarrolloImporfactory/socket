@@ -4,12 +4,27 @@ const AppError = require('../utils/appError');
 const { getLimiter } = require('../utils/dropiRateLimiter');
 
 // Map de baseURL por country_code
-const DROPI_BASE_URLS = {
-  EC: process.env.DROPI_BASE_URL_EC,
-  CO: process.env.DROPI_BASE_URL_CO,
-  GT: process.env.DROPI_BASE_URL_GT,
-  MX: process.env.DROPI_BASE_URL_MX,
+// Dropi tiene un servidor por país con la misma API (https://api.dropi.<tld>/integrations;
+// Paraguay y Venezuela usan .com.py / .com.ve). Comprobado el 06-11-2026: todos
+// responden 401 sin token, o sea que la API existe. Europa (dropipro.com) es otra
+// plataforma sin API de integraciones conocida. Las URLs van en código y el .env
+// solo las pisa si hace falta (DROPI_BASE_URL_<pais>).
+const DROPI_URL_POR_DEFECTO = {
+  EC: 'https://api.dropi.ec/integrations',
+  CO: 'https://api.dropi.co/integrations',
+  GT: 'https://api.dropi.gt/integrations',
+  MX: 'https://api.dropi.mx/integrations',
+  PA: 'https://api.dropi.pa/integrations',
+  PE: 'https://api.dropi.pe/integrations',
+  CL: 'https://api.dropi.cl/integrations',
+  AR: 'https://api.dropi.ar/integrations',
+  CR: 'https://api.dropi.cr/integrations',
+  PY: 'https://api.dropi.com.py/integrations',
+  VE: 'https://api.dropi.com.ve/integrations',
 };
+const DROPI_BASE_URLS = Object.fromEntries(
+  Object.entries(DROPI_URL_POR_DEFECTO).map(([code, url]) => [code, process.env[`DROPI_BASE_URL_${code}`] || url]),
+);
 
 // Crea o reutiliza un axios instance por país
 const httpInstances = {};

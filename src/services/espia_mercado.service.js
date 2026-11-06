@@ -56,9 +56,19 @@ const PURGA_DIAS = 120;
 const DIAS_PARA_INACTIVO = 60; // como Dropkiller: un anuncio no visto en 60 días deja de estar activo
 // QA = país de pruebas: solo para pasadas con respuestas guardadas (mock); se
 // limpia con `node scripts/espiaMercado.js limpiar --pais QA --si`.
-const PAISES = ['EC', 'MX', 'CO', 'QA'];
-const PAISES_REALES = ['EC', 'MX', 'CO'];
-const NOMBRE_PAIS = { EC: 'Ecuador', MX: 'México', CO: 'Colombia', QA: 'Pruebas (QA)' };
+// Todos los países de Dropi en Latinoamérica (06-11-2026). Un país solo toma fotos
+// cuando tiene DROPI_BASE_URL_<pais> en el .env y una cuenta en «Cuentas de mapeo».
+const PAISES_REALES = ['EC', 'MX', 'CO', 'PE', 'CL', 'AR', 'PA', 'CR', 'GT', 'PY', 'VE'];
+const PAISES = [...PAISES_REALES, 'QA'];
+const NOMBRE_PAIS = {
+  EC: 'Ecuador', MX: 'México', CO: 'Colombia', PE: 'Perú', CL: 'Chile', AR: 'Argentina',
+  PA: 'Panamá', CR: 'Costa Rica', GT: 'Guatemala', PY: 'Paraguay', VE: 'Venezuela', QA: 'Pruebas (QA)',
+};
+// Dónde vive la app de Dropi de cada país (enlaces a la ficha del producto).
+const DOMINIO_DROPI = {
+  EC: 'app.dropi.ec', MX: 'app.dropi.mx', CO: 'app.dropi.co', PE: 'app.dropi.pe', CL: 'app.dropi.cl',
+  AR: 'app.dropi.ar', PA: 'app.dropi.pa', CR: 'app.dropi.cr', GT: 'app.dropi.gt', PY: 'app.dropi.com.py', VE: 'app.dropi.com.ve',
+};
 
 // Respaldo mientras un país no tiene cuentas registradas en espia_cuenta: la
 // integración Dropi activa de una configuración NUESTRA de ChatCenter (Global
@@ -82,7 +92,7 @@ const q = (sql, replacements = {}, type = QueryTypes.SELECT, transaction) =>
 
 const validarPais = (pais) => {
   const p = String(pais || 'EC').toUpperCase();
-  if (!PAISES.includes(p)) throw new AppError(`País no soportado: ${p}. Usa EC, MX o CO.`, 400);
+  if (!PAISES.includes(p)) throw new AppError(`País no soportado: ${p}. Usa ${PAISES_REALES.join(', ')}.`, 400);
   return p;
 };
 
@@ -223,14 +233,14 @@ const esRateLimit = (err) => err?.code === 'DROPI_RATE_LIMIT' || err?.statusCode
  * Lee una página del catálogo con un token dado. Es lo que usan el recolector
  * y «Probar» de las cuentas (una sola página chica).
  */
-function leerPagina(pais, key, { startData = 0, pageSize = TAM_PAGINA } = {}) {
+function leerPagina(pais, key, { startData = 0, pageSize = TAM_PAGINA, conConteo = false } = {}) {
   return dropiService.listProductsIndex({
     integrationKey: key,
     country_code: pais,
     payload: {
       pageSize,
       startData,
-      no_count: true,
+      no_count: !conConteo,
       order_by: 'id',
       order_type: 'asc',
       keywords: '',
@@ -246,17 +256,25 @@ function leerPagina(pais, key, { startData = 0, pageSize = TAM_PAGINA } = {}) {
  * MAX_REINTENTOS_CORTE veces. Cualquier otro error (401 token malo, 403 IP)
  * sale de inmediato y queda anotado en la cuenta.
  */
-async function* paginasDropi(pais, { maxPaginas = 0, onRateLimit, onCorte, cuenta } = {}) {
+async function* paginasDropi(pais, { maxPaginas = 0, onRateLimit, onCorte, onTotal, cuenta } = {}) {
   const { key, cuenta: usada } = await obtenerLlave(pais, cuenta);
   let startData = 0;
   let n = 0;
+  let total = null; // productos del catálogo según Dropi (conteo de la primera página), si lo da
   let reintentos429 = 0;
   let reintentosCorte = 0;
   for (;;) {
     if (maxPaginas && n >= maxPaginas) return;
+    // Fin del catálogo sin pedir una página de más. CO termina justo en un múltiplo
+    // de 40 (25.960 = 649 × 40) y al pedir la 650 Dropi no devolvía vacío: respondía
+    // 404 o se colgaba hasta el timeout, y la pasada quedaba como «error» con el
+    // catálogo completo ya leído (05 y 06-11-2026).
+    if (total != null && startData >= total) return;
     let data;
     try {
-      data = await leerPagina(pais, key, { startData });
+      // El conteo solo en el primer intento de la primera página: si Dropi falla
+      // con él (es una consulta más pesada), se repite sin conteo.
+      data = await leerPagina(pais, key, { startData, conConteo: n === 0 && !reintentos429 && !reintentosCorte });
     } catch (err) {
       if (esRateLimit(err)) {
         reintentos429 += 1;
@@ -271,6 +289,8 @@ async function* paginasDropi(pais, { maxPaginas = 0, onRateLimit, onCorte, cuent
         await dormir(PAUSA_CORTE_MS);
         continue;
       }
+      // 404 al pedir la página siguiente a una completa: Dropi dice «no hay más».
+      if (n > 0 && Number(err?.statusCode) === 404) return;
       await anotarCuenta(usada, { ok: false, error: err.message });
       throw err;
     }
@@ -278,11 +298,23 @@ async function* paginasDropi(pais, { maxPaginas = 0, onRateLimit, onCorte, cuent
     reintentosCorte = 0;
     const objetos = Array.isArray(data?.objects) ? data.objects : [];
     if (!objetos.length) return;
+    if (n === 0 && total == null) {
+      total = totalDe(data);
+      if (total != null && typeof onTotal === 'function') onTotal(total);
+    }
     n += 1;
     yield objetos;
+    if (objetos.length < TAM_PAGINA) return; // página corta = la última
     startData += TAM_PAGINA;
     await dormir(PAUSA_PAGINA_MS);
   }
+}
+
+/** Total de productos que Dropi declara en una página con conteo (o null si no lo trae). */
+function totalDe(data) {
+  const c = data?.count ?? data?.total ?? data?.totalCount ?? data?.total_count ?? data?.pagination?.total;
+  const n = Number(c);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 /** Cuentas registradas (sin token) con un resumen por país, para la pantalla. */
@@ -658,6 +690,14 @@ async function pasada(paisCrudo, opts = {}) {
   }
   corriendo[pais] = true;
   const inicio = ahoraSql();
+  // Una pasada que sigue «corriendo» horas después es de un proceso que se reinició
+  // (deploy) a mitad: se cierra como error para que la pantalla no la muestre en curso.
+  await q(
+    `UPDATE espia_pasada SET estado = 'error', fin = NOW(), error = 'El servidor se reinició durante la pasada'
+      WHERE pais = :pais AND estado = 'corriendo' AND inicio < DATE_SUB(NOW(), INTERVAL 4 HOUR)`,
+    { pais },
+    QueryTypes.UPDATE,
+  ).catch(() => {});
   // La cuenta se resuelve antes de abrir la bitácora: si el país no tiene
   // ninguna, la pasada no queda como error, simplemente no arranca.
   let cuenta = null;
@@ -693,6 +733,7 @@ async function pasada(paisCrudo, opts = {}) {
             onCorte: (intento, pagina, msg) => {
               log(`⏳ ${pais} corte de Dropi en pág ${pagina} (intento ${intento}/${MAX_REINTENTOS_CORTE}): espero ${PAUSA_CORTE_MS / 1000} s · ${msg}`);
             },
+            onTotal: (total) => log(`… ${pais}: Dropi declara ${total} productos (${Math.ceil(total / TAM_PAGINA)} págs)`),
           });
 
     for await (const productos of paginas) {
@@ -1811,6 +1852,7 @@ module.exports = {
   PAISES,
   PAISES_REALES,
   NOMBRE_PAIS,
+  DOMINIO_DROPI,
   CUENTA_POR_PAIS,
   cuentaDe,
   listarCuentas,
