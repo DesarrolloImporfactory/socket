@@ -1170,13 +1170,25 @@ async function enviarPasoProducto({ record, cfg, telefonoLimpio }) {
 /* ── Respuesta del cliente (webhook) ──────────────────────────────────── */
 
 /** `rmkp_<id_pendiente>_<clave>` → { id_pendiente, clave, titulo } o null. */
+/** `rmkp_<id_pendiente>_<clave>` → { id_pendiente, clave, titulo } o null.
+ *  Botón de un envío de PRUEBA («Mándamelo a mi WhatsApp»):
+ *  `rmkp_t<id_producto>_<paso>_<clave>` → { prueba:true, id_producto, paso, clave }.
+ *  Antes la prueba mandaba `rmkp_0_<clave>`, que no apuntaba a ninguna fila
+ *  de la cola y el toque lo contestaba la IA como un mensaje cualquiera
+ *  (Daniel, cfg 610, 06-11-2026). */
 function interpretarBotonProducto(interactive) {
   const rep = interactive?.button_reply || interactive?.list_reply;
   const id = String(rep?.id || '');
   if (!id.startsWith(PREFIJO_BOTON)) return null;
-  const m = id.slice(PREFIJO_BOTON.length).match(/^(\d+)_([a-z0-9_]+)$/);
+  const resto = id.slice(PREFIJO_BOTON.length);
+  const titulo = String(rep?.title || '').trim();
+  const prueba = resto.match(/^t(\d+)_(\d+)_([a-z0-9_]+)$/);
+  if (prueba) {
+    return { prueba: true, id_producto: Number(prueba[1]), paso: Number(prueba[2]), clave: prueba[3], titulo };
+  }
+  const m = resto.match(/^(\d+)_([a-z0-9_]+)$/);
   if (!m) return null;
-  return { id_pendiente: Number(m[1]), clave: m[2], titulo: String(rep?.title || '').trim() };
+  return { id_pendiente: Number(m[1]), clave: m[2], titulo };
 }
 
 const esperar = (seg) => new Promise((r) => setTimeout(r, Math.max(0, seg) * 1000));
@@ -1246,7 +1258,10 @@ async function enviarBloque({ bloque, id_configuracion, telefono, business_phone
  *  - { manejado:false }                               → no era nuestro.
  */
 async function atenderBotonProducto({
-  id_pendiente,
+  id_pendiente = null,
+  prueba = false,
+  id_producto = null,
+  paso: pasoPrueba = null,
   clave,
   titulo,
   id_configuracion,
@@ -1258,22 +1273,41 @@ async function atenderBotonProducto({
   log = async () => {},
 }) {
   const nada = { manejado: false };
-  const [pend] = await db.query(
-    `SELECT id, id_cliente_chat_center, id_remarketing_producto, id_producto, paso_producto
-       FROM remarketing_pendientes WHERE id = ? AND id_configuracion = ? LIMIT 1`,
-    { replacements: [id_pendiente, id_configuracion], type: T.SELECT },
-  );
-  if (!pend || Number(pend.id_cliente_chat_center) !== Number(id_cliente) || !pend.id_remarketing_producto) {
-    return nada;
+  let config = null;
+  let producto = null;
+  let pend = null;
+  let numPaso = 1;
+  if (prueba) {
+    // Botón de un envío de prueba: no hay fila en la cola; se atiende con la
+    // configuración GUARDADA del producto (si el dueño probó sin guardar y
+    // no hay nada guardado, sigue la IA) y sin anotar eventos, para no
+    // ensuciar las métricas con las pruebas del dueño.
+    config = await configDeProducto(id_configuracion, id_producto);
+    producto = await productoDe(id_configuracion, id_producto);
+    if (!config || !producto) {
+      await log(`🛍️ remarketing producto: botón de prueba «${titulo}» sin configuración guardada del producto ${id_producto}; sigue la IA`);
+      return nada;
+    }
+    numPaso = Number(pasoPrueba || 1);
+  } else {
+    [pend] = await db.query(
+      `SELECT id, id_cliente_chat_center, id_remarketing_producto, id_producto, paso_producto
+         FROM remarketing_pendientes WHERE id = ? AND id_configuracion = ? LIMIT 1`,
+      { replacements: [id_pendiente, id_configuracion], type: T.SELECT },
+    );
+    if (!pend || Number(pend.id_cliente_chat_center) !== Number(id_cliente) || !pend.id_remarketing_producto) {
+      return nada;
+    }
+    config = await cargarConfig(pend.id_remarketing_producto);
+    producto = await productoDe(id_configuracion, pend.id_producto);
+    if (!config || !producto) return nada;
+    numPaso = Number(pend.paso_producto || 1);
   }
-  const config = await cargarConfig(pend.id_remarketing_producto);
-  const producto = await productoDe(id_configuracion, pend.id_producto);
-  if (!config || !producto) return nada;
   // El botón pertenece al recordatorio que se le mandó (paso_producto de la
   // fila): cada paso tiene sus botones. Si el dueño quitó ese paso después
   // del envío, se busca la clave en cualquier paso. El contenido (bloques)
   // es el mismo del producto para todos.
-  const paso = config.pasos[Number(pend.paso_producto || 1) - 1] || null;
+  const paso = config.pasos[numPaso - 1] || null;
   const boton =
     botonesDe(config, paso).find((b) => b.clave === clave) ||
     botonesBloqueDe(config.pasos).find((b) => b.clave === clave) ||
@@ -1284,10 +1318,12 @@ async function atenderBotonProducto({
     id_producto: producto.id,
     id_remarketing_producto: config.id,
     id_cliente_chat_center: id_cliente,
-    id_pendiente: pend.id,
-    paso: pend.paso_producto,
+    id_pendiente: pend?.id || null,
+    paso: numPaso,
   };
-  await registrarEvento({ ...base, evento: 'boton', detalle: boton.clave });
+  const registrarEventoReal = prueba ? async () => {} : registrarEvento;
+  await registrarEventoReal({ ...base, evento: 'boton', detalle: boton.clave });
+  if (prueba) await log(`🛍️ remarketing producto: botón de PRUEBA «${boton.titulo}» (recordatorio ${numPaso}, producto ${producto.id})`);
 
   // El producto queda «en juego» como si hubiera entrado por el anuncio.
   const {
@@ -1317,7 +1353,7 @@ async function atenderBotonProducto({
           id_configuracion,
           responsable: RESPONSABLE_BLOQUE,
         });
-        await registrarEvento({ ...base, evento: 'bloque_vacio', detalle: boton.clave });
+        await registrarEventoReal({ ...base, evento: 'bloque_vacio', detalle: boton.clave });
         await esperar(1);
       }
       const n = await enviarBloque({
@@ -1328,7 +1364,7 @@ async function atenderBotonProducto({
         accessToken,
         log,
       });
-      await registrarEvento({ ...base, evento: 'bloque', detalle: `${boton.clave}:${n}` });
+      await registrarEventoReal({ ...base, evento: 'bloque', detalle: `${boton.clave}:${n}` });
       await log(`🛍️ remarketing producto: «${boton.titulo}» → bloque ${boton.clave} (${n} elementos) producto ${producto.id}`);
       return { manejado: true, saltarIA: true };
     }
@@ -1345,7 +1381,7 @@ async function atenderBotonProducto({
   // con el producto ya sembrado y la pista de que el cliente ya decidió.
   // Si el producto tiene un embudo por pasos activo, intentarPasoFlujo lo
   // retoma solo en el webhook; aquí no se arranca nada.
-  await registrarEvento({ ...base, evento: 'cierre_ia', detalle: boton.clave });
+  await registrarEventoReal({ ...base, evento: 'cierre_ia', detalle: boton.clave });
   await log(`🛍️ remarketing producto: «${boton.titulo}» → el bot sigue cerrando, producto ${producto.id}`);
   return {
     manejado: true,
@@ -1406,7 +1442,8 @@ async function enviarPrueba({ id_configuracion, id_producto, telefono, paso = 1,
   if (!producto) throw error('Producto no encontrado', 404);
   const config = configBody ? { id: 0, ...normalizarConfig(configBody) } : await configDeProducto(id_configuracion, id_producto);
   if (!config) throw error('Guarda la configuración antes de probar');
-  const p = config.pasos[paso - 1] || config.pasos[0];
+  if (!config.pasos[paso - 1]) paso = 1;
+  const p = config.pasos[paso - 1];
   const esPasoDePlantilla =
     p?.plantilla?.nombre_template && acumuladoHasta(config.pasos, paso - 1) > LIMITE_VENTANA_MIN;
   if (esPasoDePlantilla || !String(p?.mensaje || '').trim()) {
@@ -1428,7 +1465,12 @@ async function enviarPrueba({ id_configuracion, id_producto, telefono, paso = 1,
     type: 'button',
     body: { text: texto },
     action: {
-      buttons: botones.map((b) => ({ type: 'reply', reply: { id: `${PREFIJO_BOTON}0_${b.clave}`, title: b.titulo } })),
+      // Id de prueba con producto y recordatorio: el webhook lo atiende con
+      // la configuración guardada (ver interpretarBotonProducto).
+      buttons: botones.map((b) => ({
+        type: 'reply',
+        reply: { id: `${PREFIJO_BOTON}t${producto.id}_${paso}_${b.clave}`, title: b.titulo },
+      })),
     },
   };
   if (imagen) interactive.header = { type: 'image', image: { link: imagen } };
