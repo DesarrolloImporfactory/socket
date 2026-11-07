@@ -5690,7 +5690,17 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
         SUM(CASE WHEN os.classified_status='entregada' AND os.subtotal_items>0
                 THEN os.total_order*((jt.quantity*jt.sale_price)/os.subtotal_items) ELSE 0 END) AS venta_entregadas,
         SUM(CASE WHEN os.classified_status IN ('entregada','devolucion','en_transito','en_reparto','novedad','retiro_agencia') AND os.subtotal_items>0
-                THEN os.shipping_amount*((jt.quantity*jt.sale_price)/os.subtotal_items) ELSE 0 END) AS flete_movilizadas
+                THEN os.shipping_amount*((jt.quantity*jt.sale_price)/os.subtotal_items) ELSE 0 END) AS flete_movilizadas,
+        -- Lo que está EN CAMINO (ni entregado, ni devuelto, ni cancelado): venta
+        -- y costo proporcionales del producto, para proyectar "si se entregan".
+        -- El flete de pendiente/guia_generada todavía no está en flete_movilizadas,
+        -- se suma aparte para no restarlo dos veces.
+        SUM(CASE WHEN os.classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente') AND os.subtotal_items>0
+                THEN os.total_order*((jt.quantity*jt.sale_price)/os.subtotal_items) ELSE 0 END) AS venta_camino,
+        SUM(CASE WHEN os.classified_status IN ('en_transito','en_reparto','novedad','retiro_agencia','guia_generada','pendiente')
+                THEN (jt.quantity*jt.sale_price) ELSE 0 END) AS costo_camino,
+        SUM(CASE WHEN os.classified_status IN ('guia_generada','pendiente') AND os.subtotal_items>0
+                THEN os.shipping_amount*((jt.quantity*jt.sale_price)/os.subtotal_items) ELSE 0 END) AS flete_bodega
       FROM order_subtotals os,
       JSON_TABLE((SELECT order_data FROM dropi_orders_cache WHERE id = os.order_id),
         '$.orderdetails[*]' COLUMNS (
@@ -6136,6 +6146,13 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
         entregadasP = Number(r.ordenes_entregadas || 0);
       const movilizadas = Number(r.movilizadas || 0),
         rent = ventaEnt - costoEnt - fleteMov;
+      // Ganancia que entraría si se entrega todo lo que va en camino: el
+      // dashboard la muestra en verde junto a la real, porque "no estoy
+      // ganando" casi siempre es "todavía no me han entregado".
+      const enCamino =
+        Number(r.venta_camino || 0) -
+        Number(r.costo_camino || 0) -
+        Number(r.flete_bodega || 0);
       return {
         product_id: Number(r.product_id || 0),
         sku: r.sku || '',
@@ -6154,6 +6171,8 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
         costo: r2(costoEnt),
         flete: r2(fleteMov),
         gananciaNeta: r2(rent),
+        gananciaEnCamino: r2(enCamino),
+        gananciaPotencial: r2(rent + enCamino),
         margenPct: ventaEnt > 0 ? r2((rent / ventaEnt) * 100) : null,
         ticketPromedio: entregadasP > 0 ? r2(ventaEnt / entregadasP) : 0,
       };
