@@ -2011,10 +2011,20 @@ async function procesarTemplates({
                anterior, o aquel ciclo se agotó). Sin esto, el comprador
                reincidente jamás vuelve a recibir recordatorios: el
                programador se salta a los clientes con el flag apagado. */
-            await db.query(
-              `UPDATE clientes_chat_center SET enviar_remarketing = 1 WHERE id = ?`,
+            const [, metaRmk] = await db.query(
+              `UPDATE clientes_chat_center SET enviar_remarketing = 1 WHERE id = ? AND enviar_remarketing = 0`,
               { replacements: [clienteId], type: db.QueryTypes.UPDATE },
             );
+            if (Number(metaRmk?.affectedRows ?? metaRmk ?? 0) > 0) {
+              await require('./switch_audit.service').auditarDesdeSistema({
+                id_cliente_chat_center: clienteId,
+                id_configuracion,
+                valor_anterior: 0,
+                valor_nuevo: 1,
+                origen: 'pedido_nuevo',
+                detalle: 'pedido nuevo de Dropi: seguimiento reiniciado',
+              });
+            }
           } catch (_) {}
           await programarSeguimientoColumna({
             id_configuracion,

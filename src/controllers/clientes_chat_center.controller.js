@@ -22,6 +22,7 @@ const {
 } = require('../utils/webhook_whatsapp/round_robin');
 const { normalizarCanales } = require('../utils/canalesDepartamento');
 const { buildSearchClause } = require('../utils/buscarContactosClause');
+const { auditarDesdeChat } = require('../services/switch_audit.service');
 
 /**
  * ¿`clientes_chat_center` ya tiene las columnas de programas de Imporsuit?
@@ -304,13 +305,24 @@ exports.actualizar_bot_openia = catchAsync(async (req, res, next) => {
   const { chatId, nuevoEstado } = req.body;
 
   try {
-    const [result] = await db.query(
+    const [previo] = await db.query(
+      `SELECT bot_openia FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+      { replacements: [chatId], type: db.QueryTypes.SELECT },
+    );
+    await db.query(
       `UPDATE clientes_chat_center SET bot_openia = ? WHERE id = ?`,
       {
         replacements: [nuevoEstado, chatId],
         type: db.QueryTypes.UPDATE,
       },
     );
+    // Quién lo apagó/encendió y cuándo (services/switch_audit.service.js).
+    await auditarDesdeChat(req, {
+      id_cliente_chat_center: chatId,
+      switch_nombre: 'bot_openia',
+      valor_anterior: previo?.bot_openia,
+      valor_nuevo: nuevoEstado,
+    });
 
     res.status(200).json({
       status: '200',
@@ -325,6 +337,11 @@ exports.actualizar_enviar_remarketing = catchAsync(async (req, res, next) => {
   const { chatId, nuevoEstado } = req.body;
 
   try {
+    const [previo] = await db.query(
+      `SELECT enviar_remarketing FROM clientes_chat_center WHERE id = ? LIMIT 1`,
+      { replacements: [chatId], type: db.QueryTypes.SELECT },
+    );
+
     // Actualizar el flag
     await db.query(
       `UPDATE clientes_chat_center SET enviar_remarketing = ? WHERE id = ?`,
@@ -336,16 +353,32 @@ exports.actualizar_enviar_remarketing = catchAsync(async (req, res, next) => {
 
     // Si se ACTIVÓ (0 → 1): limpiar historial de remarketing del cliente
     // para que el sistema empiece un ciclo nuevo desde cero.
+    let borradas = 0;
     if (Number(nuevoEstado) === 1) {
-      await db.query(
-        `DELETE FROM remarketing_pendientes 
+      const [, meta] = await db.query(
+        `DELETE FROM remarketing_pendientes
          WHERE id_cliente_chat_center = ?`,
         {
           replacements: [chatId],
           type: db.QueryTypes.DELETE,
         },
       );
+      borradas = Number(meta?.affectedRows || 0);
     }
+
+    // Quién lo apagó/encendió y cuándo. Antes el UPDATE no dejaba rastro y un
+    // reclamo de "yo lo apagué y me llegó igual" solo se podía resolver por
+    // indicios (services/switch_audit.service.js).
+    await auditarDesdeChat(req, {
+      id_cliente_chat_center: chatId,
+      switch_nombre: 'enviar_remarketing',
+      valor_anterior: previo?.enviar_remarketing,
+      valor_nuevo: nuevoEstado,
+      detalle:
+        Number(nuevoEstado) === 1
+          ? `ciclo reiniciado: ${borradas} fila(s) de remarketing_pendientes borradas`
+          : null,
+    });
 
     res.status(200).json({
       status: '200',
