@@ -51,6 +51,7 @@ const {
   TRIAL_DAYS,
   TRIAL_DAYS_COMUNIDAD,
   IL_TRIAL_IMAGES,
+  MESES_CORTESIA_METHOD,
   getCouponByPlan,
   getPromoPlans,
 } = require('../config/planes.config');
@@ -2363,18 +2364,25 @@ exports.capturarTarjetaPlan21 = catchAsync(async (req, res, next) => {
     );
   }
 
+  // Los meses de cortesía empiezan a contar el día que registra la tarjeta
+  // (Daniel, 09-11-2026). Antes el trial era solo lo que le quedaba de la
+  // fecha_renovacion que puso el login SSO, así que quien registraba la
+  // tarjeta tarde se quedaba con días sueltos y el modal le prometía 3 meses.
+  // Si por una extensión manual su fecha_renovacion va más lejos, se respeta.
   const ahora = new Date();
+  const finCortesia = new Date(ahora);
+  finCortesia.setMonth(finCortesia.getMonth() + MESES_CORTESIA_METHOD);
+
   const fechaRenovacion = user.fecha_renovacion
     ? new Date(user.fecha_renovacion)
     : null;
-
-  let trialDays = 0;
-
-  if (fechaRenovacion && fechaRenovacion > ahora) {
-    const msRestantes = fechaRenovacion.getTime() - ahora.getTime();
-    trialDays = Math.ceil(msRestantes / (1000 * 60 * 60 * 24));
-    trialDays = Math.min(trialDays, 730);
-  }
+  const trialEnd =
+    fechaRenovacion && fechaRenovacion > finCortesia
+      ? fechaRenovacion
+      : finCortesia;
+  const trialDays = Math.ceil(
+    (trialEnd.getTime() - ahora.getTime()) / (1000 * 60 * 60 * 24),
+  );
 
   const customerParam = user.id_costumer
     ? { customer: user.id_costumer }
@@ -2400,7 +2408,9 @@ exports.capturarTarjetaPlan21 = catchAsync(async (req, res, next) => {
     payment_method_collection: 'always',
     metadata: meta,
     subscription_data: {
-      ...(trialDays > 0 ? { trial_period_days: trialDays } : {}),
+      // trial_end exacto (y no trial_period_days) para que el webhook deje
+      // fecha_renovacion = trial_end en la misma fecha que ve el alumno.
+      trial_end: Math.floor(trialEnd.getTime() / 1000),
       metadata: meta,
     },
     success_url: FRONT_SUCCESS_URL,
@@ -2412,10 +2422,8 @@ exports.capturarTarjetaPlan21 = catchAsync(async (req, res, next) => {
     url: session.url,
     sessionId: session.id,
     trialDays,
-    message:
-      trialDays > 0
-        ? `Checkout creado con ${trialDays} días de acceso incluido. Primer cobro de $29: ${fechaRenovacion.toISOString().split('T')[0]}.`
-        : 'Checkout creado. Cobro de $29 inmediato (período expirado).',
+    trialEnd: trialEnd.toISOString().split('T')[0],
+    message: `Checkout creado con ${MESES_CORTESIA_METHOD} meses de acceso incluido desde hoy. Primer cobro de $29: ${trialEnd.toISOString().split('T')[0]}.`,
   });
 });
 

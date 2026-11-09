@@ -455,8 +455,19 @@ async function generarUsernameUnico(base, transaction = null) {
 }
 
 /**
- * Plan cortesía de los alumnos que llegan desde Imporsuit: 2 meses del plan
+ * Plan cortesía de los alumnos que llegan desde Imporsuit: 3 meses del plan
  * "Method Ecommerce" (21) sin tarjeta.
+ *
+ * Se vuelve a aplicar en CADA login desde Imporsuit (fecha_inicio = NOW()),
+ * así que `fecha_inicio` es el último acceso por SSO, no la fecha de ingreso
+ * (para eso está `created_at`). Mientras el alumno entre por Imporsuit y no
+ * tenga suscripción de Stripe, la cortesía no vence. Cuando registra la
+ * tarjeta (stripe.controller → capturarTarjetaPlan21) los 3 meses empiezan a
+ * contar desde ese momento y esta función ya no lo toca.
+ *
+ * Historial del valor: 3 (jun-2026) → 2 (20-ago, 883f614) → 3 (09-sep,
+ * f4c081b). Los 129 alumnos que quedaron con 2 en esa ventana se repararon
+ * el 09-11-2026 con scripts/repararCortesiaDosMeses.js.
  *
  * Lo reciben los de `id_lanzamiento` —el alumno que entró por un lanzamiento
  * lo tiene incluido en lo que compró—, los de `id_rol = 16`, que era el
@@ -467,7 +478,9 @@ async function generarUsernameUnico(base, transaction = null) {
  * suyo.
  */
 const PLAN_CORTESIA_ESTUDIANTE = 21;
-const MESES_CORTESIA_ESTUDIANTE = 3;
+const {
+  MESES_CORTESIA_METHOD: MESES_CORTESIA_ESTUDIANTE,
+} = require('../config/planes.config');
 
 const aplicarPlanCortesiaEstudiante = async (email) => {
   if (!email) return null;
@@ -645,11 +658,11 @@ exports.newLogin = async (req, res) => {
       let id_lanzamiento = user_imporauit.id_lanzamiento;
       let dropsystem = user_imporauit.dropsystem;
 
-      // Quién se lleva los 2 meses de cortesía. `id_lanzamiento` es el
+      // Quién se lleva los 3 meses de cortesía. `id_lanzamiento` es el
       // criterio comercial —el alumno que entra por un lanzamiento los tiene
       // incluidos—; el rol 16 se queda por los que ya venían entrando así.
       //
-      // `dropsystem` entró en ago-2026 con el relanzamiento del paquete: los 2
+      // `dropsystem` entró en ago-2026 con el relanzamiento del paquete: los 3
       // meses de ImporChat son parte de lo que compra, junto con el curso The
       // Ecommerce Method y la Calculadora Ecommerce. Va por flag y no por rol
       // porque el alta desde el panel de asesor deja el rol que elija el

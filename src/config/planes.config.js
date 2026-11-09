@@ -77,6 +77,14 @@ const PROMO_FIRST_MONTH_PRICE = Number(
 // período incluido siga vigente (Method Ecommerce: 3 meses de cortesía).
 const PLANES_REQUIERE_TARJETA = new Set([PLAN_METHOD_ID]);
 
+// Meses de cortesía del plan Method Ecommerce para los alumnos de Imporsuit.
+// Los usa auth.controller (login SSO: fecha_renovacion = NOW() + meses, sin
+// tarjeta) y stripe.controller (capturarTarjetaPlan21: trial de Stripe que
+// empieza a contar el día que registran la tarjeta). Un solo valor para que no
+// vuelva a pasar lo de ago/sep-2026, cuando el login daba 2 y todo lo demás
+// decía 3.
+const MESES_CORTESIA_METHOD = Number(process.env.PLAN_METHOD_MESES_CORTESIA || 3);
+
 // ─────────────────────────────────────────────────────────────
 // Cupones de primer mes ($5)
 // ─────────────────────────────────────────────────────────────
@@ -186,6 +194,7 @@ module.exports = {
   IL_TRIAL_IMAGES,
   PROMO_FIRST_MONTH_PRICE,
   PLANES_REQUIERE_TARJETA,
+  MESES_CORTESIA_METHOD,
 
   getCouponByPlan,
   getPromoPlans,
