@@ -131,17 +131,172 @@ router.get('/google/auth', protect, (req, res) => {
   return res.redirect(url);
 });
 
+/* ── Registro de intentos de vinculación ─────────────────────────────────
+   El callback no tiene sesión ni UI: cuando fallaba, el usuario veía un
+   texto genérico y nosotros solo teníamos el console.error de pm2. UNNICO
+   CONSTRUCTORA (2026-11-09) reportó «Error al vincular Google Calendar» y
+   no hubo forma de saber desde fuera si el state caducó, si Google devolvió
+   access_denied o si el code ya estaba canjeado (los tres daban el mismo
+   500). Cada intento, bueno o malo, deja una fila en google_oauth_log con
+   el motivo; la tabla se crea sola la primera vez. Fail-open: si el log
+   falla, la vinculación sigue. */
+let tablaLogLista = false;
+async function registrarIntentoOAuth({
+  id_sub_usuario,
+  calendar_id,
+  resultado,
+  detalle,
+  google_email,
+  req,
+}) {
+  try {
+    if (!tablaLogLista) {
+      await db.query(`CREATE TABLE IF NOT EXISTS google_oauth_log (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        id_sub_usuario BIGINT UNSIGNED NULL,
+        calendar_id BIGINT UNSIGNED NULL,
+        resultado VARCHAR(40) NOT NULL,
+        detalle VARCHAR(500) NULL,
+        google_email VARCHAR(191) NULL,
+        ip VARCHAR(64) NULL,
+        creado TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        KEY idx_gol_sub (id_sub_usuario, creado)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+      tablaLogLista = true;
+    }
+    const ip =
+      String(req?.headers?.['x-forwarded-for'] || '').split(',')[0].trim() ||
+      req?.ip ||
+      null;
+    await db.query(
+      `INSERT INTO google_oauth_log
+         (id_sub_usuario, calendar_id, resultado, detalle, google_email, ip)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      {
+        replacements: [
+          id_sub_usuario || null,
+          calendar_id || null,
+          String(resultado || 'desconocido').slice(0, 40),
+          detalle ? String(detalle).slice(0, 500) : null,
+          google_email || null,
+          ip ? String(ip).slice(0, 64) : null,
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+  } catch (e) {
+    console.warn('[google-oauth] no se pudo registrar el intento:', e.message);
+  }
+  console.log(
+    `[google-oauth] sub ${id_sub_usuario ?? '?'} cal ${calendar_id ?? '?'}: ${resultado}${detalle ? ` (${detalle})` : ''}`,
+  );
+}
+
+/* Respuesta del callback: la ve la persona en la pestaña/popup de Google. */
+function responderCallback(res, status, titulo, ayuda) {
+  res.status(status).type('html');
+  return res.send(
+    `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>ImporChat · Google Calendar</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body style="font-family:system-ui,sans-serif;max-width:520px;margin:48px auto;padding:0 20px;color:#111">
+<h2 style="margin:0 0 12px">${titulo}</h2>
+${ayuda ? `<p style="margin:0;line-height:1.5;color:#444">${ayuda}</p>` : ''}
+</body></html>`,
+  );
+}
+
+const REINTENTAR =
+  'Cierra esta pestaña, vuelve a ImporChat y pulsa «Conectar Google» otra vez. Si Google muestra la pantalla roja de «app no verificada», elige «Configuración avanzada» y luego «Ir a ImporChat (no seguro)».';
+
 /**
  * GET /api/v1/google/oauth2/callback
  * Intercambia tokens y guarda en users_google_accounts con el calendar_id correcto.
+ *
+ * Los tres fallos que dependen de la persona (state caducado, Google devolvió
+ * error=access_denied, code ya canjeado por una recarga) responden 400 con
+ * un texto que dice qué hacer; el 500 queda solo para errores nuestros.
+ * Todo intento se anota en google_oauth_log (ver registrarIntentoOAuth).
  */
 router.get('/google/oauth2/callback', async (req, res) => {
-  try {
-    const { code, state } = req.query;
-    const { uid, calendarId: stateCalendarId } = readState(state);
+  const { code, state, error: errorGoogle } = req.query;
+  let uid = null;
+  let stateCalendarId = null;
 
-    const client = oauth2(getRedirectUri());
-    const { tokens } = await client.getToken(code);
+  // 1) state: quién es y a qué calendario iba
+  try {
+    const st = readState(state);
+    uid = Number(st?.uid) || null;
+    stateCalendarId = Number(st?.calendarId) || null;
+    if (!uid) throw new Error('state sin uid');
+  } catch (e) {
+    const caducado = e?.name === 'TokenExpiredError';
+    await registrarIntentoOAuth({
+      resultado: caducado ? 'state_caducado' : 'state_invalido',
+      detalle: e?.message,
+      req,
+    });
+    return responderCallback(
+      res,
+      400,
+      caducado
+        ? '⏱️ La autorización tardó demasiado'
+        : '⚠️ El enlace de autorización no es válido',
+      REINTENTAR,
+    );
+  }
+
+  // 2) Google no dio código: la persona canceló o Google denegó
+  if (errorGoogle || !code) {
+    await registrarIntentoOAuth({
+      id_sub_usuario: uid,
+      calendar_id: stateCalendarId,
+      resultado: 'google_denegado',
+      detalle: errorGoogle || 'sin code',
+      req,
+    });
+    return responderCallback(
+      res,
+      400,
+      '🚫 No se autorizó el acceso en Google',
+      `Google respondió «${String(errorGoogle || 'sin código')}». ${REINTENTAR}`,
+    );
+  }
+
+  // 3) Canje del code por tokens
+  const client = oauth2(getRedirectUri());
+  let tokens;
+  try {
+    ({ tokens } = await client.getToken(code));
+  } catch (e) {
+    const codigo = e?.response?.data?.error || e?.code || '';
+    const desc = e?.response?.data?.error_description || e?.message || '';
+    const usado = String(codigo) === 'invalid_grant';
+    await registrarIntentoOAuth({
+      id_sub_usuario: uid,
+      calendar_id: stateCalendarId,
+      resultado: usado ? 'code_usado' : 'canje_fallido',
+      detalle: `${codigo} ${desc}`.trim(),
+      req,
+    });
+    if (usado) {
+      return responderCallback(
+        res,
+        400,
+        '🔁 Esta autorización ya se usó',
+        `Google solo acepta cada autorización una vez (pasa al recargar esta pestaña). ${REINTENTAR}`,
+      );
+    }
+    console.error('[google-oauth] canje fallido:', codigo, desc);
+    return responderCallback(
+      res,
+      500,
+      '❌ Error al vincular Google Calendar',
+      `Google no entregó los tokens (${String(codigo || desc).slice(0, 120)}). ${REINTENTAR}`,
+    );
+  }
+
+  try {
     client.setCredentials(tokens);
 
     // Obtener email (userinfo), fallback al id_token
@@ -161,10 +316,7 @@ router.get('/google/oauth2/callback', async (req, res) => {
     }
 
     // CalendarId efectivo (validado por created_by = id_usuario)
-    const effectiveCalendarId = await resolveCalendarId(
-      Number(uid),
-      Number(stateCalendarId) || null,
-    );
+    const effectiveCalendarId = await resolveCalendarId(uid, stateCalendarId);
 
     // Guardar/actualizar cuenta vinculada
     await db.query(
@@ -180,7 +332,7 @@ router.get('/google/oauth2/callback', async (req, res) => {
       revoked_at   = NULL`,
       {
         replacements: [
-          Number(uid),
+          uid,
           effectiveCalendarId, // <-- calendario de TU tabla
           googleEmail || '',
           tokens.access_token || null,
@@ -194,7 +346,7 @@ router.get('/google/oauth2/callback', async (req, res) => {
     try {
       const [l] = await db.query(
         `SELECT id FROM users_google_accounts WHERE id_sub_usuario = ? AND calendar_id = ? LIMIT 1`,
-        { replacements: [Number(uid), effectiveCalendarId], type: db.QueryTypes.SELECT },
+        { replacements: [uid, effectiveCalendarId], type: db.QueryTypes.SELECT },
       );
       if (l?.id) olvidarPermiso(l.id);
     } catch (_) {}
@@ -202,7 +354,7 @@ router.get('/google/oauth2/callback', async (req, res) => {
     // 🔌 AÑADIDO: al vincular, inicia el canal watch (si tu googleSync lo maneja internamente)
     try {
       await startWatch({
-        id_sub_usuario: Number(uid),
+        id_sub_usuario: uid,
         calendar_id: Number(effectiveCalendarId),
       });
     } catch (e) {
@@ -210,12 +362,36 @@ router.get('/google/oauth2/callback', async (req, res) => {
       // No interrumpimos la vinculación por un fallo de watch
     }
 
-    return res.send(
-      '✅ Google Calendar vinculado. Ya puede cerrar esta pestaña.',
+    await registrarIntentoOAuth({
+      id_sub_usuario: uid,
+      calendar_id: effectiveCalendarId,
+      resultado: 'ok',
+      detalle: effectiveCalendarId ? null : 'sin calendario propio (calendar_id NULL)',
+      google_email: googleEmail,
+      req,
+    });
+
+    return responderCallback(
+      res,
+      200,
+      '✅ Google Calendar vinculado',
+      `Cuenta ${googleEmail || 'de Google'} conectada. Ya puedes cerrar esta pestaña.`,
     );
   } catch (e) {
-    console.error(e);
-    return res.status(500).send('Error al vincular Google Calendar');
+    console.error('[google-oauth] error guardando la vinculación:', e);
+    await registrarIntentoOAuth({
+      id_sub_usuario: uid,
+      calendar_id: stateCalendarId,
+      resultado: 'error_interno',
+      detalle: e?.message,
+      req,
+    });
+    return responderCallback(
+      res,
+      500,
+      '❌ Error al vincular Google Calendar',
+      `Google autorizó pero no pudimos guardar la vinculación. ${REINTENTAR}`,
+    );
   }
 });
 
