@@ -608,7 +608,7 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
           const previos = Array.isArray(opts?.historial)
             ? opts.historial
             : await db.query(
-            `SELECT rol_mensaje, texto_mensaje FROM mensajes_clientes
+            `SELECT rol_mensaje, responsable, texto_mensaje FROM mensajes_clientes
               WHERE id_configuracion = ? AND celular_recibe = ?
                 AND texto_mensaje IS NOT NULL AND texto_mensaje <> ''
                 ${desdeReinicio ? 'AND created_at > ?' : ''}
@@ -651,6 +651,26 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
               }
             }
             return null;
+          };
+
+          /* ¿Cuántos productos DISTINTOS nombra un texto? Los nombres anidados
+             ("Corrector de Postura" dentro de "Corrector de Postura Pro")
+             cuentan como uno. Sirve para reconocer un listado o una pregunta
+             de desambiguación del bot ("¿te refieres a X o a Y?"): un mensaje
+             así no elige nada, y anclar al nombre más largo de los dos era
+             anclar al azar. Caso AZADI (1077, 2026-11-09, en el simulador):
+             el bot preguntó "¿las luces del Proyector Navideño o el producto
+             Luces Solares…?", la clienta dijo "de este quiero" y el ancla se
+             quedó con las Luces Solares solo porque su nombre es más largo. */
+          const cuantosDistintos = (texto_mensaje) => {
+            const texto = normalizar(texto_mensaje);
+            const nombres = items
+              .map((i) => normalizar(i.nombre))
+              .filter((n) => n.length > 8 && texto.includes(n));
+            const unicos = [...new Set(nombres)];
+            return unicos.filter(
+              (n) => !unicos.some((o) => o !== n && o.includes(n)),
+            ).length;
           };
 
           /* El anuncio se resuelve con el MISMO resolver que usa el webhook
@@ -732,14 +752,30 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
                al turno siguiente.
              - Si la conversación no estableció nada, manda el anuncio por el
                que entró: la única señal que no depende de que alguien escriba
-               el nombre bien. */
+               el nombre bien.
+             - Lo que escribió un ASESOR HUMANO (rol 1 con responsable de
+               persona, incluido el eco "Whatsapp Business" del dueño desde su
+               celular) vale como lo del cliente: siempre. Caso AZADI GROUP
+               (cfg 1077, chat 1251625, 2026-11-09): la clienta del Proyector
+               Navideño dijo "el precio solo de las luces" (las del proyector),
+               el bot saltó a las "LUCES SOLARES" por esa palabra, el dueño
+               corrigió a mano "El Proyector Navideño cuesta $23.99" y el bot
+               volvió a cotizar las luces solares con foto: su propio error
+               se había anclado (la palabra "luces" lo validaba) y la
+               corrección humana pesaba igual que un mensaje más del bot. */
+          const { esResponsableHumano } = require('./ajustesIA');
+          const esDeHumano = (m) =>
+            Number(m.rol_mensaje) === 1 && esResponsableHumano(m.responsable);
           let porConversacion = null;
           for (let k = 0; k < previos.length && !porConversacion; k++) {
             const m = previos[k];
             const item = buscarEn([m]);
             if (!item) continue;
-            if (Number(m.rol_mensaje) === 0) {
+            if (Number(m.rol_mensaje) === 0 || esDeHumano(m)) {
               porConversacion = item;
+            } else if (cuantosDistintos(m.texto_mensaje) > 1) {
+              /* El bot listó o preguntó "¿X o Y?": no eligió nada. */
+              continue;
             } else {
               const clientesAntes = previos
                 .slice(k + 1)
@@ -780,17 +816,123 @@ async function construirContextoColumna(id_configuracion, acciones, log, opts) {
               `Cambiar de producto porque un número calzó mejor es la forma más ` +
               `rápida de perder la venta.\n`;
 
-            if (nombrados.length) {
+            /* Si el ancla se movió del anuncio a otro producto, el modelo
+               tiene que saber que existe el del anuncio: hasta ahora solo veía
+               el nuevo 🎯 y, si el cambio había sido un error del propio bot
+               (validado por una palabra suelta), no tenía con qué volver. */
+            if (
+              desdeAnuncio &&
+              normalizar(desdeAnuncio.nombre) !== normalizar(enJuego.nombre)
+            ) {
+              const precioAd =
+                Number(desdeAnuncio.precio) > 0
+                  ? `$${Number(desdeAnuncio.precio).toFixed(2)}`
+                  : 'sin precio cargado';
+              bloque +=
+                `Entró por el anuncio de ${desdeAnuncio.nombre} (${precioAd}) y ` +
+                `la conversación pasó a ${enJuego.nombre}. Si lo que dice ahora ` +
+                `calza mejor con el del anuncio (una parte, una función o una ` +
+                `forma de llamarlo), es que nunca cambió: vuelve a ` +
+                `${desdeAnuncio.nombre} sin hacer alharaca.\n`;
+            }
+
+            /* Solo lo nombrado que NO es el producto en juego: avisar que
+               "coincidió" el propio producto de la conversación es ruido. */
+            const otrosNombrados = nombrados.filter(
+              (n) => normalizar(n.nombre) !== normalizar(enJuego.nombre),
+            );
+
+            /* El turno anterior del bot fue una pregunta entre dos productos
+               ("¿X o Y?") y la persona contestó sin nombrar ninguno ("de este
+               quiero"). En el simulador 1077 el modelo tomaba el ÚLTIMO que él
+               mismo había nombrado (las luces solares) y cotizaba ese con foto.
+               La lectura razonable es la contraria: quien no nombra nada sigue
+               hablando de lo suyo, el producto en juego. */
+            const ultimoBot = previos.find(
+              (m) => Number(m.rol_mensaje) === 1 && !esDeHumano(m),
+            );
+            if (
+              ultimoBot &&
+              cuantosDistintos(ultimoBot.texto_mensaje) > 1 &&
+              !otrosNombrados.length
+            ) {
+              const textoBot = normalizar(ultimoBot.texto_mensaje);
+              const otroDeLaPregunta = items.find((i) => {
+                const n = normalizar(i.nombre);
+                return (
+                  n.length > 8 &&
+                  n !== normalizar(enJuego.nombre) &&
+                  textoBot.includes(n)
+                );
+              });
+              const otro = otroDeLaPregunta?.nombre || 'el otro producto';
+              bloque +=
+                `⚠️ REGLA PARA ESTE TURNO (manda sobre cualquier otra): tu ` +
+                `mensaje anterior preguntó "¿${enJuego.nombre} o ${otro}?" y la ` +
+                `persona respondió SIN nombrar ninguno ni elegir por posición ` +
+                `("el primero", "la segunda"). "Este", "ese", "el que te dije" ` +
+                `o un "sí" se refieren a ${enJuego.nombre}: es el producto por ` +
+                `el que escribió, el suyo. ${otro} lo mencionaste TÚ, no la ` +
+                `persona. Responde sobre ${enJuego.nombre} y NO cotices ni ` +
+                `nombres ${otro}. Ejemplo: preguntaste "¿las luces del ` +
+                `Proyector Navideño o las Luces Solares?" y te dicen "de este ` +
+                `quiero cuánto cuesta" → es el Proyector Navideño: "El Proyector ` +
+                `Navideño cuesta $23.99, ¿a qué ciudad te lo enviamos?". Solo ` +
+                `si de verdad no se entiende, vuelve a preguntar describiendo ` +
+                `cada uno (qué es y qué hace), sin cotizar todavía.\n`;
+            }
+
+            if (otrosNombrados.length) {
               /* La ficha de abajo la eligió un emparejamiento por palabras, no
                  una decisión del cliente. Se lo decimos en vez de dejar que lo
-                 resuelva por su cuenta. */
+                 resuelva por su cuenta, y le decimos QUÉ palabra fue: con una
+                 sola palabra suelta el modelo puede juzgar si describe al
+                 producto en juego ("luces" de un proyector, "cabeza" de una
+                 mochila antigolpes, "soporte" de un cooler) o si de verdad es
+                 otro producto ("licuadora" cuando venden una máscara). Caso
+                 AZADI (cfg 1077, 2026-11-09): "el precio solo de las luces"
+                 con el Proyector Navideño en juego trajo la ficha de las
+                 "LUCES SOLARES" y el bot las cotizó con foto. */
+              const palabrasQueCalzan = (p) =>
+                palabrasUtiles(p.nombre).filter((t) =>
+                  palabrasMsg.some((m) => mismaPalabra(t, m)),
+                );
+              const detalle = otrosNombrados
+                .map((n) => {
+                  const calzan = palabrasQueCalzan(n);
+                  const total = palabrasUtiles(n.nombre).length;
+                  return `"${n.nombre}" (coincidió ${
+                    calzan.length === 1 ? 'UNA sola palabra' : 'con'
+                  }: ${calzan.map((w) => `"${w}"`).join(', ')}${
+                    total > 1 ? ` de ${total} del nombre` : ''
+                  })`;
+                })
+                .join('; ');
+              const ambiguos = otrosNombrados.filter(
+                (n) =>
+                  palabrasQueCalzan(n).length === 1 &&
+                  palabrasUtiles(n.nombre).length > 1,
+              );
               bloque +=
-                `OJO: abajo vas a ver la ficha de ` +
-                `"${nombrados.map((n) => n.nombre).join('", "')}" porque alguna ` +
-                `palabra de su mensaje coincidió con ese nombre. Eso NO es que lo ` +
-                `haya pedido. Si de verdad quiere cambiar de producto lo va a ` +
-                `decir claro ("mejor quiero el X"); si no, sigue con ` +
+                `OJO: abajo vas a ver la ficha de ${detalle} porque esa palabra ` +
+                `de su mensaje coincidió con ese nombre. Eso NO es que lo haya ` +
+                `pedido. Si de verdad quiere cambiar de producto lo va a decir ` +
+                `claro ("mejor quiero el X", "tienen X"); si no, sigue con ` +
                 `${enJuego.nombre} y usa esa ficha solo si te pregunta por ella.\n`;
+              if (ambiguos.length) {
+                bloque +=
+                  `⚠️ UNA sola palabra de un nombre largo es AMBIGUA: primero ` +
+                  `piensa si esa palabra puede describir a ${enJuego.nombre} ` +
+                  `(una parte, lo que hace, cómo lo llamaría alguien que no sabe ` +
+                  `el nombre). Si puede, está hablando de ${enJuego.nombre}: ` +
+                  `responde sobre ESE y no cotices ni nombres el otro. Si de ` +
+                  `verdad no sabes a cuál se refiere, NO cotices ninguno: ` +
+                  `pregúntale cuál quiere nombrando los dos. Ejemplo real: con ` +
+                  `un Proyector Navideño en juego, "el precio solo de las luces" ` +
+                  `son las luces DEL PROYECTOR, no el producto "Luces Solares"; ` +
+                  `cotizar las luces solares ahí le hizo perder la venta al ` +
+                  `negocio.\n`;
+              }
             }
 
             bloque += `\n`;

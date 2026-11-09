@@ -274,6 +274,10 @@ const OVERLAY_FIELDS = [
   'supplier_id',
   'type',
   'notes',
+  // Texto de la novedad de la transportadora ("DEVUELTO DE", "NO RECLAMO EN
+  // OFICINA"…): es la señal que distingue la vuelta al proveedor de la
+  // entrega al cliente (utils/devolucionEnCurso.js) y viene en cada evento.
+  'novedad_servientrega',
 ];
 
 function buildOrderFromWebhook(payload, baseOrderData, country_code) {

@@ -158,6 +158,91 @@ async function suiteA() {
     );
   }
 
+  // 6b. Caso AZADI GROUP (cfg 1077, chat 1251625, 2026-11-09): el bot saltó a
+  //     otro producto por UNA palabra ("luces" → "LUCES SOLARES"), el dueño
+  //     corrigió a mano desde su celular (eco "Whatsapp Business") y el bot
+  //     volvió a cotizar el equivocado. La corrección de un humano re-ancla.
+  {
+    const historial = [
+      { rol_mensaje: 0, texto_mensaje: 'De este quiero cuánto cuesta' },
+      { rol_mensaje: 1, responsable: 'Whatsapp Business', texto_mensaje: 'La Mascara Tactica Multi Funcional cuesta $21.99' },
+      { rol_mensaje: 1, responsable: 'IA_Contacto Inicial', texto_mensaje: 'La Licuadora Portatil Digital Inalambrica cuesta $18.99' },
+      { rol_mensaje: 0, texto_mensaje: 'el precio solo de la licuadora cuanto cuesta' },
+      { rol_mensaje: 1, responsable: 'IA_Contacto Inicial', texto_mensaje: 'La Mascara Tactica Multi Funcional cuesta $21.99' },
+      { rol_mensaje: 0, texto_mensaje: 'Hola, vi el anuncio de la Máscara Táctica Multifuncional' },
+    ];
+    const b = await ctx('De este quiero cuánto cuesta', historial);
+    caso(
+      'la corrección del asesor humano re-ancla el producto (caso AZADI 1077)',
+      /PRODUCTO DE ESTA CONVERSACIÓN: Mascara/i.test(b) && !/PRODUCTO DE ESTA CONVERSACIÓN: Licuadora/i.test(b),
+      (b.match(/PRODUCTO DE ESTA CONVERSACIÓN:[^\n]*/) || [])[0],
+    );
+    // Control: sin la corrección humana, la palabra del cliente valida el
+    // cambio y el ancla sigue a la licuadora (comportamiento vigente).
+    const sinHumano = historial.filter((m) => m.responsable !== 'Whatsapp Business');
+    const b2 = await ctx('De este quiero cuánto cuesta', sinHumano);
+    caso(
+      'sin corrección humana el cambio validado por el cliente se respeta',
+      /PRODUCTO DE ESTA CONVERSACIÓN: Licuadora/i.test(b2),
+      (b2.match(/PRODUCTO DE ESTA CONVERSACIÓN:[^\n]*/) || [])[0],
+    );
+    // La línea "Entró por el anuncio de…" depende de que el contacto de
+    // pruebas tenga un anuncio VIGENTE (sin reinicio ni colchón posterior);
+    // si no lo tiene, el caso no se puede comprobar y se dice.
+    {
+      const { db } = require('../src/database/config');
+      const { anclaProductoVigente } = require('../src/utils/webhook_whatsapp/colchonMensajeIlegible');
+      const [ad] = await db.query(
+        `SELECT created_at FROM cliente_productos_ad WHERE id_cliente = ? ORDER BY id DESC LIMIT 1`,
+        { replacements: [CLIENTE_DROPI], type: db.QueryTypes.SELECT },
+      );
+      const vigente = ad && (await anclaProductoVigente({ id_configuracion: CFG_DROPI, id_cliente: CLIENTE_DROPI, fecha_ancla: ad.created_at }));
+      caso(
+        'y el modelo sabe por qué anuncio entró para poder volver',
+        vigente ? /Entró por el anuncio de Mascara Tactica/i.test(b2) : true,
+        vigente ? '' : 'sin anuncio vigente en el contacto de pruebas: no comprobable acá (lo cubre el simulador 1077)',
+      );
+    }
+    // Primer turno del incidente: una palabra suelta de un nombre largo
+    // trae la advertencia de ambigüedad con la palabra que coincidió.
+    const b3 = await ctx('el precio solo de la licuadora cuanto cuesta', [
+      { rol_mensaje: 0, texto_mensaje: 'el precio solo de la licuadora cuanto cuesta' },
+      { rol_mensaje: 1, responsable: 'IA_Contacto Inicial', texto_mensaje: 'La Mascara Tactica Multi Funcional cuesta $21.99' },
+      { rol_mensaje: 0, texto_mensaje: 'Hola, vi el anuncio de la Máscara Táctica Multifuncional' },
+    ]);
+    caso(
+      'una palabra suelta de un nombre largo dispara la advertencia de ambigüedad',
+      /UNA sola palabra: "licuadora"/.test(b3) && /AMBIGUA/.test(b3) && /PRODUCTO DE ESTA CONVERSACIÓN: Mascara/i.test(b3),
+    );
+    // Segundo turno del incidente (visto en el simulador 1077): el bot preguntó
+    // "¿X o Y?" y "de este quiero" anclaba a Y solo por tener el nombre más
+    // largo. Un mensaje del bot que nombra DOS productos no elige nada.
+    const b5 = await ctx('De este quiero cuánto cuesta', [
+      { rol_mensaje: 0, texto_mensaje: 'De este quiero cuánto cuesta' },
+      { rol_mensaje: 1, responsable: 'IA_Contacto Inicial', texto_mensaje: '¿Te refieres a la Mascara Tactica Multi Funcional o al producto Licuadora Portatil Digital Inalambrica?' },
+      { rol_mensaje: 0, texto_mensaje: 'el precio solo de la licuadora cuanto cuesta' },
+      { rol_mensaje: 1, responsable: 'IA_Contacto Inicial', texto_mensaje: 'La Mascara Tactica Multi Funcional cuesta $21.99' },
+      { rol_mensaje: 0, texto_mensaje: 'Hola, vi el anuncio de la Mascara Tactica Multi Funcional' },
+    ]);
+    caso(
+      'la pregunta "¿X o Y?" del bot no ancla al nombre más largo',
+      /PRODUCTO DE ESTA CONVERSACIÓN: Mascara/i.test(b5),
+      (b5.match(/PRODUCTO DE ESTA CONVERSACIÓN:[^\n]*/) || [])[0],
+    );
+
+    // Un mensaje del sistema (cron, sistema_ia) NO cuenta como humano.
+    const b4 = await ctx('ok', [
+      { rol_mensaje: 0, texto_mensaje: 'ok' },
+      { rol_mensaje: 1, responsable: 'cron_remarketing_ia', texto_mensaje: 'Sigue disponible la Licuadora Portatil Digital Inalambrica' },
+      { rol_mensaje: 0, texto_mensaje: 'Hola, vi el anuncio de la Mascara Tactica Multi Funcional' },
+    ]);
+    caso(
+      'un mensaje de cron que nombra otro producto no re-ancla',
+      /PRODUCTO DE ESTA CONVERSACIÓN: Mascara/i.test(b4),
+      (b4.match(/PRODUCTO DE ESTA CONVERSACIÓN:[^\n]*/) || [])[0],
+    );
+  }
+
   // 7. El resolver de anuncios responde por el mapa (nivel determinista).
   {
     const { resolverProductoAnuncio } = require('../src/utils/webhook_whatsapp/buscar_producto_referral');
