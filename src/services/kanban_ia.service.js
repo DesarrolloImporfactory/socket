@@ -7,6 +7,9 @@
 const axios = require('axios');
 const flatted = require('flatted');
 const { db } = require('../database/config');
+const {
+  auditarDesdeSistema: auditarSwitchSistema,
+} = require('./switch_audit.service');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
 const { botApagadoExplicito } = require('../utils/interruptorBot');
 const { construirContextoColumna } = require('../utils/contextoColumna');
@@ -6269,6 +6272,13 @@ async function cancelarRemarketingKanban(id_cliente, id_configuracion) {
           type: db.QueryTypes.UPDATE,
         },
       );
+      await auditarSwitchSistema({
+        id_cliente_chat_center: id_cliente,
+        id_configuracion,
+        valor_nuevo: 0,
+        origen: 'respuesta_cliente',
+        detalle: `el cliente respondió a un recordatorio ya enviado (rp id=${remarketingEnviado.id})`,
+      });
       await log(
         `✅ Remarketing cancelado + enviar_remarketing=0 (respondió a RMK id=${remarketingEnviado.id}) cliente=${id_cliente}`,
       );
@@ -6334,6 +6344,14 @@ async function programarRemarketingKanban({
         `UPDATE clientes_chat_center SET enviar_remarketing = 1 WHERE id = ?`,
         { replacements: [id_cliente], type: db.QueryTypes.UPDATE },
       );
+      await auditarSwitchSistema({
+        id_cliente_chat_center: id_cliente,
+        id_configuracion,
+        valor_anterior: 0,
+        valor_nuevo: 1,
+        origen: 'columna_persistente',
+        detalle: `columna "${estado_contacto}"`,
+      });
       await log(
         `🔁 enviar_remarketing reactivado (columna persistente "${estado_contacto}") cliente=${id_cliente}`,
       );

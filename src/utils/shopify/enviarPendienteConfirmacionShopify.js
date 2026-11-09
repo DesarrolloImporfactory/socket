@@ -644,10 +644,20 @@ async function procesarPedidoShopify({
       /* Pedido nuevo → seguimiento nuevo: si un ciclo anterior dejó
          enviar_remarketing=0, el programador se saltaría a este cliente y el
          comprador reincidente se quedaría sin recordatorios. */
-      await db.query(
-        `UPDATE clientes_chat_center SET enviar_remarketing = 1 WHERE id = ?`,
+      const [, metaRmk] = await db.query(
+        `UPDATE clientes_chat_center SET enviar_remarketing = 1 WHERE id = ? AND enviar_remarketing = 0`,
         { replacements: [clienteId], type: db.QueryTypes.UPDATE },
       );
+      if (Number(metaRmk?.affectedRows ?? metaRmk ?? 0) > 0) {
+        await require('../../services/switch_audit.service').auditarDesdeSistema({
+          id_cliente_chat_center: clienteId,
+          id_configuracion,
+          valor_anterior: 0,
+          valor_nuevo: 1,
+          origen: 'pedido_nuevo',
+          detalle: 'pedido nuevo de Shopify: seguimiento reiniciado',
+        });
+      }
       const {
         programarRemarketingKanban,
       } = require('../../services/kanban_ia.service');

@@ -2,6 +2,9 @@ const cron = require('node-cron');
 const axios = require('axios');
 const FormData = require('form-data');
 const { db } = require('../database/config');
+const {
+  auditarDesdeSistema: auditarSwitchSistema,
+} = require('../services/switch_audit.service');
 const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 const {
   sendWhatsappMessageTemplateScheduled,
@@ -2101,6 +2104,16 @@ cron.schedule('*/1 * * * *', async () => {
                 type: db.QueryTypes.UPDATE,
               },
             );
+            // Queda en el log de switches: así se distingue "lo apagó el
+            // cron al terminar" de "lo apagó el asesor".
+            await auditarSwitchSistema({
+              id_cliente_chat_center: record.id_cliente_chat_center,
+              id_configuracion: record.id_configuracion,
+              valor_anterior: 1,
+              valor_nuevo: 0,
+              origen: 'cron_fin_ciclo',
+              detalle: `secuencia ${secuenciaActual} de "${record.estado_contacto_origen}" fue la última (rp id=${record.id})`,
+            });
 
             console.log(
               `🟩 [SEQ] ✅ enviar_remarketing=0 aplicado a cliente=${record.id_cliente_chat_center}`,

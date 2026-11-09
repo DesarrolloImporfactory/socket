@@ -10,6 +10,9 @@
 
 const cron = require('node-cron');
 const { db } = require('../database/config');
+const {
+  auditarDesdeSistema: auditarSwitchSistema,
+} = require('../services/switch_audit.service');
 const { leerApiKeyOpenAI } = require('../utils/openia/apiKeyOpenAI');
 const fb = require('../utils/facebookGraph');
 const Store = require('../services/messenger_store.service');
@@ -329,6 +332,14 @@ cron.schedule('*/1 * * * *', async () => {
               `UPDATE clientes_chat_center SET enviar_remarketing = 0 WHERE id = ?`,
               { replacements: [record.id_cliente_chat_center], type: db.QueryTypes.UPDATE },
             );
+            await auditarSwitchSistema({
+              id_cliente_chat_center: record.id_cliente_chat_center,
+              id_configuracion: record.id_configuracion,
+              valor_anterior: 1,
+              valor_nuevo: 0,
+              origen: 'cron_fin_ciclo',
+              detalle: `[ms] secuencia ${secuenciaActual} de "${record.estado_contacto_origen}" fue la última (rp id=${record.id})`,
+            });
           }
 
           if (record.estado_destino) {
