@@ -39,6 +39,7 @@ const {
 } = require('./dropi_novedades.service');
 const { resolverLugarRetiro } = require('../utils/lugarRetiroAgencia');
 const { esRetiroEnOrigen } = require('../utils/retiroEnOrigen');
+const { esDevolucionEnCurso } = require('../utils/devolucionEnCurso');
 const { urlTrackingParaCliente } = require('../utils/trackingTransportadora');
 
 /* ═══════════════════════════════════════════════════════════
@@ -1564,6 +1565,26 @@ async function procesarTemplates({
         if (origen.enOrigen) {
           console.log(
             `[dropi-notifier] orden ${order.id} (cfg ${id_configuracion}): "${order.status}" es el despacho en la agencia de ORIGEN (${origen.fuente}: ${origen.detalle}) → no se avisa ni se mueve el chat`,
+          );
+          omitidos++;
+          continue;
+        }
+      }
+
+      /* "EN DISTRIBUCIÓN A CLIENTE" de Servientrega también es la entrega de
+         la DEVOLUCIÓN al remitente: tras "DEVUELTO DE"/"NO RECLAMO EN
+         OFICINA" el paquete vuelve por centro logístico y sale "en
+         distribución", y Dropi no dice DEVOLUCION hasta que llega a origen.
+         El cliente recibía "tu pedido llegó a tu ciudad y está por llegar"
+         por un paquete que iba de regreso (cfg 1173, orden 7611062,
+         2026-11-09; 1.334 avisos así en 30 días). Va ANTES del "solo mover"
+         y del reclamo: no se avisa, no se mueve el chat (sigue en novedad o
+         retiro) y no queda reclamo. Ver utils/devolucionEnCurso.js. */
+      if (estadoConfig === 'EN TRANSITO') {
+        const vuelta = esDevolucionEnCurso({ order });
+        if (vuelta.enCurso) {
+          console.log(
+            `[dropi-notifier] orden ${order.id} (cfg ${id_configuracion}): "${order.status}" es la devolución en camino al proveedor (${vuelta.fuente}: ${vuelta.detalle}) → no se avisa ni se mueve el chat`,
           );
           omitidos++;
           continue;
