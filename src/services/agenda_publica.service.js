@@ -71,6 +71,14 @@ const CONFIG_INICIAL = {
   dias: '1,2,3,4,5',
   anticipacion_horas: 3,
   dias_adelante: 14,
+  /* Pausa diaria (almuerzo) con margen: ninguna cita empieza ni termina
+     entre pausa_inicio − margen y pausa_fin + margen. Nació con Juan (Soporte
+     Expertos, 09-11-2026): sale a almorzar 12:30–13:30 y quiere 15 min antes
+     para dejar los chats resueltos y 15 min después para retomarlos sin una
+     reunión esperando. null = sin pausa. */
+  pausa_inicio: null,
+  pausa_fin: null,
+  pausa_margen_min: 0,
   time_zone: 'America/Guayaquil',
   titulo: 'Cita',
   descripcion: null,
@@ -147,6 +155,9 @@ async function ensureTablas() {
       insignia VARCHAR(60) NULL,
       color_fondo VARCHAR(7) NULL,
       color_acento VARCHAR(7) NULL,
+      pausa_inicio VARCHAR(5) NULL,
+      pausa_fin VARCHAR(5) NULL,
+      pausa_margen_min SMALLINT NOT NULL DEFAULT 0,
       plantilla_confirmacion VARCHAR(100) NULL,
       google_link_id INT NULL,
       actualizado_por INT NULL,
@@ -202,6 +213,10 @@ async function ensureTablas() {
     ['insignia', 'VARCHAR(60) NULL AFTER lugar'],
     ['color_fondo', 'VARCHAR(7) NULL AFTER insignia'],
     ['color_acento', 'VARCHAR(7) NULL AFTER color_fondo'],
+    // 2026-11-09, pausa de almuerzo con margen.
+    ['pausa_inicio', 'VARCHAR(5) NULL AFTER color_acento'],
+    ['pausa_fin', 'VARCHAR(5) NULL AFTER pausa_inicio'],
+    ['pausa_margen_min', 'SMALLINT NOT NULL DEFAULT 0 AFTER pausa_fin'],
   ].filter(([col]) => !tiene.has(col));
   if (faltan.length) {
     await db.query(
@@ -278,8 +293,32 @@ function normalizar(row) {
   cfg.insignia = String(cfg.insignia || '').trim().slice(0, 60) || null;
   cfg.color_fondo = colorHex(cfg.color_fondo);
   cfg.color_acento = colorHex(cfg.color_acento);
+  cfg.pausa_inicio = HORA_RE.test(String(cfg.pausa_inicio || '')) ? cfg.pausa_inicio : null;
+  cfg.pausa_fin = HORA_RE.test(String(cfg.pausa_fin || '')) ? cfg.pausa_fin : null;
+  if (!cfg.pausa_inicio || !cfg.pausa_fin || cfg.pausa_fin <= cfg.pausa_inicio) {
+    cfg.pausa_inicio = null;
+    cfg.pausa_fin = null;
+  }
+  cfg.pausa_margen_min = Math.min(120, Math.max(0, Number(cfg.pausa_margen_min) || 0));
   cfg.guardada = !!row && !row.__nueva;
   return cfg;
+}
+
+/* "12:30" → 750. */
+function aMinutos(hhmm) {
+  const [h, m] = String(hhmm).split(':').map(Number);
+  return h * 60 + m;
+}
+
+/* Rango bloqueado del día en minutos [desde, hasta), ya con el margen a cada
+   lado, o null si la agenda no tiene pausa. */
+function bloqueoPausa(cfg) {
+  if (!cfg.pausa_inicio || !cfg.pausa_fin) return null;
+  const margen = Number(cfg.pausa_margen_min) || 0;
+  return {
+    desde: aMinutos(cfg.pausa_inicio) - margen,
+    hasta: aMinutos(cfg.pausa_fin) + margen,
+  };
 }
 
 /* "Mariachi Sol de México" → "mariachi-sol-de-mexico". */
@@ -389,6 +428,29 @@ async function guardarConfig(id_configuracion, datos = {}, actualizado_por = nul
     if (hf * 60 + mf - (hi * 60 + mi) < n.duracion_min)
       throw new AppError('Entre apertura y cierre no cabe ni una cita de esa duración', 400);
   }
+  /* Pausa: las dos horas o ninguna; dentro del horario; margen 0–120. */
+  for (const campo of ['pausa_inicio', 'pausa_fin']) {
+    if (datos[campo] !== undefined) {
+      const v = String(datos[campo] || '').trim();
+      if (v && !HORA_RE.test(v))
+        throw new AppError(`${campo === 'pausa_inicio' ? 'El inicio' : 'El fin'} de la pausa debe tener formato HH:MM`, 400);
+      n[campo] = v || null;
+    }
+  }
+  if (datos.pausa_margen_min !== undefined) {
+    const m = Number(datos.pausa_margen_min);
+    if (!Number.isInteger(m) || m < 0 || m > 120)
+      throw new AppError('El margen de la pausa debe estar entre 0 y 120 minutos', 400);
+    n.pausa_margen_min = m;
+  }
+  if (!!n.pausa_inicio !== !!n.pausa_fin)
+    throw new AppError('La pausa necesita hora de inicio y de fin (o ninguna de las dos)', 400);
+  if (n.pausa_inicio) {
+    if (n.pausa_fin <= n.pausa_inicio)
+      throw new AppError('El fin de la pausa debe ser mayor a su inicio', 400);
+    if (n.pausa_inicio < n.hora_inicio || n.pausa_fin > n.hora_fin)
+      throw new AppError('La pausa debe quedar dentro del horario de atención', 400);
+  }
   if (datos.dias !== undefined) {
     const lista = (Array.isArray(datos.dias) ? datos.dias : String(datos.dias).split(','))
       .map((d) => Number(String(d).trim()))
@@ -475,9 +537,9 @@ async function guardarConfig(id_configuracion, datos = {}, actualizado_por = nul
     `INSERT INTO agenda_publica_config
        (activo, id_configuracion, slug, principal, calendar_id, duracion_min, hora_inicio,
         hora_fin, dias, anticipacion_horas, dias_adelante, time_zone, titulo, descripcion,
-        lugar, insignia, color_fondo, color_acento, plantilla_confirmacion, google_link_id,
-        actualizado_por)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        lugar, insignia, color_fondo, color_acento, pausa_inicio, pausa_fin, pausa_margen_min,
+        plantilla_confirmacion, google_link_id, actualizado_por)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        activo = VALUES(activo), slug = VALUES(slug), calendar_id = VALUES(calendar_id),
        duracion_min = VALUES(duracion_min), hora_inicio = VALUES(hora_inicio),
@@ -485,7 +547,9 @@ async function guardarConfig(id_configuracion, datos = {}, actualizado_por = nul
        anticipacion_horas = VALUES(anticipacion_horas), dias_adelante = VALUES(dias_adelante),
        time_zone = VALUES(time_zone), titulo = VALUES(titulo), descripcion = VALUES(descripcion),
        lugar = VALUES(lugar), insignia = VALUES(insignia), color_fondo = VALUES(color_fondo),
-       color_acento = VALUES(color_acento), plantilla_confirmacion = VALUES(plantilla_confirmacion),
+       color_acento = VALUES(color_acento), pausa_inicio = VALUES(pausa_inicio),
+       pausa_fin = VALUES(pausa_fin), pausa_margen_min = VALUES(pausa_margen_min),
+       plantilla_confirmacion = VALUES(plantilla_confirmacion),
        google_link_id = VALUES(google_link_id), actualizado_por = VALUES(actualizado_por)`,
     {
       replacements: [
@@ -507,6 +571,9 @@ async function guardarConfig(id_configuracion, datos = {}, actualizado_por = nul
         n.insignia,
         n.color_fondo,
         n.color_acento,
+        n.pausa_inicio,
+        n.pausa_fin,
+        n.pausa_margen_min,
         n.plantilla_confirmacion,
         n.google_link_id,
         actualizado_por,
@@ -676,13 +743,18 @@ function ocupaA(asesorId, o, asesoresSet = null) {
 }
 
 /* Huecos de hora_inicio a hora_fin; el último TERMINA a hora_fin (nadie
-   agenda cuando el equipo ya cerró). */
+   agenda cuando el equipo ya cerró). Si la agenda tiene pausa, se saltan los
+   huecos que pisan el bloque pausa ± margen: con 08:00–17:00, citas de 60 min
+   y pausa 12:30–13:30 con 15 min, el bloque es 12:15–13:45 y caen las de
+   12:00 y 13:00; la primera de la tarde es a las 14:00. La rejilla no se
+   mueve, así las horas siguen siendo las de siempre. */
 function generarHuecos(cfg) {
   const tz = cfg.time_zone;
   const ahora = moment();
   const minimo = ahora.clone().add(cfg.anticipacion_horas, 'hours');
   const [hi, mi] = cfg.hora_inicio.split(':').map(Number);
   const [hf, mf] = cfg.hora_fin.split(':').map(Number);
+  const pausa = bloqueoPausa(cfg);
   const huecos = [];
 
   for (let d = 0; d <= cfg.dias_adelante; d++) {
@@ -692,7 +764,9 @@ function generarHuecos(cfg) {
     const tope = dia.clone().hour(hf).minute(mf).second(0).millisecond(0);
     while (cursor.clone().add(cfg.duracion_min, 'minutes').isSameOrBefore(tope)) {
       const fin = cursor.clone().add(cfg.duracion_min, 'minutes');
-      if (cursor.isSameOrAfter(minimo)) {
+      const minIni = cursor.hour() * 60 + cursor.minute();
+      const pisaPausa = pausa && minIni < pausa.hasta && minIni + cfg.duracion_min > pausa.desde;
+      if (cursor.isSameOrAfter(minimo) && !pisaPausa) {
         huecos.push({ inicio: cursor.clone().utc(), fin: fin.utc() });
       }
       cursor = fin.clone().tz(tz);
