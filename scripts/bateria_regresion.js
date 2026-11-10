@@ -1896,6 +1896,34 @@ async function suiteA() {
         !esSaludoOGenerico('el escaner funciona con iphone?', { nombreProducto: nombre }),
     );
 
+    /* Casos 968 (JD IMPORT) y 360, 10-11-2026: el bot pregunta "¿celeste o
+       rosado?", la persona contesta "Quiero color rosado" y la quemada
+       "¿Qué colores hay?" le vuelve a preguntar el color, en bucle (en la 360
+       una clienta escribió "Rosada" seis veces). Quien elige una opción de la
+       pregunta del bot no está preguntando, y la quemada que acaba de salir
+       no se repite. */
+    {
+      const { elegirRespuestaRapida } = require('../src/utils/wizardProducto/respuestasRapidas');
+      const faqsColor = [
+        { pregunta: '¿Qué colores hay disponibles?', respuesta: 'Tenemos celeste y rosado disponibles, ambos con stock listo para despacho. ¿Cuál color te llevo?', claves: ['colores', 'celeste', 'rosado'], activa: 1 },
+        { pregunta: '¿Hacen envío y cómo pago?', respuesta: 'Hacemos envío gratis y pagas al recibir. ¿Te lo envío con pago contra entrega?', claves: ['envio gratis', 'pago al recibir', 'direccion'], activa: 1 },
+        { pregunta: '¿Cómo se limpia el arnés?', respuesta: 'Se limpia con un paño húmedo y jabón neutro. ¿Te aparto el color que prefieras?', claves: ['limpieza', 'paño humedo'], activa: 1 },
+      ];
+      const fijo = '💵 1 por $24,99\n🔥 2 por $42,99\n🚚 Envío gratis y pagas al recibir\n\n¿Te llevas 1, 2 o 3 unidades y de qué color las quieres: celeste o rosado?';
+      const quemada = faqsColor[0].respuesta;
+      const sale = (msg, ultimoBot) => elegirRespuestaRapida(msg, faqsColor, { ultimoBot });
+      caso('sin contexto, "Quiero color rosado" calza la quemada de colores (comportamiento anterior intacto)', !!elegirRespuestaRapida('Quiero color rosado', faqsColor));
+      caso('"Quiero color rosado" tras "¿…celeste o rosado?" es una elección → IA', sale('Quiero color rosado', fijo) === null);
+      caso('"Rosado" / "celeste" / "2 rosados" tras la pregunta → IA', ['Rosado', 'celeste', '2 rosados'].every((m) => sale(m, fijo) === null));
+      caso('"Rosada" elige "rosado" (sin género) tras "¿La quieres rosada o negra?"', elegirRespuestaRapida('Rosada', [{ ...faqsColor[0], claves: ['colores', 'rosada', 'negra'] }], { ultimoBot: 'Perfecto 🙂 ¿La quieres rosada o negra?' }) === null);
+      caso('"¿qué colores tienen?" tras la misma pregunta sigue saliendo la quemada (es pregunta)', sale('que colores tienen?', fijo)?.faq === faqsColor[0]);
+      caso('"como se limpia" y "hacen envio?" no se afectan', sale('como se limpia', fijo)?.faq === faqsColor[2] && sale('hacen envio?', fijo)?.faq === faqsColor[1]);
+      caso('la quemada que acaba de salir no se repite ("Rosado" tras "¿Cuál color te llevo?")', sale('Rosado', quemada) === null);
+      caso('ni aunque insista con pregunta ("que colores hay?" justo después de la quemada)', sale('que colores hay?', quemada) === null);
+      caso('otra quemada distinta sí sale después ("y hacen envio?")', sale('y hacen envio?', quemada)?.faq === faqsColor[1]);
+      caso('"Domicilio" tras "¿domicilio o agencia?" no dispara la quemada de envío', elegirRespuestaRapida('A domicilio', [{ pregunta: '¿Hacen envíos?', respuesta: 'Envío gratis a domicilio a todo el país. ¿Te lo envío?', claves: ['envio', 'domicilio'], activa: 1 }], { ultimoBot: '¿Te lo enviamos a tu domicilio o prefieres retirar en una agencia Servientrega? 📦' }) === null);
+    }
+
     const ciudad = '¿A qué ciudad te lo enviamos?';
     caso('tercera respuesta idéntica (con o sin emoji) se detecta como bucle', esRespuestaEnBucle(ciudad, [`${ciudad} 📦`, ciudad]));
     caso('una sola repetición previa NO es bucle', !esRespuestaEnBucle(ciudad, [ciudad]));

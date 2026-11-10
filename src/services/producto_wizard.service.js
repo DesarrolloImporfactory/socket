@@ -1603,8 +1603,19 @@ async function simularTurno({
 
   // 1) Respuesta rápida (nunca cuando el cliente está comprando: ahí sigue la IA)
   const compra = pareceIntencionCompra(texto);
+  /* Lo último que dijo el bot en la simulación (el mensaje fijo si todavía no
+     habló): igual que en vivo, quien elige una opción de esa pregunta no
+     recibe una quemada, y la que acaba de salir no se repite. */
+  const ultimoBotSim =
+    [...(Array.isArray(historial) ? historial : [])]
+      .reverse()
+      .find((h) => h && h.rol === 'bot' && String(h.texto || '').trim())
+      ?.texto || mensaje_fijo || '';
   const matchFaq = usaRapidas
-    ? elegirRespuestaRapida(texto, faqs, { ignorarCompra: true })
+    ? elegirRespuestaRapida(texto, faqs, {
+        ignorarCompra: true,
+        ultimoBot: ultimoBotSim,
+      })
     : null;
   /* ¿La simulación ya pasó el cierre? El front manda la columna destino
      (id_columna) desde el turno siguiente al cierre, igual que en producción
