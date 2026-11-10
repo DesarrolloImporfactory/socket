@@ -1848,6 +1848,100 @@ async function enviarReporteWhatsapp(paisCrudo) {
   return { enviado: true, pais, telefono: `…${telefono.slice(-4)}` };
 }
 
+/* ───────────────────────── Latido del radar ─────────────────────────
+ * La extensión que barre la Biblioteca de Meta (el Chrome de la Mac mini del
+ * radar) avisa aquí su estado: cuando cambia (corriendo → pausado…) y, si no
+ * cambia, cada 10 min. Con eso la portada de ImporKiller (solo super admin)
+ * dice si el radar está en pausa porque Meta pidió una verificación (hay que
+ * ir a la Mac, resolverla y pulsar Reanudar) o si dejó de dar señales (Mac
+ * apagada, Chrome cerrado, pestaña perdida). `cambio` = 1 marca los cambios de
+ * estado reales, para contar cuántas veces pidió verificación sin contar los
+ * latidos repetidos. La tabla se crea sola (misma BD en dev y prod).
+ */
+const LATIDO_ESTADOS = ['corriendo', 'esperando', 'descanso', 'pausado', 'detenido'];
+const LATIDO_SIN_SENAL_MIN = 25; // la extensión late cada 10 min; 25 sin nada = algo se cayó
+let tablaLatidoLista = false;
+async function asegurarTablaLatido() {
+  if (tablaLatidoLista) return;
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS espia_radar_latido (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      creado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      estado ENUM('corriendo','esperando','descanso','pausado','detenido') NOT NULL,
+      cambio TINYINT(1) NOT NULL DEFAULT 1,
+      motivo VARCHAR(255) NULL,
+      pais CHAR(3) NULL,
+      hecho INT NULL,
+      total INT NULL,
+      anuncios INT NULL,
+      auto TINYINT(1) NOT NULL DEFAULT 0,
+      version VARCHAR(12) NULL,
+      equipo VARCHAR(120) NULL,
+      id_sub_usuario INT NULL,
+      INDEX idx_creado (creado_en),
+      INDEX idx_estado_cambio (estado, cambio, creado_en)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+  tablaLatidoLista = true;
+}
+
+async function radarLatido(body = {}, user) {
+  const estado = LATIDO_ESTADOS.includes(body.estado) ? body.estado : null;
+  if (!estado) throw new AppError(`estado inválido: ${body.estado}`, 400);
+  await asegurarTablaLatido();
+  const pais = String(body.pais || '').toUpperCase().slice(0, 3) || null;
+  await q(
+    `INSERT INTO espia_radar_latido (estado, cambio, motivo, pais, hecho, total, anuncios, auto, version, equipo, id_sub_usuario)
+     VALUES (:estado, :cambio, :motivo, :pais, :hecho, :total, :anuncios, :auto, :version, :equipo, :sub)`,
+    {
+      estado,
+      cambio: body.cambio ? 1 : 0,
+      motivo: body.motivo ? String(body.motivo).slice(0, 255) : null,
+      pais,
+      hecho: Number.isFinite(Number(body.hecho)) ? Number(body.hecho) : null,
+      total: Number.isFinite(Number(body.total)) ? Number(body.total) : null,
+      anuncios: Number.isFinite(Number(body.anuncios)) ? Number(body.anuncios) : null,
+      auto: body.auto ? 1 : 0,
+      version: body.version ? String(body.version).slice(0, 12) : null,
+      equipo: body.equipo ? String(body.equipo).slice(0, 120) : null,
+      sub: user?.id_sub_usuario || null,
+    },
+    QueryTypes.INSERT,
+  );
+  // Se guardan 90 días: alcanza para ver qué tan seguido Meta pide verificación.
+  if (Math.random() < 0.02) {
+    await q(`DELETE FROM espia_radar_latido WHERE creado_en < DATE_SUB(NOW(), INTERVAL 90 DAY)`, {}, QueryTypes.DELETE).catch(() => {});
+  }
+  return { ok: true };
+}
+
+/* Lo que la portada muestra al super admin: último latido, alerta (si hay) y
+ * cuántas veces pidió verificación en 30 días. */
+async function radarEquipo() {
+  let ultimo = null;
+  let pausas = 0;
+  let ultimaPausa = null;
+  try {
+    [ultimo] = await q(`SELECT * FROM espia_radar_latido ORDER BY id DESC LIMIT 1`);
+    const [p] = await q(
+      `SELECT COUNT(*) AS n, MAX(creado_en) AS ultima FROM espia_radar_latido
+        WHERE estado = 'pausado' AND cambio = 1 AND creado_en > DATE_SUB(NOW(), INTERVAL 30 DAY)`,
+    );
+    pausas = Number(p?.n || 0);
+    ultimaPausa = p?.ultima || null;
+  } catch (err) {
+    if (!sinTabla(err)) throw err;
+  }
+  if (!ultimo) return { ultimo: null, alerta: null, pausas_30d: 0, ultima_pausa: null };
+  const minutos = (Date.now() - new Date(ultimo.creado_en).getTime()) / 60000;
+  let alerta = null;
+  if (ultimo.estado === 'pausado') {
+    alerta = { tipo: 'pausado', texto: ultimo.motivo || 'El radar está en pausa y no sigue solo.' };
+  } else if (ultimo.estado !== 'detenido' && minutos > LATIDO_SIN_SENAL_MIN) {
+    alerta = { tipo: 'sin_senal', texto: `El radar no da señales desde hace ${Math.round(minutos)} min (lo último fue «${ultimo.estado}»${ultimo.pais ? ` en ${ultimo.pais}` : ''}). Revisa que el equipo esté encendido, con Chrome y la pestaña de la Biblioteca abiertas.` };
+  }
+  return { ultimo, alerta, pausas_30d: pausas, ultima_pausa: ultimaPausa };
+}
+
 module.exports = {
   PAISES,
   PAISES_REALES,
@@ -1869,6 +1963,8 @@ module.exports = {
   recibirAnuncios,
   radarCola,
   radarMarcar,
+  radarLatido,
+  radarEquipo,
   terminoBusqueda,
   esBuscable,
   limpiarVinculosNoBuscables,
