@@ -4,6 +4,7 @@ const espia = require('../services/espia_mercado.service');
 const { ADDON_IMPORKILLER } = require('../middlewares/espiaAcceso.middleware');
 const { generarToken } = require('../utils/jwt');
 const jwt = require('jsonwebtoken');
+const axios = require('axios');
 
 /**
  * ImporKiller (Dropkiller propio; antes «Espía de mercado»). Quién entra lo
@@ -88,6 +89,42 @@ exports.productosLote = catchAsync(async (req, res) =>
 );
 
 exports.anuncios = catchAsync(async (req, res) => ok(res, await espia.listarAnuncios(req.query)));
+
+/**
+ * Descarga del creativo de un anuncio. Los archivos de Meta no se pueden bajar
+ * directo desde la pantalla (otro dominio, sin permiso de descarga), así que
+ * pasan por aquí como archivo adjunto. Si el video ya venció en Meta se
+ * entrega la imagen; si no queda nada, 410 y la pantalla manda a la Biblioteca.
+ * Sin redirecciones: solo se piden las direcciones que creativoDe validó.
+ */
+const MAX_CREATIVO = 300 * 1024 * 1024;
+exports.creativo = catchAsync(async (req, res) => {
+  const c = await espia.creativoDe(req.params.id);
+  let origen = null;
+  for (const url of c.urls) {
+    try {
+      origen = await axios.get(url, { responseType: 'stream', timeout: 30000, maxRedirects: 0, validateStatus: (s) => s === 200 });
+      break;
+    } catch {
+      origen = null;
+    }
+  }
+  if (!origen) throw new AppError('Este creativo ya no está disponible para descargar. Ábrelo en la Biblioteca de anuncios de Meta.', 410);
+  const tipo = String(origen.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  const largo = Number(origen.headers['content-length']) || 0;
+  if (!/^(video|image)\//.test(tipo) || largo > MAX_CREATIVO) {
+    origen.data.destroy();
+    throw new AppError('Este creativo no se puede descargar desde aquí. Ábrelo en la Biblioteca de anuncios de Meta.', 415);
+  }
+  const ext = tipo.startsWith('video/') ? 'mp4' : tipo.includes('png') ? 'png' : tipo.includes('webp') ? 'webp' : tipo.includes('gif') ? 'gif' : 'jpg';
+  res.setHeader('Content-Type', tipo);
+  if (largo) res.setHeader('Content-Length', String(largo));
+  res.setHeader('Content-Disposition', `attachment; filename="anuncio-${c.id}.${ext}"`);
+  res.setHeader('Cache-Control', 'private, max-age=600');
+  origen.data.on('error', () => res.destroy());
+  req.on('close', () => origen.data.destroy());
+  origen.data.pipe(res);
+});
 
 exports.recibirAnuncios = catchAsync(async (req, res) =>
   ok(res, await espia.recibirAnuncios(req.body, req.sessionUser)),

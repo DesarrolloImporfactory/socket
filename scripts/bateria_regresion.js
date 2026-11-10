@@ -1383,6 +1383,97 @@ async function suiteA() {
       producto: 'X',
       cantidad: '1',
     };
+    /* Variedad aceptada con un «sí» (cfg 1549, chat 1259949, 10-11-2026): el
+       asesor escribió «2 azul 2 negra 2 gris XL», el cliente «Si está vien»,
+       y el bot volvió a preguntar la opción dos veces porque la ficha solo
+       contaba lo que el cliente tecleó. Lo que el cliente ACEPTA también vale. */
+    {
+      const {
+        esAfirmacion,
+        textoAfirmadoPorCliente,
+        faltantesFicha: faltantesVar,
+      } = require('../src/utils/fichaPedido');
+      const variantes = ['NEGRO / XL', 'AZUL / XL', 'GRIS / L', 'NEGRO / M'];
+      const pideOpcion = (items) =>
+        faltantesVar(
+          {
+            entrega: 'agencia',
+            nombre: 'Edgar Segura',
+            telefono: '0992088992',
+            ciudad: 'Quinindé',
+            agencia: 'Quinindé',
+            producto: 'BUZO CON TAPABOCA',
+            cantidad: '6',
+            variedad: '',
+            _textoCliente: items
+              .filter((i) => i.rol === 'CLIENTE')
+              .map((i) => i.texto)
+              .join('\n'),
+            _textoAfirmado: textoAfirmadoPorCliente(items),
+          },
+          { variantes },
+        ).some((x) => /opción del producto/i.test(x));
+      const previo = [
+        { rol: 'CLIENTE', texto: 'Quiero seis unidades, la talla más grande' },
+      ];
+      caso(
+        'variedad: sin elegir ni aceptar nada, se sigue pidiendo',
+        pideOpcion(previo) === true,
+      );
+      caso(
+        'variedad: «Si está vien» a lo que propuso el asesor ya la da por elegida',
+        pideOpcion([
+          ...previo,
+          { rol: 'VENDEDOR', texto: '2 azul 2 negra 2 gris XL' },
+          { rol: 'CLIENTE', texto: 'Si está vien' },
+        ]) === false,
+      );
+      caso(
+        'variedad: «Si» a «¿Confirma Azul/XL x2…?» del bot ya la da por elegida',
+        pideOpcion([
+          ...previo,
+          { rol: 'ASISTENTE', texto: '¿Confirma Azul/XL x2, Negro/XL x2 y Gris/XL x2?' },
+          { rol: 'CLIENTE', texto: 'Si' },
+        ]) === false,
+      );
+      caso(
+        'variedad: «si pero cuánto cuesta?» no es aceptar la propuesta',
+        pideOpcion([
+          ...previo,
+          { rol: 'ASISTENTE', texto: '¿Confirma Azul/XL x2?' },
+          { rol: 'CLIENTE', texto: 'si pero cuanto cuesta?' },
+        ]) === true,
+      );
+      caso(
+        'variedad: esAfirmacion no confunde «siempre», «Simón Bolívar» ni «si pero otro color»',
+        esAfirmacion('Sí, de acuerdo') &&
+          esAfirmacion('dale') &&
+          !esAfirmacion('siempre') &&
+          !esAfirmacion('Simón Bolívar y Sucre') &&
+          !esAfirmacion('si pero otro color') &&
+          !esAfirmacion('no'),
+      );
+    }
+    {
+      /* Registro de incidencias: qué turno se guarda y cuál no. */
+      const { clasificar } = require('../src/services/bot_incidencias.service');
+      caso(
+        'incidencias: guardia que reemplaza la lista y cierre bloqueado se registran',
+        clasificar(['🏦 Guardia de oficina de retiro: listó oficinas de Cuenca'])[0] ===
+          'guardia_oficina' &&
+          clasificar(['🚫 Cierre de venta BLOQUEADO (falta teléfono)'])[0] ===
+            'cierre_bloqueado',
+      );
+      caso(
+        'incidencias: un turno normal y los avisos del turno anterior no se registran',
+        clasificar(['📥 mensaje recibido', '✅ respuesta enviada']).length === 0 &&
+          clasificar([
+            '🏦 Último mensaje fue de la guardia de oficinas: inyectado como contexto',
+            '⚠️ OpenAI: la organización de config=5 no está verificada para gpt-5-mini; respaldo',
+            '🩹 Cierre bloqueado detectado en turno anterior (faltaba: Teléfono)',
+          ]).length === 0,
+      );
+    }
     caso(
       'dirección: solo calles es incompleta',
       direccionIncompleta(dirSolaCalles) === true,
@@ -1774,6 +1865,56 @@ async function suiteA() {
     const g2 = R.validarListaDelModelo({ respuesta: lista411.replace(/Santa Elena/g, 'Puerto Ayora'), ficha: fichaGal, oficinas, mensajeCliente: 'la del muelle', historialBot: [g1?.texto || ''] });
     caso('segunda vez → avanza con "por confirmar" y pide el dato que falta', !!g2 && g2.texto.includes(R.GUARDIA_MARCA_PORCONFIRMAR) && /muelle/.test(g2.texto) && /nombre/.test(g2.texto), g2?.texto);
 
+    /* Caso cfg 1248 (MultiOfertas, chat 1262461, 10-11-2026): el cliente dijo
+       "Guasmo sur" y después "X el Pedregal". El modelo listó 4 oficinas
+       reales que no eran del Guasmo, y la guardia mandó TRES veces la misma
+       lista alfabética (17 Ava, 23 y la Q…), la última después del "Sí" con
+       el que el cliente confirmaba el pedido. */
+    {
+      const fichaGye = { ...fichaSE, ciudad: 'Guayaquil', entrega: 'agencia' };
+      const dicho = (...m) => m.join('\n');
+      const histSector = [`Perfecto, retiro en Guayaquil 😊 ${R.GUARDIA_MARCA_SECTOR}`];
+      const listaAjena =
+        'Las oficinas Servientrega disponibles en Guayaquil son:\n' +
+        '1. *Oficina Servientrega — Sector Florida Norte Av. Principal*\nDirección: Florida Norte MZ 0408 SL.3 Tarqui\n' +
+        '2. *Oficina Servientrega — Sector Francisco Segura*\nDirección: Francisco Segura 1909 entre Tulcán y Carchi PB\n' +
+        '3. *Oficina Servientrega — Sector Garzota*\nDirección: CDLA. La Garzota MZ 32 Villa # 30';
+      const f1 = { ...fichaGye, _textoCliente: dicho('1 nomás', 'Guayaquil', 'Servi entrega', 'Pero el sábado', 'Guasmo sur') };
+      const t1 = R.validarListaDelModelo({ respuesta: listaAjena, ficha: f1, oficinas, mensajeCliente: 'Guasmo sur', historialBot: histSector });
+      caso(
+        'lista real que ignora "Guasmo sur" → se cambia por la ordenada, con el Guasmo primero',
+        !!t1 && t1.texto.includes(R.GUARDIA_MARCA_LISTA) && /GUASMO/i.test(t1.texto.split('\n')[1]),
+        t1?.texto,
+      );
+      caso(
+        'lista real sin referencia que calce ("no sé, cualquiera") se respeta',
+        R.validarListaDelModelo({ respuesta: listaAjena, ficha: { ...fichaGye, _textoCliente: dicho('Guayaquil', 'no sé, cualquiera') }, oficinas, mensajeCliente: 'no sé, cualquiera', historialBot: histSector }) === null,
+      );
+      const inventada = '1. *Oficina Servientrega — Sector Pedregal*\nDirección: Av. Principal del Pedregal y Calle 3';
+      const f2 = { ...fichaGye, agencia: 'Pedregal', _textoCliente: dicho(f1._textoCliente, 'X el Pedregal') };
+      const primera = R.validarListaDelModelo({ respuesta: inventada, ficha: f2, oficinas, mensajeCliente: 'X el Pedregal', historialBot: histSector });
+      caso(
+        '"Pedregal" no está en el directorio: la lista sale ordenada por lo que dijo antes (Guasmo), no alfabética',
+        !!primera && primera.texto.includes(R.GUARDIA_MARCA_LISTA) && /GUASMO/i.test(primera.texto.split('\n')[1]),
+        primera?.texto,
+      );
+      const segunda = R.validarListaDelModelo({ respuesta: inventada, ficha: f2, oficinas, mensajeCliente: 'Pedregal', historialBot: [primera?.texto || '', ...histSector] });
+      caso(
+        'la misma lista NO se manda dos veces: queda por confirmar y pide el dato que falta',
+        !!segunda && !segunda.texto.includes(R.GUARDIA_MARCA_LISTA) && segunda.texto.includes(R.GUARDIA_MARCA_PORCONFIRMAR) && /Pedregal/.test(segunda.texto) && /nombre/.test(segunda.texto),
+        segunda?.texto,
+      );
+      const confirma = '🧑 Nombre: Idian Montaño\n📦 Producto: Boquilla x1\n🏢 Retiro: Oficina Servientrega — Sector Guasmo Sur Lucha Popular\n¿Me confirmas tu teléfono?';
+      caso(
+        'confirmar una oficina real por su sector, sin la dirección, no dispara la lista (el "Sí" del cliente)',
+        R.validarListaDelModelo({ respuesta: confirma, ficha: { ...f2, nombre: 'Idian Montaño' }, oficinas, mensajeCliente: 'Si', historialBot: [primera?.texto || '', ...histSector] }) === null,
+      );
+      caso(
+        'un sector de una sola palabra ("Sector Centro") sigue sin valer como oficina real',
+        !oficinas.some((o) => R.coincideSector('Oficina Servientrega — Sector Centro', { ...o, sector: 'Centro' })),
+      );
+    }
+
     // E2E cfg 610 (2026-09-08): gpt-5-mini listó oficinas REALES de La Libertad
     // y Ancón como si fueran de Santa Elena, con un encabezado que termina en
     // "¿cuál te queda mejor?". El encabezado no es un ítem; los 4 sí, y son de
@@ -1845,6 +1986,34 @@ async function suiteA() {
       !esSaludoOGenerico('sirve para un chevrolet 2010?', { nombreProducto: nombre }) &&
         !esSaludoOGenerico('el escaner funciona con iphone?', { nombreProducto: nombre }),
     );
+
+    /* Casos 968 (JD IMPORT) y 360, 10-11-2026: el bot pregunta "¿celeste o
+       rosado?", la persona contesta "Quiero color rosado" y la quemada
+       "¿Qué colores hay?" le vuelve a preguntar el color, en bucle (en la 360
+       una clienta escribió "Rosada" seis veces). Quien elige una opción de la
+       pregunta del bot no está preguntando, y la quemada que acaba de salir
+       no se repite. */
+    {
+      const { elegirRespuestaRapida } = require('../src/utils/wizardProducto/respuestasRapidas');
+      const faqsColor = [
+        { pregunta: '¿Qué colores hay disponibles?', respuesta: 'Tenemos celeste y rosado disponibles, ambos con stock listo para despacho. ¿Cuál color te llevo?', claves: ['colores', 'celeste', 'rosado'], activa: 1 },
+        { pregunta: '¿Hacen envío y cómo pago?', respuesta: 'Hacemos envío gratis y pagas al recibir. ¿Te lo envío con pago contra entrega?', claves: ['envio gratis', 'pago al recibir', 'direccion'], activa: 1 },
+        { pregunta: '¿Cómo se limpia el arnés?', respuesta: 'Se limpia con un paño húmedo y jabón neutro. ¿Te aparto el color que prefieras?', claves: ['limpieza', 'paño humedo'], activa: 1 },
+      ];
+      const fijo = '💵 1 por $24,99\n🔥 2 por $42,99\n🚚 Envío gratis y pagas al recibir\n\n¿Te llevas 1, 2 o 3 unidades y de qué color las quieres: celeste o rosado?';
+      const quemada = faqsColor[0].respuesta;
+      const sale = (msg, ultimoBot) => elegirRespuestaRapida(msg, faqsColor, { ultimoBot });
+      caso('sin contexto, "Quiero color rosado" calza la quemada de colores (comportamiento anterior intacto)', !!elegirRespuestaRapida('Quiero color rosado', faqsColor));
+      caso('"Quiero color rosado" tras "¿…celeste o rosado?" es una elección → IA', sale('Quiero color rosado', fijo) === null);
+      caso('"Rosado" / "celeste" / "2 rosados" tras la pregunta → IA', ['Rosado', 'celeste', '2 rosados'].every((m) => sale(m, fijo) === null));
+      caso('"Rosada" elige "rosado" (sin género) tras "¿La quieres rosada o negra?"', elegirRespuestaRapida('Rosada', [{ ...faqsColor[0], claves: ['colores', 'rosada', 'negra'] }], { ultimoBot: 'Perfecto 🙂 ¿La quieres rosada o negra?' }) === null);
+      caso('"¿qué colores tienen?" tras la misma pregunta sigue saliendo la quemada (es pregunta)', sale('que colores tienen?', fijo)?.faq === faqsColor[0]);
+      caso('"como se limpia" y "hacen envio?" no se afectan', sale('como se limpia', fijo)?.faq === faqsColor[2] && sale('hacen envio?', fijo)?.faq === faqsColor[1]);
+      caso('la quemada que acaba de salir no se repite ("Rosado" tras "¿Cuál color te llevo?")', sale('Rosado', quemada) === null);
+      caso('ni aunque insista con pregunta ("que colores hay?" justo después de la quemada)', sale('que colores hay?', quemada) === null);
+      caso('otra quemada distinta sí sale después ("y hacen envio?")', sale('y hacen envio?', quemada)?.faq === faqsColor[1]);
+      caso('"Domicilio" tras "¿domicilio o agencia?" no dispara la quemada de envío', elegirRespuestaRapida('A domicilio', [{ pregunta: '¿Hacen envíos?', respuesta: 'Envío gratis a domicilio a todo el país. ¿Te lo envío?', claves: ['envio', 'domicilio'], activa: 1 }], { ultimoBot: '¿Te lo enviamos a tu domicilio o prefieres retirar en una agencia Servientrega? 📦' }) === null);
+    }
 
     const ciudad = '¿A qué ciudad te lo enviamos?';
     caso('tercera respuesta idéntica (con o sin emoji) se detecta como bucle', esRespuestaEnBucle(ciudad, [`${ciudad} 📦`, ciudad]));

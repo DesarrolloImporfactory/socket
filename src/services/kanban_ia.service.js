@@ -8,6 +8,11 @@ const axios = require('axios');
 const flatted = require('flatted');
 const { db } = require('../database/config');
 const {
+  conTraza,
+  anotar: anotarTraza,
+  datoTraza,
+} = require('./bot_incidencias.service');
+const {
   auditarDesdeSistema: auditarSwitchSistema,
 } = require('./switch_audit.service');
 const { verificarAccesoAutomatizaciones } = require('../utils/planAcceso');
@@ -849,7 +854,11 @@ function camposFaltantesCierre(respuesta, ficha = null) {
       dicha && !esValorRelleno(dicha) ? resolverVariedad(dicha, variantes) : null;
     const clienteLaDijo =
       Boolean(textoCliente) &&
-      variantes.some((et) => etiquetaEnTexto(et, textoCliente));
+      variantes.some((et) =>
+        // También vale la que propuso el negocio y el cliente aceptó con un
+        // "sí" (ficha._textoAfirmado, caso 1549).
+        etiquetaEnTexto(et, `${textoCliente}\n${ficha?._textoAfirmado || ''}`),
+      );
     if (!resuelta && !clienteLaDijo) {
       faltan.push(
         `- Color/talla/modelo del producto (opciones: ${variantes.join(', ')})`,
@@ -1141,6 +1150,8 @@ async function enviarRespaldoAlCliente({
 }
 
 async function log(msg) {
+  // La misma línea queda en la traza del turno (bot_incidencias_log).
+  anotarTraza(msg);
   await fs.mkdir(logsDir, { recursive: true });
   await fs.appendFile(
     require('path').join(logsDir, 'debug_log.txt'),
@@ -1160,6 +1171,22 @@ async function log(msg) {
 // @returns {object} { ok, respuesta_enviada }
 // ─────────────────────────────────────────────────────────────
 async function procesarMensajeKanban(params) {
+  /* El turno corre dentro de una traza: si una guardia reemplaza la
+     respuesta, se bloquea un cierre o falla el proveedor de IA, queda una
+     fila en bot_incidencias_log con lo que pasó (ver el servicio). */
+  return conTraza(
+    {
+      id_configuracion: params.id_configuracion,
+      id_cliente: params.id_cliente,
+      canal: params.canal?.source || 'wa',
+      columna: params.estado_contacto,
+      mensaje: params.mensaje,
+    },
+    () => procesarMensajeKanbanTurno(params),
+  );
+}
+
+async function procesarMensajeKanbanTurno(params) {
   const {
     id_configuracion,
     id_cliente,
@@ -3346,6 +3373,10 @@ async function procesarMensajeKanban(params) {
   // `let`: el paso 10 puede completarla con la ficha del pedido o inferirle el
   // tag de cierre (ver 9.9).
   let respuestaRaw = sanitizarRespuestaAgente(respuestaCruda);
+  // Lo que escribió el modelo, antes de que una guardia lo toque, y el
+  // mensaje completo del cliente (con la ráfaga ya agrupada).
+  datoTraza('respuesta_modelo', respuestaRaw);
+  datoTraza('mensaje_cliente', mensaje);
 
   // Log solo si el sanitizador modificó algo
   if (respuestaCruda !== respuestaRaw) {

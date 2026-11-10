@@ -17,9 +17,12 @@
  *  - Dropi no lista las bodegas en 0: una bodega que tenía stock y deja de
  *    aparecer se cuenta como bajada a 0 (`completarClaves`).
  *
- * Límites conocidos (van dichos en la pantalla): un traslado entre bodegas o
- * un ajuste a 0 parece venta; una venta tapada por una reposición en la misma
- * ventana no se ve; lo propio se ve de menos.
+ *  - No toda bajada es venta: los ajustes de inventario del proveedor se
+ *    separan con `ventasCreibles` (ver más abajo) y no se suman.
+ *
+ * Límites conocidos: una venta tapada por una reposición en la misma ventana
+ * no se ve; un pico real que multiplica de golpe lo que el producto venía
+ * vendiendo se toma por ajuste ese día y entra desde el siguiente.
  *
  * Sin dependencias: se prueba con `node scripts/espiaMercado.js probar`.
  */
@@ -143,25 +146,89 @@ function completarClaves(previas, nuevas) {
 }
 
 /**
+ * Ventas creíbles vs. ajustes de stock (10-nov-2026).
+ *
+ * No toda baja de stock es una venta: el proveedor corrige su inventario, apaga
+ * una variación, pasa mercadería de una bodega a otra o baja un stock «de
+ * relleno» (49.167 → 10.000). Medido en Ecuador con 11 días de fotos: de 462.351
+ * unidades «vendidas», 348.099 salían de 626 bajadas así (7 productos «vendían»
+ * más de 35.000 unidades en un día). Un producto que vende 300 al día ya es de
+ * los primeros del país.
+ *
+ * La regla compara cada bajada con lo que ESE producto venía vendiendo:
+ *  - tope = el mayor de PISO y FACTOR × su mejor día creíble de los 14 anteriores.
+ *    Un producto sin historia puede vender hasta PISO de una foto a otra; uno que
+ *    ya vende 100 al día puede llegar a 250. Así un ganador crece sin que lo corten.
+ *  - Si la bajada se lleva la mitad o más del stock de esa bodega/variación (o la
+ *    deja en 0), el piso es PISO_VACIADO: vaciar de golpe es la firma del ajuste.
+ *  - Lo que en la misma foto subió en otra bodega/variación del producto es un
+ *    traslado, no una venta: se descuenta.
+ *  - Si después de eso el conjunto todavía pasa del tope, es un ajuste repartido
+ *    entre muchas variaciones: no cuenta nada.
+ * Lo que no pasa la regla no se suma como venta (se devuelve aparte en `ajuste`).
+ *
+ * bajadas: [{ d, prev }] (unidades que bajó la clave y stock que tenía)
+ * subida: unidades que subieron otras claves del producto en la misma foto
+ * mayorDia: mejor día creíble del producto en los 14 días anteriores (0 = sin historia)
+ * → { ventas, ajuste }
+ */
+const AJUSTE = { PISO: 40, PISO_VACIADO: 20, FACTOR: 2.5, DIAS_REFERENCIA: 14 };
+
+function ventasCreibles(bajadas, subida = 0, mayorDia = 0) {
+  const mayor = Math.max(0, Number(mayorDia) || 0);
+  const tope = Math.max(AJUSTE.PISO, AJUSTE.FACTOR * mayor);
+  const topeVaciado = Math.max(AJUSTE.PISO_VACIADO, AJUSTE.FACTOR * mayor);
+  let ventas = 0;
+  let ajuste = 0;
+  for (const b of bajadas) {
+    const d = Number(b.d) || 0;
+    if (d <= 0) continue;
+    const vacia = d >= (Number(b.prev) || 0) * 0.5;
+    if (d > (vacia ? topeVaciado : tope)) ajuste += d;
+    else ventas += d;
+  }
+  const sube = Math.max(0, Number(subida) || 0);
+  if (sube > 0 && ventas > 0) {
+    const traslado = Math.min(ventas, sube);
+    ventas -= traslado;
+    ajuste += traslado;
+  }
+  if (ventas > tope) {
+    ajuste += ventas;
+    ventas = 0;
+  }
+  return { ventas, ajuste };
+}
+
+/**
  * Suma de un producto en una pasada.
  * previas: Map('w:v' → stock) de la foto anterior (puede estar vacío).
  * nuevas: claves de la respuesta de hoy.
- * → { ventas, reabastecimientos, stockTotal, cambios:[{warehouse_id, variacion_id, stock}] }
+ * mayorDia: mejor día creíble del producto en los 14 días anteriores (ver ventasCreibles).
+ * → { ventas, ajuste, reabastecimientos, stockTotal, cambios:[{warehouse_id, variacion_id, stock}] }
+ *   ventas = solo lo creíble; ajuste = unidades que bajaron y no cuentan como venta.
  */
-function resumirProducto(previas, nuevasCrudas) {
+function resumirProducto(previas, nuevasCrudas, mayorDia = 0) {
   const nuevas = completarClaves(previas, nuevasCrudas);
-  const pares = [];
   const cambios = [];
+  const bajadas = [];
   let stockTotal = 0;
+  let subida = 0;
+  let reabastecimientos = 0;
   for (const c of nuevas) {
     const k = `${c.warehouse_id}:${c.variacion_id}`;
     const previo = previas.has(k) ? Number(previas.get(k)) : null;
-    pares.push([previo, c.stock]);
     if (!c._completada) stockTotal += c.stock;
     if (previo === null || previo !== c.stock) cambios.push(c);
+    if (previo === null) continue; // primera vez que se ve la clave: no cuenta nada
+    if (c.stock < previo) bajadas.push({ d: previo - c.stock, prev: previo });
+    else if (c.stock > previo) {
+      subida += c.stock - previo;
+      reabastecimientos += 1;
+    }
   }
-  const { ventas, reabastecimientos } = ventasProducto(pares);
-  return { ventas, reabastecimientos, stockTotal, cambios };
+  const { ventas, ajuste } = ventasCreibles(bajadas, subida, mayorDia);
+  return { ventas, ajuste, reabastecimientos, stockTotal, cambios };
 }
 
 /** Nombre normalizado para agrupar «el mismo producto en otros proveedores». */
@@ -202,6 +269,8 @@ const ATAJOS = {
 module.exports = {
   ZONAS,
   ATAJOS,
+  AJUSTE,
+  ventasCreibles,
   ventasDelTramo,
   ventasProducto,
   fechaLocal,

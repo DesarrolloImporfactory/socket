@@ -35,6 +35,7 @@ router.get('/extension/ping', ctrl.ping); // dice si la sesión tiene el complem
 router.post('/productos/lote', espiaAddon, ctrl.productosLote); // extensión en Dropi → métricas de hasta 200 ids
 router.get('/anuncios', espiaAddon, ctrl.anuncios);
 router.post('/anuncios', espiaAddon, ctrl.recibirAnuncios); // extensión → lote de hasta 200
+router.get('/anuncios/:id/creativo', espiaAddon, ctrl.creativo); // pantalla → descarga el video o la imagen del anuncio
 router.get('/radar/cola', espiaAddon, ctrl.radarCola); // extensión → productos a buscar en Meta (con su término)
 router.post('/radar/marcar', espiaAddon, ctrl.radarMarcar); // extensión → «busqué este producto; salieron estos anuncios»
 router.post('/radar/latido', espiaAddon, ctrl.radarLatido); // extensión → «el radar está así» (la portada avisa si se pausa o se cae)

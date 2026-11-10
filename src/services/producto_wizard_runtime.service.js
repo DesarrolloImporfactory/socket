@@ -48,6 +48,7 @@ const {
   esSaludoDeAnuncio,
   pareceRegunta,
   elegirRespuestaRapida,
+  yaLoDijo,
   tokens: tokensMensaje,
 } = require('../utils/wizardProducto/respuestasRapidas');
 const { resolverUpsell, directivaUpsell } = require('../utils/upsellProducto');
@@ -1109,6 +1110,30 @@ async function ultimoMensajeDelBotPideDatos(id_configuracion, id_cliente) {
   }
 }
 
+/* Últimos textos que salieron hacia el cliente en las últimas 24 h (bot o
+   asesor), del más reciente al más viejo. */
+async function ultimosTextosDelBot(id_configuracion, id_cliente, limite = 12) {
+  try {
+    const filas = await db.query(
+      `SELECT texto_mensaje AS texto, responsable FROM mensajes_clientes
+        WHERE id_configuracion = ? AND celular_recibe = ? AND rol_mensaje = 1
+          AND tipo_mensaje = 'text'
+          AND created_at >= NOW() - INTERVAL 24 HOUR
+        ORDER BY id DESC LIMIT ${Number(limite) || 12}`,
+      {
+        replacements: [id_configuracion, String(id_cliente)],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    return filas.map((f) => ({
+      texto: String(f.texto || ''),
+      responsable: f.responsable || '',
+    }));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Turnos siguientes: si la pregunta calza con una respuesta rápida del
  * producto en juego, se manda y se devuelve manejado=true (la IA no corre).
@@ -1133,8 +1158,35 @@ async function intentarRespuestaRapida({
     return { manejado: false };
   }
   const faqs = leerJson(r.wizard.respuestas_rapidas_json, []);
-  const match = elegirRespuestaRapida(texto, faqs);
-  if (!match) return { manejado: false };
+  /* Con lo último que dijo el bot a la vista: quien elige una opción de su
+     pregunta ("rosado" tras "¿celeste o rosado?") no está preguntando, y la
+     quemada que acaba de salir no se repite (ver respuestasRapidas.js). */
+  const recientes = await ultimosTextosDelBot(id_configuracion, id_cliente);
+  const match = elegirRespuestaRapida(texto, faqs, {
+    ultimoBot: recientes[0]?.texto || '',
+  });
+  if (!match) {
+    if (elegirRespuestaRapida(texto, faqs)) {
+      await decir(
+        `wizard: calzaba una rápida, pero el cliente está contestando la pregunta del bot o esa rápida fue lo último que salió → sigue la IA`,
+      );
+    }
+    return { manejado: false };
+  }
+  /* La misma quemada dos veces en 24 h ya no es una respuesta: es un bucle
+     (dos bots contestándose se cruzaron la misma 33 veces, cfg 403 y 1581,
+     04-11-2026). La tercera la decide la IA, que tiene su propio anti-bucle. */
+  const vecesDicha = recientes.filter(
+    (m) =>
+      m.responsable === RESPONSABLE_RAPIDA &&
+      yaLoDijo(match.faq.respuesta, m.texto),
+  ).length;
+  if (vecesDicha >= 2) {
+    await decir(
+      `wizard: la rápida #${match.indice} ya salió ${vecesDicha} veces en 24 h → no se repite, sigue la IA`,
+    );
+    return { manejado: false };
+  }
 
   if (!(await botHabilitado(id_configuracion, estado_contacto))) {
     return { manejado: false };

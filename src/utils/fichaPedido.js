@@ -426,6 +426,38 @@ function purgarCache(ahora) {
  *   agencia:string, producto:string, cantidad:string, variedad:string,
  *   confirmo_pedido:boolean, _firma:string }>}
  */
+/* ── Lo que el cliente ACEPTÓ con un "sí" ──
+   Caso cfg 1549 (Express Store, chat 1259949, 10-11-2026): el cliente pidió
+   por audio "un color de cada uno, la talla más grande"; el asesor escribió
+   "2 azul 2 negra 2 gris XL" y el cliente contestó "Si está bien". El bot
+   preguntó "¿Confirma Azul/XL x2, Negro/XL x2 y Gris/XL x2?", el cliente dijo
+   "Si"… y el bot volvió a preguntar qué opción prefería: la variedad solo
+   contaba si el cliente la ESCRIBÍA con sus palabras, y un "sí" a la propuesta
+   del negocio no es escribirla. Acá se junta el texto de los mensajes del
+   bot o del asesor que el cliente respondió afirmando: para la variedad del
+   producto, eso es haberla elegido. */
+const RE_AFIRMA =
+  /^(s[ií]+p?|claro|correcto|exacto|as[ií] es|ok(ay|ey)?|dale|listo|de acuerdo|est[aá] (bien|vien|perfecto)|perfecto|confirmo|confirmado|eso(s)? mismo(s)?|as[ií] est[aá] bien)(?![a-záéíóúñ])/i;
+
+function esAfirmacion(texto) {
+  const t = String(texto || '').trim();
+  if (!t || t.length > 60 || /[?¿]/.test(t)) return false;
+  if (/\b(no|pero|mejor|cambi\w+|otr[oa]s?)\b/i.test(t)) return false;
+  return RE_AFIRMA.test(t);
+}
+
+function textoAfirmadoPorCliente(items = []) {
+  const partes = [];
+  for (let i = 1; i < items.length; i++) {
+    if (items[i].rol !== 'CLIENTE' || !esAfirmacion(items[i].texto)) continue;
+    // Los mensajes del negocio justo antes del "sí" (hasta 3 seguidos).
+    for (let j = i - 1; j >= 0 && i - j <= 3 && items[j].rol !== 'CLIENTE'; j--) {
+      partes.push(items[j].texto);
+    }
+  }
+  return partes.join('\n');
+}
+
 async function extraerFichaPedido({
   id_configuracion,
   id_cliente,
@@ -593,6 +625,9 @@ async function extraerFichaPedido({
     /* Lo que escribió el CLIENTE, para el candado anti-invento del cierre: un
        dato del resumen (ciudad, teléfono) que no esté acá lo inventó el modelo. */
     _textoCliente: textoCliente,
+    /* Lo que propuso el bot o el asesor y el cliente aceptó con un "sí":
+       cuenta como dicho por él para la variedad del producto. */
+    _textoAfirmado: textoAfirmadoPorCliente(items),
     /* El número desde el que escribe (dígitos) y si el teléfono de la ficha
        salió de ahí (el modelo lo usó o el cliente dijo "a este mismo"). El
        validador del cierre lo acepta como dato real; el bloque de la ficha
@@ -788,7 +823,8 @@ function faltantesFicha(ficha, opts = {}) {
   if (variantes.length) {
     const { resolverVariedad, etiquetaEnTexto } = require('./variedadMatch');
     const elegida = f.variedad ? resolverVariedad(f.variedad, variantes) : null;
-    const dichaEnChat = variantes.some((et) => etiquetaEnTexto(et, f._textoCliente || ''));
+    const dichoOAceptado = `${f._textoCliente || ''}\n${f._textoAfirmado || ''}`;
+    const dichaEnChat = variantes.some((et) => etiquetaEnTexto(et, dichoOAceptado));
     if (!elegida && !dichaEnChat) {
       faltan.push(
         `La opción del producto: pregúntale cuál quiere entre ${variantes.join(', ')} (ofrécele SOLO esas)`,
@@ -1172,6 +1208,8 @@ function limpiarCacheFicha(id_cliente) {
 }
 
 module.exports = {
+  esAfirmacion,
+  textoAfirmadoPorCliente,
   extraerFichaPedido,
   bloqueFichaPedido,
   faltantesFicha,

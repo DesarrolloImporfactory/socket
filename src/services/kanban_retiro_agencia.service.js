@@ -968,12 +968,23 @@ function tokensReferencia(texto, ciudad = '') {
 /* Ordena las oficinas de una ciudad por cuántos tokens de la referencia
    aparecen en su sector+dirección (estable: a igual puntaje, el orden del
    directorio). `coincidencias` = cuántas oficinas tienen al menos un token. */
-function ordenarPorReferencia(oficinas, referencia, ciudad = '') {
-  const tokens = tokensReferencia(referencia, ciudad);
+function ordenarPorReferencia(oficinas, referencia, ciudad = '', opts = {}) {
+  /* palabraEntera: para buscar en TODO lo que escribió el cliente (ver
+     ordenarConTodoLoDicho), donde hay nombres, productos y relleno: ahí solo
+     vale una palabra de 5+ letras que aparezca entera en la oficina. */
+  const { palabraEntera = false } = opts;
+  const tokens = [...new Set(tokensReferencia(referencia, ciudad))].filter(
+    (w) => !palabraEntera || w.length >= 5,
+  );
   if (!tokens.length) return { lista: oficinas.slice(), coincidencias: 0 };
   const puntuadas = oficinas.map((o, i) => {
     const texto = normTxt(`${o.sector} ${o.direccion}`);
-    const score = tokens.reduce((n, w) => n + (texto.includes(w) ? 1 : 0), 0);
+    const entero = ` ${texto} `;
+    const score = tokens.reduce(
+      (n, w) =>
+        n + ((palabraEntera ? entero.includes(` ${w} `) : texto.includes(w)) ? 1 : 0),
+      0,
+    );
     return { o, i, score };
   });
   puntuadas.sort((a, b) => b.score - a.score || a.i - b.i);
@@ -981,6 +992,35 @@ function ordenarPorReferencia(oficinas, referencia, ciudad = '') {
     lista: puntuadas.map((p) => p.o),
     coincidencias: puntuadas.filter((p) => p.score > 0).length,
   };
+}
+
+/* Ordena por la referencia del turno y, si esa no calza con ninguna oficina,
+   por todo lo que el cliente escribió en la conversación. Caso cfg 1248
+   (10-11-2026): dijo "Guasmo sur" y dos mensajes después "X el Pedregal"; el
+   directorio tiene dos oficinas en el Guasmo Sur y ninguna "Pedregal", y como
+   solo se miraba el último mensaje la lista salió en orden alfabético (17
+   Ava, 23 y la Q…) tres veces, sin la oficina que le quedaba cerca. */
+function ordenarConTodoLoDicho(oficinas, ficha, mensajeCliente, ciudad) {
+  const directa = ordenarPorReferencia(
+    oficinas,
+    referenciaDelCliente(ficha, mensajeCliente),
+    ciudad,
+  );
+  if (directa.coincidencias || !ficha?._textoCliente) return directa;
+  return ordenarPorReferencia(oficinas, ficha._textoCliente, ciudad, {
+    palabraEntera: true,
+  });
+}
+
+/* ¿El renglón nombra el SECTOR completo de la oficina? "Oficina Servientrega
+   — Sector Guasmo Sur Lucha Popular" es esa oficina aunque no traiga la
+   dirección (así la escribe el modelo al confirmar o en el resumen). Solo
+   sectores de dos o más palabras: "Centro" a secas no identifica nada. El
+   directorio numera los homónimos ("Lucha Popular1"): el número no cuenta. */
+function coincideSector(textoItem, oficina) {
+  const sector = normTxt(String(oficina.sector || '').replace(/\d+\s*$/, ''));
+  if (sector.split(' ').filter((w) => w.length >= 3).length < 2) return false;
+  return ` ${normTxt(textoItem)} `.includes(` ${sector} `);
 }
 
 /* ¿Un renglón escrito por el modelo corresponde a una oficina real? Vale si
@@ -1160,8 +1200,12 @@ function decidirOfertaOficinas({
   const deCiudad = oficinasDeCiudad(oficinas, ciudad);
   if (!deCiudad.length) return null;
 
-  const referencia = referenciaDelCliente(ficha, mensajeCliente);
-  const { lista, coincidencias } = ordenarPorReferencia(deCiudad, referencia, ciudad);
+  const { lista, coincidencias } = ordenarConTodoLoDicho(
+    deCiudad,
+    ficha,
+    mensajeCliente,
+    ciudad,
+  );
   const yaPidioSector = historialBot.some((m) => m.includes(GUARDIA_MARCA_SECTOR));
 
   if (deCiudad.length > MAX_LISTA && !coincidencias && !yaPidioSector) {
@@ -1170,8 +1214,27 @@ function decidirOfertaOficinas({
       motivo: `${ciudad} tiene ${deCiudad.length} oficinas y no hay sector ni referencia: se pregunta el sector antes de listar`,
     };
   }
+  /* La misma lista no se manda dos veces. Si el cliente ya la vio y lo que
+     contestó no resolvió una oficina, repetírsela es un muro: en la 1248 salió
+     tres veces, la última después de que el cliente confirmara el pedido con
+     "Sí". Se avanza con la agencia por confirmar (el asesor la cierra con el
+     cliente) y se pide el dato que falte: la venta no se frena. Medido en 7
+     días: 18 de 149 chats con lista recibieron la misma dos o más veces. */
+  const textoNuevo = textoLista(ciudad, lista);
+  if (historialBot.some((m) => normTxt(m).includes(normTxt(textoNuevo)))) {
+    const ref = [mensajeCliente, ficha?.agencia, ficha?.referencia]
+      .map((x) => String(x || '').trim())
+      .find((x) => tokensReferencia(x, ciudad).length);
+    return {
+      texto:
+        `Listo 😊 La agencia Servientrega de ${ciudad} ${GUARDIA_MARCA_PORCONFIRMAR}` +
+        (ref ? ` (nos indicaste: ${ref.slice(0, 80)})` : '') +
+        `. ${siguientePregunta(ficha, true)}`,
+      motivo: `la lista de ${ciudad} ya se le había mandado igual: no se repite, la agencia queda por confirmar`,
+    };
+  }
   return {
-    texto: textoLista(ciudad, lista),
+    texto: textoNuevo,
     motivo:
       `lista de ${Math.min(lista.length, MAX_LISTA)} oficina(s) de ${ciudad} ` +
       (coincidencias
@@ -1245,10 +1308,15 @@ function validarListaDelModelo({
     };
   }
 
-  const referencia = referenciaDelCliente(ficha, mensajeCliente);
-  const { coincidencias } = ordenarPorReferencia(deCiudad, referencia, ciudad);
+  const { lista: ordenadas, coincidencias } = ordenarConTodoLoDicho(
+    deCiudad,
+    ficha,
+    mensajeCliente,
+    ciudad,
+  );
   const yaPidioSector = historialBot.some((m) => m.includes(GUARDIA_MARCA_SECTOR));
-  const todasReales = items.every((it) => deCiudad.some((o) => coincideOficina(it, o)));
+  const esReal = (it, o) => coincideOficina(it, o) || coincideSector(it, o);
+  const todasReales = items.every((it) => deCiudad.some((o) => esReal(it, o)));
 
   if (deCiudad.length > MAX_LISTA && !coincidencias && !yaPidioSector) {
     return {
@@ -1256,11 +1324,33 @@ function validarListaDelModelo({
       motivo: `listó oficinas de ${ciudad} (${deCiudad.length} en el directorio) sin sector ni referencia: se pregunta el sector primero`,
     };
   }
-  if (todasReales) return null;
+  if (todasReales) {
+    /* Lista real pero que ignora la referencia: en la 1248 el cliente dijo
+       "Guasmo sur" y el modelo le listó Florida Norte, Francisco Segura,
+       Garzota y Guangala (las que tenía a la vista en el archivo), todas
+       reales y ninguna la suya. Si el directorio tiene oficinas que calzan
+       con lo que dijo y la lista no trae ninguna, se cambia por la ordenada.
+       Solo listas (2+): una oficina sola es una confirmación. */
+    if (items.length >= 2 && coincidencias > 0) {
+      const cercanas = ordenadas.slice(0, coincidencias);
+      const traeAlguna = items.some((it) => cercanas.some((o) => esReal(it, o)));
+      const textoNuevo = textoLista(ciudad, ordenadas);
+      const yaSalio = historialBot.some((m) =>
+        normTxt(m).includes(normTxt(textoNuevo)),
+      );
+      if (!traeAlguna && !yaSalio) {
+        return {
+          texto: textoNuevo,
+          motivo: `la lista del modelo era real pero no traía ninguna de las ${coincidencias} oficina(s) de ${ciudad} que calzan con la referencia del cliente ("${cercanas[0].sector}"…): se manda ordenada por la referencia`,
+        };
+      }
+    }
+    return null;
+  }
 
   const decision = decidirOfertaOficinas({ ficha, oficinas, mensajeCliente, historialBot });
   if (!decision) return null;
-  const inventadas = items.filter((it) => !deCiudad.some((o) => coincideOficina(it, o)));
+  const inventadas = items.filter((it) => !deCiudad.some((o) => esReal(it, o)));
   return {
     texto: decision.texto,
     motivo:
@@ -1459,6 +1549,8 @@ module.exports = {
   oficinasDeCiudad,
   itemsOficinaEnRespuesta,
   coincideOficina,
+  coincideSector,
+  ordenarConTodoLoDicho,
   eligeRetiroEnMensaje,
   ordenarPorReferencia,
   decidirOfertaOficinas,

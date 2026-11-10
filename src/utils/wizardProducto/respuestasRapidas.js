@@ -170,6 +170,63 @@ function pareceRegunta(texto) {
   return RE_INTERROGATIVO.test(n);
 }
 
+/* ── El cliente está CONTESTANDO, no preguntando ──
+   Caso real (cfg 968 y 360, 10-11-2026): el bot pregunta "¿de qué color las
+   quieres: celeste o rosado?", la persona escribe "Quiero color rosado" y la
+   quemada "¿Qué colores hay disponibles?" (claves colores/celeste/rosado)
+   le contesta "Tenemos celeste y rosado… ¿Cuál color te llevo?". Dice
+   "Rosado" y sale la misma otra vez: en la 360 una clienta escribió "Rosada"
+   seis veces seguidas. Medido en 7 días: 382 chats con la misma quemada dos o
+   más veces, en 63 cuentas.
+
+   Dos reglas, las dos con el último mensaje del bot a la vista:
+   1. Si todo lo que dijo la persona son palabras de la PREGUNTA con la que
+      el bot cerró su mensaje, está eligiendo una opción de esa pregunta: es
+      un dato del pedido y sigue la IA.
+   2. Una quemada que ya es lo último que dijo el bot no se repite: si la
+      persona insiste, esa respuesta no le sirvió. */
+
+/* Sin género ni plural: "rosada" elige "rosado", "negras" elige "negra". */
+function sinGenero(palabra) {
+  const r = raiz(palabra);
+  return r.length > 4 && /[ao]$/.test(r) ? r.slice(0, -1) : r;
+}
+
+/* La pregunta con la que termina un mensaje del bot (admite emojis después
+   del signo). Vacío si el mensaje no termina preguntando. */
+function ultimaPregunta(texto) {
+  const t = String(texto || '').trim();
+  if (!/\?[^?¿\p{L}\p{N}]*$/u.test(t)) return '';
+  const abre = t.lastIndexOf('¿');
+  if (abre >= 0) return t.slice(abre);
+  const cierra = t.lastIndexOf('?');
+  const antes = Math.max(
+    t.lastIndexOf('\n', cierra),
+    t.lastIndexOf('. ', cierra),
+    t.lastIndexOf('! ', cierra),
+  );
+  return t.slice(antes + 1);
+}
+
+function respondeLaPreguntaDelBot(mensaje, ultimoBot) {
+  if (!ultimoBot || pareceRegunta(mensaje)) return false;
+  const pregunta = ultimaPregunta(ultimoBot);
+  if (!pregunta) return false;
+  const dichas = tokens(mensaje).map(sinGenero);
+  if (!dichas.length) return false;
+  const ofrecidas = new Set(
+    tokens(pregunta, { quitarVacias: false }).map(sinGenero),
+  );
+  return dichas.every((t) => ofrecidas.has(t));
+}
+
+/* ¿El bot ya dijo esta quemada en ese mensaje? (el envío le puede agregar un
+   remate de venta al final, por eso es "contiene" y no "igual"). */
+function yaLoDijo(respuesta, textoBot) {
+  const r = normalizar(respuesta);
+  return r.length >= 12 && normalizar(textoBot).includes(r);
+}
+
 /** Quemada activa y con texto: las demás ni se miran. */
 function usable(faq) {
   if (!faq || faq.activa === 0 || faq.activa === false) return false;
@@ -179,9 +236,21 @@ function usable(faq) {
 /**
  * @param {string} mensaje texto del cliente
  * @param {Array<{pregunta:string, respuesta:string, claves?:string[], activa?:number}>} faqs
+ * @param {{ ignorarCompra?: boolean, ultimoBot?: string }} [opts]
+ *   ultimoBot: el último texto que mandó el bot en la conversación. Con él
+ *   no sale una quemada cuando la persona está eligiendo una opción de la
+ *   pregunta del bot, ni se repite la que el bot acaba de mandar.
  * @returns {{ faq: object, score: number, indice: number } | null}
  */
-function elegirRespuestaRapida(mensaje, faqs, { ignorarCompra = false } = {}) {
+function elegirRespuestaRapida(mensaje, faqs, opts = {}) {
+  const { ultimoBot = '' } = opts;
+  if (respondeLaPreguntaDelBot(mensaje, ultimoBot)) return null;
+  const match = puntuarRespuestaRapida(mensaje, faqs, opts);
+  if (match && ultimoBot && yaLoDijo(match.faq.respuesta, ultimoBot)) return null;
+  return match;
+}
+
+function puntuarRespuestaRapida(mensaje, faqs, { ignorarCompra = false } = {}) {
   if (!mensaje || !Array.isArray(faqs) || !faqs.length) return null;
   // Con intención de compra la quemada NO sale (sigue el cierre con la IA).
   // `ignorarCompra` es solo para que el simulador pueda explicar "habría
@@ -325,4 +394,6 @@ module.exports = {
   esSaludoDeAnuncio,
   pareceRegunta,
   elegirRespuestaRapida,
+  respondeLaPreguntaDelBot,
+  yaLoDijo,
 };

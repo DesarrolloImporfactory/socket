@@ -41,6 +41,16 @@
  *   node scripts/espiaMercado.js metricas --pais EC
  *       Recalcula ventas 1/7/30 d, serie7 e iguales en espia_producto (lo hace
  *       sola cada pasada y a las 00:10; útil tras aplicar la migración).
+ *   node scripts/espiaMercado.js recontar --pais EC|TODOS [--aplicar]
+ *       Vuelve a contar las ventas desde las fotos de stock con la regla que
+ *       separa ventas de ajustes de inventario (calc.ventasCreibles). Sin
+ *       --aplicar solo muestra antes → después por día y el top; con --aplicar
+ *       guarda copia en espia_ventas_dia_respaldo, reemplaza espia_ventas_dia y
+ *       recalcula las métricas. Se puede repetir (siempre parte de las fotos).
+ *   node scripts/espiaMercado.js miniaturas [--limite 500]
+ *       Guarda copia propia de las imágenes de anuncios que siguen con enlace
+ *       de Meta (vencen a los 4–5 días). Lo hace solo cada vez que la extensión
+ *       manda anuncios; esto es para poner al día lo anterior.
  *   node scripts/espiaMercado.js reporte --pais EC [--enviar]
  *   node scripts/espiaMercado.js limpiar --pais QA --si
  *       Borra TODO lo del país (solo pensado para QA).
@@ -93,6 +103,22 @@ function probar() {
   const r = calc.resumirProducto(previas, [{ warehouse_id: 301, variacion_id: 0, stock: 6 }]);
   assert(r.ventas === 8 && r.stockTotal === 6, 'bodega omitida con stock 4 cuenta como bajada a 0 (4+4=8), la que ya estaba en 0 no');
   assert(r.cambios.length === 2, 'dos cambios: la que bajó y la que desapareció');
+  // Ventas creíbles vs. ajustes de stock.
+  const vc = (bajadas, sube, mayor) => calc.ventasCreibles(bajadas, sube, mayor);
+  assert(vc([{ d: 12, prev: 300 }], 0, 0).ventas === 12, 'sin historia: 12 de 300 es venta');
+  assert(vc([{ d: 39167, prev: 49167 }], 0, 17).ventas === 0, 'stock de relleno 49.167→10.000 no es venta');
+  assert(vc([{ d: 396, prev: 396 }], 0, 0).ajuste === 396, 'vaciar 396 de golpe sin historia es ajuste');
+  assert(vc([{ d: 18, prev: 18 }], 0, 0).ventas === 18, 'agotar las últimas 18 sí es venta');
+  assert(vc([{ d: 35, prev: 50 }], 0, 0).ventas === 0, 'sin historia, llevarse 35 de 50 es ajuste (piso de vaciado 20)');
+  assert(vc([{ d: 35, prev: 500 }], 0, 0).ventas === 35, 'sin historia, 35 de 500 es venta (piso 40)');
+  assert(vc([{ d: 230, prev: 900 }], 0, 100).ventas === 230, 'con un mejor día de 100 puede llegar a 250');
+  assert(vc([{ d: 260, prev: 900 }], 0, 100).ventas === 0, 'con un mejor día de 100, 260 ya es ajuste');
+  assert(vc([{ d: 30, prev: 200 }], 30, 0).ventas === 0, 'baja 30 aquí y sube 30 allá: traslado');
+  assert(vc([{ d: 30, prev: 200 }], 10, 0).ventas === 20, 'traslado parcial: se descuenta lo que subió');
+  assert(vc([{ d: 30, prev: 200 }, { d: 30, prev: 200 }], 0, 0).ventas === 0, 'ajuste repartido entre variaciones (60 > piso 40)');
+  assert(vc([{ d: 4, prev: 90 }, { d: 300, prev: 300 }, { d: 6, prev: 80 }], 0, 5).ventas === 10, 'variación apagada (300) no arrastra las ventas normales');
+  const rr = calc.resumirProducto(new Map([['1:0', 5000], ['2:0', 40]]), [{ warehouse_id: 1, variacion_id: 0, stock: 1000 }, { warehouse_id: 2, variacion_id: 0, stock: 37 }], 3);
+  assert(rr.ventas === 3 && rr.ajuste === 4000, 'resumirProducto separa 3 ventas de 4.000 de ajuste');
   assert(calc.normalizarNombre('¡Cepillo a Vapor para Mascotas! (NUEVO)') === 'cepillo a vapor mascotas', 'normaliza nombre');
   assert(
     calc.sonIguales({ pais: 'EC', proveedor_id: 1, nombre: 'Cepillo a vapor mascotas' }, { pais: 'EC', proveedor_id: 2, nombre: 'CEPILLO A VAPOR PARA MASCOTAS' }),
@@ -250,6 +276,34 @@ async function metricas() {
   });
 }
 
+async function recontar() {
+  const aplicar = Boolean(opt('aplicar'));
+  await conBD(async () => {
+    const espia = require('../src/services/espia_mercado.service');
+    const pedido = String(opt('pais', 'EC')).toUpperCase();
+    const paises = pedido === 'TODOS' ? espia.PAISES_REALES : [pedido];
+    for (const pais of paises) {
+      const r = await espia.recontarVentas(pais, { aplicar, log: console.log });
+      if (!r.fotos) { console.log(`\n${pais}: sin fotos de stock, nada que recontar`); continue; }
+      const quita = r.antes ? Math.round((1 - r.despues / r.antes) * 100) : 0;
+      console.log(`\n${pais} · ${r.fotos} fotos desde ${r.desde} · ${aplicar ? 'APLICADO' : 'vista previa (sin --aplicar no escribe)'}`);
+      console.log(`  unidades antes ${r.antes} → después ${r.despues} (${quita}% eran ajustes de stock) · mayor día de un producto: ${r.mayor_dia}`);
+      for (const d of r.dias) console.log(`  ${d.fecha}  ${String(d.antes).padStart(9)} → ${String(d.despues).padStart(7)}`);
+      console.log('  Los que más venden después del recuento (antes → después):');
+      for (const p of r.top) console.log(`    ${String(p.antes).padStart(7)} → ${String(p.despues).padStart(6)}  ${p.dropi_product_id} ${String(p.nombre).slice(0, 50)}`);
+    }
+  });
+}
+
+async function miniaturas() {
+  const limite = Number(opt('limite', 500));
+  await conBD(async () => {
+    const m = require('../src/utils/espiaMiniaturas');
+    const r = await m.ponerAlDia({ limite, log: console.log });
+    console.log(`Miniaturas: ${r.revisados} anuncios con enlace de Meta · copiadas ${r.ok} · ya vencidas ${r.vencida} · con error ${r.error}`);
+  });
+}
+
 async function reporte() {
   const pais = String(opt('pais', 'EC')).toUpperCase();
   await conBD(async () => {
@@ -393,6 +447,8 @@ async function proveedores() {
       case 'pasada': await pasada(); break;
       case 'estado': await estado(); break;
       case 'metricas': await metricas(); break;
+      case 'recontar': await recontar(); break;
+      case 'miniaturas': await miniaturas(); break;
       case 'reporte': await reporte(); break;
       case 'limpiar': await limpiar(); break;
       default:
