@@ -1383,6 +1383,97 @@ async function suiteA() {
       producto: 'X',
       cantidad: '1',
     };
+    /* Variedad aceptada con un «sí» (cfg 1549, chat 1259949, 10-11-2026): el
+       asesor escribió «2 azul 2 negra 2 gris XL», el cliente «Si está vien»,
+       y el bot volvió a preguntar la opción dos veces porque la ficha solo
+       contaba lo que el cliente tecleó. Lo que el cliente ACEPTA también vale. */
+    {
+      const {
+        esAfirmacion,
+        textoAfirmadoPorCliente,
+        faltantesFicha: faltantesVar,
+      } = require('../src/utils/fichaPedido');
+      const variantes = ['NEGRO / XL', 'AZUL / XL', 'GRIS / L', 'NEGRO / M'];
+      const pideOpcion = (items) =>
+        faltantesVar(
+          {
+            entrega: 'agencia',
+            nombre: 'Edgar Segura',
+            telefono: '0992088992',
+            ciudad: 'Quinindé',
+            agencia: 'Quinindé',
+            producto: 'BUZO CON TAPABOCA',
+            cantidad: '6',
+            variedad: '',
+            _textoCliente: items
+              .filter((i) => i.rol === 'CLIENTE')
+              .map((i) => i.texto)
+              .join('\n'),
+            _textoAfirmado: textoAfirmadoPorCliente(items),
+          },
+          { variantes },
+        ).some((x) => /opción del producto/i.test(x));
+      const previo = [
+        { rol: 'CLIENTE', texto: 'Quiero seis unidades, la talla más grande' },
+      ];
+      caso(
+        'variedad: sin elegir ni aceptar nada, se sigue pidiendo',
+        pideOpcion(previo) === true,
+      );
+      caso(
+        'variedad: «Si está vien» a lo que propuso el asesor ya la da por elegida',
+        pideOpcion([
+          ...previo,
+          { rol: 'VENDEDOR', texto: '2 azul 2 negra 2 gris XL' },
+          { rol: 'CLIENTE', texto: 'Si está vien' },
+        ]) === false,
+      );
+      caso(
+        'variedad: «Si» a «¿Confirma Azul/XL x2…?» del bot ya la da por elegida',
+        pideOpcion([
+          ...previo,
+          { rol: 'ASISTENTE', texto: '¿Confirma Azul/XL x2, Negro/XL x2 y Gris/XL x2?' },
+          { rol: 'CLIENTE', texto: 'Si' },
+        ]) === false,
+      );
+      caso(
+        'variedad: «si pero cuánto cuesta?» no es aceptar la propuesta',
+        pideOpcion([
+          ...previo,
+          { rol: 'ASISTENTE', texto: '¿Confirma Azul/XL x2?' },
+          { rol: 'CLIENTE', texto: 'si pero cuanto cuesta?' },
+        ]) === true,
+      );
+      caso(
+        'variedad: esAfirmacion no confunde «siempre», «Simón Bolívar» ni «si pero otro color»',
+        esAfirmacion('Sí, de acuerdo') &&
+          esAfirmacion('dale') &&
+          !esAfirmacion('siempre') &&
+          !esAfirmacion('Simón Bolívar y Sucre') &&
+          !esAfirmacion('si pero otro color') &&
+          !esAfirmacion('no'),
+      );
+    }
+    {
+      /* Registro de incidencias: qué turno se guarda y cuál no. */
+      const { clasificar } = require('../src/services/bot_incidencias.service');
+      caso(
+        'incidencias: guardia que reemplaza la lista y cierre bloqueado se registran',
+        clasificar(['🏦 Guardia de oficina de retiro: listó oficinas de Cuenca'])[0] ===
+          'guardia_oficina' &&
+          clasificar(['🚫 Cierre de venta BLOQUEADO (falta teléfono)'])[0] ===
+            'cierre_bloqueado',
+      );
+      caso(
+        'incidencias: un turno normal y los avisos del turno anterior no se registran',
+        clasificar(['📥 mensaje recibido', '✅ respuesta enviada']).length === 0 &&
+          clasificar([
+            '🏦 Último mensaje fue de la guardia de oficinas: inyectado como contexto',
+            '⚠️ OpenAI: la organización de config=5 no está verificada para gpt-5-mini; respaldo',
+            '🩹 Cierre bloqueado detectado en turno anterior (faltaba: Teléfono)',
+          ]).length === 0,
+      );
+    }
     caso(
       'dirección: solo calles es incompleta',
       direccionIncompleta(dirSolaCalles) === true,
