@@ -63,4 +63,13 @@ router.get('/pages/connections', messengerPagesController.listConnections);
 // dejarla abierta sería un vector de abuso.
 router.get('/pages/health', protect, messengerPagesController.salud);
 
+// Aviso de reconexión de Messenger e Instagram de una conexión (lo que dejó
+// el cron de salud + cuánta gente escribió sin respuesta). No llama a Graph.
+router.get(
+  '/inbox/salud',
+  protect,
+  protectConfigOwner,
+  messengerPagesController.saludInbox,
+);
+
 module.exports = router;

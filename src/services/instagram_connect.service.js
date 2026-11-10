@@ -2,6 +2,7 @@ const axios = require('axios');
 const { db } = require('../database/config');
 const {
   verificarCuentaInstagramDisponible,
+  dejarSoloEstaPagina,
 } = require('../utils/unified/conexionCanal');
 const InstagramOAuthService = require('./instagram_oauth.service');
 
@@ -107,6 +108,16 @@ module.exports = {
       ],
       type: db.QueryTypes.INSERT,
     });
+
+    // Token nuevo: se borra el veredicto de salud del anterior para que el
+    // aviso de "reconectar" de /conexiones desaparezca en el acto.
+    await require('./messenger_pages_health.service').limpiarSaludTrasReconectar(
+      { canal: 'ig', id_configuracion, page_id },
+    );
+
+    // Una cuenta de Instagram por conexión: la recién guardada reemplaza a
+    // cualquier otra que tuviera (ver dejarSoloEstaPagina).
+    await dejarSoloEstaPagina({ canal: 'ig', id_configuracion, page_id });
 
     // 5) Consumir sesión
     await db.query(

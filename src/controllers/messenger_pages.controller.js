@@ -275,6 +275,41 @@ exports.listConnections = async (req, res) => {
  *
  * ?forzar=1 salta la caché (para el botón de "revisar ahora").
  */
+/**
+ * Aviso de reconexión del inbox (Messenger e Instagram) de UNA conexión.
+ *
+ * Lo llama el front al entrar a la plataforma. Solo lee lo que dejó el cron
+ * de salud (no toca Graph) y cuenta cuánta gente escribió por los canales
+ * caídos, para que el aviso diga algo que el dueño entienda.
+ */
+exports.saludInbox = async (req, res) => {
+  try {
+    const id_configuracion = Number(req.query.id_configuracion || 0);
+    const {
+      saludInbox,
+      personasEsperando,
+    } = require('../services/messenger_pages_health.service');
+
+    const mapa = await saludInbox([id_configuracion]);
+    const s = mapa.get(id_configuracion) || { ms: null, ig: null };
+    const canales = [s.ms ? 'ms' : null, s.ig ? 'ig' : null].filter(Boolean);
+
+    return res.json({
+      success: true,
+      requiere_reconexion: canales.length > 0,
+      messenger: s.ms,
+      instagram: s.ig,
+      personas_esperando: await personasEsperando(id_configuracion, canales),
+    });
+  } catch (err) {
+    console.error('[INBOX][salud] Error:', err.message);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al verificar la salud del inbox',
+    });
+  }
+};
+
 exports.salud = async (req, res) => {
   try {
     const id_configuracion = Number(req.query.id_configuracion || 0);

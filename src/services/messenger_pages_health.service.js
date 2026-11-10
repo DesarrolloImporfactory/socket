@@ -451,7 +451,332 @@ async function saludConCache({
   };
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   Instagram + aviso de reconexión del inbox (10-11-2026)
+
+   Caso JNstore (cfg 285): 234 mensajes de Messenger sin una sola respuesta
+   desde julio. El token de la página murió (190/492: quien la conectó dejó
+   de ser administrador) y la única señal era un banner dentro de la pestaña
+   Messenger de /canal-conexiones, que el dueño nunca abrió. Instagram ni
+   siquiera se revisaba: instagram_pages guarda SU propio token de página y
+   no tenía columnas de salud. Ese mismo día había otra cuenta con Instagram
+   muerto (190/464) sin que nadie lo supiera.
+
+   Acá se revisa Instagram y se arma, para Messenger e Instagram, el dato
+   que leen la tarjeta de /conexiones y el aviso al entrar.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Columnas de salud en instagram_pages. Se agregan solas la primera vez
+   (tabla de decenas de filas). Si el ALTER falla no se rompe nada: Instagram
+   simplemente sigue sin aviso. */
+let columnasIg = null;
+function ensureColumnasInstagram() {
+  if (columnasIg) return columnasIg;
+  columnasIg = (async () => {
+    const cols = await db.query(
+      `SHOW COLUMNS FROM instagram_pages LIKE 'token\\_%'`,
+      { type: db.QueryTypes.SELECT },
+    );
+    const hay = new Set(cols.map((c) => c.Field));
+    const faltan = [
+      ['token_valido', 'TINYINT(1) NULL DEFAULT NULL'],
+      ['token_revisado_at', 'DATETIME NULL DEFAULT NULL'],
+      ['token_error', 'VARCHAR(255) NULL DEFAULT NULL'],
+    ].filter(([nombre]) => !hay.has(nombre));
+    if (faltan.length) {
+      await db.query(
+        `ALTER TABLE instagram_pages ${faltan
+          .map(([nombre, tipo]) => `ADD COLUMN ${nombre} ${tipo}`)
+          .join(', ')}`,
+      );
+    }
+    return true;
+  })().catch((e) => {
+    console.error('[IG][HEALTH][COLUMNAS]', e.message);
+    columnasIg = null; // se reintenta en la próxima llamada
+    return false;
+  });
+  return columnasIg;
+}
+
+/**
+ * ¿Sigue vivo este token de página? Se pregunta con el propio token
+ * (`GET /me`), no con debug_token: instagram_pages no guarda qué app lo
+ * emitió, y así el gasto va al cupo de la página y no al de toda la app.
+ * Probado el 10-11-2026 contra las 11 conexiones activas: 9 respondieron 200
+ * y 2 el error 190 (subcódigos 492 y 464).
+ *
+ * Igual que inspeccionarToken: solo un 190/102 explícito de Meta cuenta como
+ * "muerto"; un timeout o un 500 es "no pude preguntar" y no cambia nada.
+ */
+async function tokenVivoPorMe(token, { intentos = 2, timeout = 15000 } = {}) {
+  let ultimoError = null;
+  for (let i = 0; i < intentos; i++) {
+    try {
+      const r = await axios.get(`${GRAPH_BASE}/me`, {
+        params: { fields: 'id', access_token: token },
+        validateStatus: () => true,
+        timeout,
+      });
+      if (r.status === 200 && r.data?.id) {
+        return { concluyente: true, valido: true, error: null };
+      }
+      const err = r.data?.error;
+      if (err && CODIGOS_TOKEN_MUERTO.has(Number(err.code))) {
+        return {
+          concluyente: true,
+          valido: false,
+          error: err.message || 'Token inválido',
+        };
+      }
+      ultimoError = err?.message || `HTTP ${r.status}`;
+    } catch (e) {
+      ultimoError = e.message;
+    }
+    if (i < intentos - 1) await new Promise((r) => setTimeout(r, 1000));
+  }
+  return { concluyente: false, valido: null, error: ultimoError };
+}
+
+/**
+ * Revisa las conexiones activas de Instagram. Solo se guarda un veredicto
+ * concluyente: si Meta no contestó, la fila queda como estaba (un fallo de
+ * red no debe ni encender ni apagar el aviso).
+ */
+async function revisarInstagram({
+  id_configuracion = null, // un id o una lista de ids
+  persistir = true,
+  // Solo las que nunca se revisaron: lo usa el listado de /conexiones para
+  // no esperar al cron de la madrugada con una conexión recién creada (o con
+  // las que ya existían cuando se agregaron las columnas). Una llamada rápida
+  // por conexión, una sola vez.
+  soloSinRevisar = false,
+} = {}) {
+  const listas = await ensureColumnasInstagram();
+  if (soloSinRevisar && !listas) return { resumen: {}, resultados: [] };
+  const ids = [].concat(id_configuracion || []).map(Number).filter(Boolean);
+  const filas = await db.query(
+    `SELECT id_instagram_page, id_configuracion, page_id, page_name,
+            ig_username, page_access_token
+       FROM instagram_pages
+      WHERE status = 'active'
+        ${ids.length ? 'AND id_configuracion IN (?)' : ''}
+        ${soloSinRevisar ? 'AND token_revisado_at IS NULL' : ''}`,
+    {
+      replacements: ids.length ? [ids] : [],
+      type: db.QueryTypes.SELECT,
+    },
+  );
+
+  const resultados = [];
+  for (const f of filas) {
+    const d = f.page_access_token
+      ? await tokenVivoPorMe(
+          f.page_access_token,
+          soloSinRevisar ? { intentos: 1, timeout: 6000 } : {},
+        )
+      : {
+          concluyente: true,
+          valido: false,
+          error: 'La conexión no tiene page_access_token guardado',
+        };
+
+    if (persistir && listas && d.concluyente) {
+      await db
+        .query(
+          `UPDATE instagram_pages
+              SET token_valido = ?, token_revisado_at = NOW(), token_error = ?
+            WHERE id_instagram_page = ?`,
+          {
+            replacements: [
+              d.valido ? 1 : 0,
+              d.error ? String(d.error).slice(0, 255) : null,
+              f.id_instagram_page,
+            ],
+            type: db.QueryTypes.UPDATE,
+          },
+        )
+        .catch((e) => {
+          console.error('[IG][HEALTH][GUARDAR]', f.page_id, e.message);
+        });
+    }
+
+    resultados.push({
+      id_configuracion: f.id_configuracion,
+      page_id: f.page_id,
+      page_name: f.page_name,
+      ig_username: f.ig_username,
+      token_valido: d.concluyente ? d.valido : null,
+      token_error: d.error,
+    });
+  }
+
+  return {
+    resumen: {
+      total: resultados.length,
+      sanas: resultados.filter((r) => r.token_valido === true).length,
+      muertas: resultados.filter((r) => r.token_valido === false).length,
+      indeterminadas: resultados.filter((r) => r.token_valido === null).length,
+    },
+    resultados,
+  };
+}
+
+/**
+ * Tras reconectar, el veredicto viejo ya no vale (el token es nuevo): se
+ * borra para que el aviso desaparezca en el acto. El cron lo vuelve a medir.
+ */
+async function limpiarSaludTrasReconectar({ canal, id_configuracion, page_id }) {
+  try {
+    if (canal === 'ig' && !(await ensureColumnasInstagram())) return;
+    const tabla = canal === 'ig' ? 'instagram_pages' : 'messenger_pages';
+    await db.query(
+      `UPDATE ${tabla}
+          SET token_valido = NULL, token_error = NULL, token_revisado_at = NULL
+        WHERE id_configuracion = ? AND page_id = ?`,
+      { replacements: [id_configuracion, page_id], type: db.QueryTypes.UPDATE },
+    );
+  } catch (e) {
+    console.error('[INBOX][HEALTH][LIMPIAR]', canal, page_id, e.message);
+  }
+}
+
+/**
+ * El motivo en palabras del dueño de la cuenta. El texto de Meta viene en
+ * inglés y habla de "impersonate": no le dice a nadie qué hacer.
+ */
+function motivoReconexion(tokenError) {
+  const t = String(tokenError || '').toLowerCase();
+  // Frases cortas, en minúscula y sin punto: el front las pega tras
+  // "Vuelve a conectar X: …". Una sola idea, sin explicar a Meta.
+  if (/administrator|moderator|impersonate/.test(t)) {
+    return 'quien conectó la página ya no es su administrador';
+  }
+  if (/password|session has been invalidated|logged out/.test(t)) {
+    return 'quien conectó la página cambió su contraseña de Facebook';
+  }
+  if (/has not authorized|not authorized application|deauthorized/.test(t)) {
+    return 'se quitó el permiso de ImporChat en Facebook';
+  }
+  if (/expired/.test(t)) {
+    return 'el permiso de Facebook caducó';
+  }
+  return 'Facebook retiró el acceso a la página';
+}
+
+/**
+ * Qué inbox de cada conexión necesita reconectarse.
+ * Devuelve Map<id_configuracion, { ms, ig }>; cada canal es null (sin
+ * problema conocido) o { pagina, motivo, revisado_at }.
+ *
+ * Solo `token_valido = 0`, que es un veredicto explícito de Meta. NULL
+ * (nunca revisada o chequeo no concluyente) no avisa. Nunca lanza: si algo
+ * falla, la tarjeta se queda sin aviso en vez de romper el listado.
+ */
+async function saludInbox(ids) {
+  const out = new Map();
+  const lista = [...new Set((ids || []).map(Number).filter(Boolean))];
+  if (!lista.length) return out;
+  const de = (id) => {
+    const k = Number(id);
+    if (!out.has(k)) out.set(k, { ms: null, ig: null });
+    return out.get(k);
+  };
+
+  try {
+    const filas = await db.query(
+      `SELECT id_configuracion, page_name, token_error, token_revisado_at
+         FROM messenger_pages
+        WHERE id_configuracion IN (?)
+          AND status = 'active' AND subscribed = 1 AND token_valido = 0`,
+      { replacements: [lista], type: db.QueryTypes.SELECT },
+    );
+    for (const f of filas) {
+      de(f.id_configuracion).ms = {
+        pagina: f.page_name || null,
+        motivo: motivoReconexion(f.token_error),
+        revisado_at: f.token_revisado_at,
+      };
+    }
+  } catch (e) {
+    console.error('[INBOX][HEALTH][MS]', e.message);
+  }
+
+  try {
+    if (await ensureColumnasInstagram()) {
+      // Las que nunca se revisaron se revisan ahora (ver revisarInstagram).
+      await revisarInstagram({
+        id_configuracion: lista,
+        soloSinRevisar: true,
+      }).catch((e) => console.error('[INBOX][HEALTH][IG][LAZY]', e.message));
+      const filas = await db.query(
+        `SELECT id_configuracion, page_name, ig_username, token_error,
+                token_revisado_at
+           FROM instagram_pages
+          WHERE id_configuracion IN (?)
+            AND status = 'active' AND subscribed = 1 AND token_valido = 0`,
+        { replacements: [lista], type: db.QueryTypes.SELECT },
+      );
+      for (const f of filas) {
+        de(f.id_configuracion).ig = {
+          pagina: f.ig_username ? `@${f.ig_username}` : f.page_name || null,
+          motivo: motivoReconexion(f.token_error),
+          revisado_at: f.token_revisado_at,
+        };
+      }
+    }
+  } catch (e) {
+    console.error('[INBOX][HEALTH][IG]', e.message);
+  }
+
+  return out;
+}
+
+/** Agrega al listado de /conexiones los campos del aviso de reconexión. */
+async function anexarSaludInbox(rows) {
+  const salud = await saludInbox((rows || []).map((r) => r.id));
+  for (const r of rows || []) {
+    const s = salud.get(Number(r.id)) || { ms: null, ig: null };
+    r.messenger_requiere_reconexion = s.ms ? 1 : 0;
+    r.messenger_motivo_reconexion = s.ms?.motivo || null;
+    r.instagram_requiere_reconexion = s.ig ? 1 : 0;
+    r.instagram_motivo_reconexion = s.ig?.motivo || null;
+  }
+  return rows;
+}
+
+/**
+ * Cuánta gente escribió por los canales caídos en los últimos 30 días: es
+ * lo que hace que el aviso se entienda ("X personas te escribieron y no
+ * recibieron respuesta") en vez de sonar a detalle técnico.
+ */
+async function personasEsperando(id_configuracion, canales) {
+  if (!canales.length) return 0;
+  try {
+    const [fila] = await db.query(
+      `SELECT COUNT(DISTINCT celular_recibe) AS n
+         FROM mensajes_clientes
+        WHERE id_configuracion = ?
+          AND source IN (?)
+          AND rol_mensaje = 0
+          AND created_at >= NOW() - INTERVAL 30 DAY`,
+      { replacements: [id_configuracion, canales], type: db.QueryTypes.SELECT },
+    );
+    return Number(fila?.n || 0);
+  } catch (e) {
+    console.error('[INBOX][HEALTH][ESPERANDO]', e.message);
+    return 0;
+  }
+}
+
 module.exports = {
+  revisarInstagram,
+  tokenVivoPorMe,
+  limpiarSaludTrasReconectar,
+  motivoReconexion,
+  saludInbox,
+  anexarSaludInbox,
+  personasEsperando,
   revisarPaginas,
   revisarPagina,
   inspeccionarToken,

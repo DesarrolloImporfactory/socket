@@ -177,7 +177,13 @@ async function liberarConexionesDeConfiguracion(id_configuracion) {
  *
  * @returns {{ paginas: Array<{page_id, page_name, meta_desuscrita}> }}
  */
-async function desconectarCanalDeConfiguracion({ canal, id_configuracion }) {
+async function desconectarCanalDeConfiguracion({
+  canal,
+  id_configuracion,
+  // Si viene, esa página se CONSERVA y solo se retiran las demás de la
+  // conexión (ver dejarSoloEstaPagina).
+  excepto_page_id = null,
+}) {
   const tabla =
     canal === 'ig'
       ? 'instagram_pages'
@@ -186,13 +192,18 @@ async function desconectarCanalDeConfiguracion({ canal, id_configuracion }) {
         : null;
   if (!tabla || !id_configuracion) return { paginas: [] };
   const otraTabla = canal === 'ig' ? 'messenger_pages' : 'instagram_pages';
+  const filtro = excepto_page_id ? 'AND page_id <> ?' : '';
+  const params = excepto_page_id
+    ? [Number(id_configuracion), String(excepto_page_id)]
+    : [Number(id_configuracion)];
 
   const filas = await db.query(
     `SELECT page_id, page_name, page_access_token, status
        FROM ${tabla}
-      WHERE id_configuracion = ?`,
-    { replacements: [Number(id_configuracion)], type: db.QueryTypes.SELECT },
+      WHERE id_configuracion = ? ${filtro}`,
+    { replacements: params, type: db.QueryTypes.SELECT },
   );
+  if (excepto_page_id && !filas.length) return { paginas: [] };
 
   const paginas = [];
   for (const f of filas) {
@@ -227,20 +238,51 @@ async function desconectarCanalDeConfiguracion({ canal, id_configuracion }) {
     paginas.push({ page_id: f.page_id, page_name: f.page_name, meta_desuscrita });
   }
 
-  await db.query(`DELETE FROM ${tabla} WHERE id_configuracion = ?`, {
-    replacements: [Number(id_configuracion)],
-    type: db.QueryTypes.DELETE,
-  });
+  await db.query(
+    `DELETE FROM ${tabla} WHERE id_configuracion = ? ${filtro}`,
+    { replacements: params, type: db.QueryTypes.DELETE },
+  );
 
   console.log(
-    `[conexionCanal] ${canal} desconectado de cfg=${id_configuracion}: ` +
+    `[conexionCanal] ${canal} ${
+      excepto_page_id ? 'reemplazado en' : 'desconectado de'
+    } cfg=${id_configuracion}: ` +
       (paginas.map((p) => `${p.page_name} (${p.page_id})`).join(', ') ||
         'sin páginas'),
   );
   return { paginas };
 }
 
+/**
+ * Una conexión tiene UNA página por canal (Daniel, 10-11-2026): al conectar
+ * o reconectar, la página recién guardada reemplaza a la que hubiera. Antes,
+ * elegir otra página dejaba la anterior viva en la misma conexión: los
+ * mensajes de las dos caían en la misma bandeja, el envío tomaba el token de
+ * cualquiera y, si la vieja tenía el acceso caído, el aviso de "reconectar"
+ * no se iba nunca.
+ *
+ * Los chats de la página anterior no se borran: quedan como historial, igual
+ * que al desconectar. Nunca lanza: la conexión nueva ya quedó guardada y un
+ * fallo acá no debe mostrarse como "no se pudo conectar".
+ */
+async function dejarSoloEstaPagina({ canal, id_configuracion, page_id }) {
+  if (!page_id) return;
+  try {
+    await desconectarCanalDeConfiguracion({
+      canal,
+      id_configuracion,
+      excepto_page_id: page_id,
+    });
+  } catch (e) {
+    console.error(
+      `[conexionCanal] no se pudo retirar la página anterior (${canal}) de cfg ${id_configuracion}:`,
+      e?.message,
+    );
+  }
+}
+
 module.exports = {
+  dejarSoloEstaPagina,
   verificarPaginaMessengerDisponible,
   verificarCuentaInstagramDisponible,
   liberarConexionesDeConfiguracion,

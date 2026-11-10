@@ -3,6 +3,7 @@ const { db } = require('../database/config');
 const MessengerOAuthService = require('./messenger_oauth.service');
 const {
   verificarPaginaMessengerDisponible,
+  dejarSoloEstaPagina,
 } = require('../utils/unified/conexionCanal');
 
 const FB_VERSION = 'v22.0';
@@ -35,7 +36,12 @@ async function upsertMessengerPage({
               fb_app_id = ?,
               subscribed = ?,
               connected_by_fb_user_id = ?,
-              status = 'active'
+              status = 'active',
+              -- Token nuevo: el veredicto del anterior ya no vale. Sin esto
+              -- el aviso de "reconectar" seguía hasta el cron de las 04:30.
+              token_valido = NULL,
+              token_error = NULL,
+              token_revisado_at = NULL
         WHERE id_messenger_page = ?`,
       {
         replacements: [
@@ -167,6 +173,10 @@ class MessengerConnectService {
       fb_user_id: session?.fb_user_id || null,
       fb_app_id: fbApp.id,
     });
+
+    // Una página de Messenger por conexión: la recién guardada reemplaza a
+    // cualquier otra que tuviera (ver dejarSoloEstaPagina).
+    await dejarSoloEstaPagina({ canal: 'ms', id_configuracion, page_id });
 
     // 5) Marcar sesión usada (opcional)
     await MessengerOAuthService.consumeSession(oauth_session_id);
