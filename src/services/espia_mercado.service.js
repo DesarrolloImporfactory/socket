@@ -578,9 +578,42 @@ async function previasDe(pais, ids) {
   return salida;
 }
 
+/**
+ * Map productoId → Map('YYYY-MM-DD' → unidades creíbles) de los últimos días.
+ * Es la referencia con la que calc.ventasCreibles separa una venta de un ajuste
+ * de stock: cada producto se compara con lo que él mismo venía vendiendo.
+ */
+async function historialDe(pais, ids) {
+  const salida = new Map();
+  if (!ids.length) return salida;
+  const rows = await q(
+    `SELECT dropi_product_id, DATE_FORMAT(fecha, '%Y-%m-%d') AS fecha, unidades
+       FROM espia_ventas_dia
+      WHERE pais = :pais AND dropi_product_id IN (:ids) AND unidades > 0
+        AND fecha >= DATE_SUB(CURDATE(), INTERVAL :d DAY)`,
+    { pais, ids, d: calc.AJUSTE.DIAS_REFERENCIA + 3 },
+  );
+  for (const r of rows) {
+    const pid = Number(r.dropi_product_id);
+    if (!salida.has(pid)) salida.set(pid, new Map());
+    salida.get(pid).set(r.fecha, Number(r.unidades));
+  }
+  return salida;
+}
+
+/** Mejor día creíble del producto en los DIAS_REFERENCIA anteriores a `fecha` (sin contarla). */
+function mayorDiaAntes(hist, fecha, pais) {
+  if (!hist || !hist.size) return 0;
+  const desde = calc.fechaLocal(new Date(new Date(`${fecha}T12:00:00Z`).getTime() - calc.AJUSTE.DIAS_REFERENCIA * 86400000), pais);
+  let mayor = 0;
+  for (const [f, u] of hist) if (f < fecha && f >= desde && u > mayor) mayor = u;
+  return mayor;
+}
+
 async function procesarPagina(pais, productos, instante, stats) {
   const ids = productos.map((p) => Number(p.id)).filter(Number.isFinite);
   const previas = await previasDe(pais, ids);
+  const historial = await historialDe(pais, ids);
   const t = await db.transaction();
   try {
     for (const p of productos) {
@@ -590,7 +623,16 @@ async function procesarPagina(pais, productos, instante, stats) {
       const prevMap = previas.get(pid) || new Map();
       const prevStocks = new Map([...prevMap.entries()].map(([k, v]) => [k, v.stock]));
       const nuevas = calc.clavesDeProducto(p);
-      const r = calc.resumirProducto(prevStocks, nuevas);
+      // Las ventas se cargan a la fecha local de la foto anterior más reciente.
+      let fotoAnterior = null;
+      for (const v of prevMap.values()) {
+        if (!fotoAnterior || new Date(v.fecha_hora) > new Date(fotoAnterior)) fotoAnterior = v.fecha_hora;
+      }
+      const fecha = calc.fechaDeCarga(fotoAnterior || instante, pais);
+      // Solo cuenta como venta lo que cuadra con lo que el producto venía vendiendo;
+      // el resto (ajustes de inventario, traslados, variaciones apagadas) va a `ajuste`.
+      const r = calc.resumirProducto(prevStocks, nuevas, mayorDiaAntes(historial.get(pid), fecha, pais));
+      stats.ajustes = (stats.ajustes || 0) + r.ajuste;
 
       // Ficha (acumulados: se suman, no se pisan).
       await q(
@@ -640,13 +682,8 @@ async function procesarPagina(pais, productos, instante, stats) {
         stats.fotos_escritas += r.cambios.length;
       }
 
-      // Ventas del día: a la fecha local de la foto anterior más reciente.
+      // Ventas del día (la fecha se resolvió arriba).
       if (r.ventas > 0 || r.reabastecimientos > 0) {
-        let fotoAnterior = null;
-        for (const v of prevMap.values()) {
-          if (!fotoAnterior || new Date(v.fecha_hora) > new Date(fotoAnterior)) fotoAnterior = v.fecha_hora;
-        }
-        const fecha = calc.fechaDeCarga(fotoAnterior || instante, pais);
         await q(
           `INSERT INTO espia_ventas_dia (pais, dropi_product_id, fecha, unidades, reabastecido)
            VALUES (:pais, :id, :fecha, :unidades, :reab)
@@ -754,7 +791,7 @@ async function pasada(paisCrudo, opts = {}) {
     if (!opts.maxPaginas) await recalcularMetricas(pais, log); // una prueba corta no cambia las métricas
     await registro.update({ ...stats, fin: ahoraSql(), estado: 'ok' });
     await anotarCuenta(cuenta, { ok: true, pasada: !opts.maxPaginas });
-    log(`✔ pasada ${pais} #${registro.id}: ${stats.paginas} págs · ${stats.productos} productos · ${stats.fotos_escritas} fotos · ${stats.ventas_sumadas} ventas`);
+    log(`✔ pasada ${pais} #${registro.id}: ${stats.paginas} págs · ${stats.productos} productos · ${stats.fotos_escritas} fotos · ${stats.ventas_sumadas} ventas · ${stats.ajustes || 0} unidades de ajustes de stock sin contar`);
     return { id: registro.id, ...stats, estado: 'ok' };
   } catch (err) {
     if (err instanceof FrenoError) {
@@ -1028,7 +1065,9 @@ async function detalleProducto(paisCrudo, idCrudo, opts = {}) {
     : Promise.resolve([]);
   // Anuncios: primero los vinculados por el radar (exactos), y si quedan huecos,
   // los que mencionan las palabras del nombre (aproximados).
+  // Con título, texto y última vez visto: la ficha pinta la misma tarjeta que la pestaña Anuncios.
   const CAMPOS_AD = `a.ad_archive_id, a.pagina_nombre, a.dominio, a.url_destino, a.tipo, a.media_url, a.imagen_url, a.inicio,
+                     a.titulo, a.texto, a.ultima_vez_visto,
                      a.tienda_plataforma, a.n_duplicados, DATEDIFF(CURDATE(), a.inicio) AS dias_activo`;
   const pVinculados = q(
     `SELECT ${CAMPOS_AD}, 'radar' AS origen
@@ -1163,7 +1202,8 @@ async function recibirAnuncios(body = {}, sessionUser = {}) {
        texto = COALESCE(VALUES(texto), texto),
        tipo = COALESCE(VALUES(tipo), tipo),
        media_url = COALESCE(VALUES(media_url), media_url),
-       imagen_url = COALESCE(VALUES(imagen_url), imagen_url),
+       imagen_url = IF(imagen_url IS NOT NULL AND imagen_url <> '' AND imagen_url NOT LIKE '%fbcdn.net/%',
+                       imagen_url, COALESCE(VALUES(imagen_url), imagen_url)),
        plataformas = COALESCE(VALUES(plataformas), plataformas),
        tienda_plataforma = COALESCE(VALUES(tienda_plataforma), tienda_plataforma),
        inicio = COALESCE(inicio, VALUES(inicio)),
@@ -1189,6 +1229,14 @@ async function recibirAnuncios(body = {}, sessionUser = {}) {
     await actualizarTienda(dominio, pais, e.nuevos, hoy, ahora);
   }
   perfilarPendientes(3).catch(() => {});
+  // Las imágenes de Meta vencen a los 4–5 días: se guarda una copia propia en segundo
+  // plano (no frena la respuesta). Una imagen ya copiada no se vuelve a pisar (ver el
+  // IF de imagen_url arriba).
+  try {
+    require('../utils/espiaMiniaturas').encolar(ids);
+  } catch (e) {
+    console.warn('[espia-mercado] no se pudieron encolar las miniaturas:', e.message);
+  }
 
   // Lote del radar: estos anuncios salieron al buscar un producto de Dropi por nombre.
   let radar = null;
@@ -1522,6 +1570,31 @@ async function listarAnuncios(params = {}) {
   return { total: Number(cnt?.total || 0), page, limit, items };
 }
 
+/**
+ * Creativo de un anuncio para descargarlo desde la pantalla (video, o imagen si
+ * no hay video). Devuelve la URL de origen; quien la sirve es el controlador.
+ * La URL llega de la extensión, así que solo se aceptan https de Meta (fbcdn) o
+ * del almacén propio: el servidor nunca va a buscar una dirección cualquiera.
+ */
+const HOST_CREATIVO = /(^|\.)fbcdn\.net$|^imp-datas\.s3\.amazonaws\.com$|(^|\.)imporfactory\.app$/i;
+async function creativoDe(idCrudo) {
+  const id = String(idCrudo || '').trim().slice(0, 40);
+  if (!/^[\w-]+$/.test(id)) throw new AppError('Anuncio inválido', 400);
+  const [a] = await q(`SELECT ad_archive_id, tipo, media_url, imagen_url FROM espia_anuncio WHERE ad_archive_id = :id`, { id });
+  if (!a) throw new AppError('Ese anuncio ya no está en ImporKiller', 404);
+  const candidatas = a.tipo === 'video' ? [a.media_url, a.imagen_url] : [a.imagen_url, a.media_url];
+  const urls = candidatas.filter((u) => {
+    try {
+      const p = new URL(String(u || ''));
+      return p.protocol === 'https:' && HOST_CREATIVO.test(p.hostname);
+    } catch {
+      return false;
+    }
+  });
+  if (!urls.length) throw new AppError('Este anuncio no tiene un archivo para descargar', 404);
+  return { id: a.ad_archive_id, tipo: a.tipo, urls };
+}
+
 async function estaSeguida(idSub, tipo, ref) {
   if (!idSub) return false;
   const r = await EspiaSeguimiento.findOne({ where: { id_sub_usuario: idSub, tipo, ref }, raw: true });
@@ -1540,12 +1613,21 @@ async function tendenciaDe(dominios, dias = 30) {
   return salida;
 }
 
+/* Destinos de anuncios que no son la tienda de nadie (apps, acortadores, el
+   aviso de transparencia de Meta, marketplaces). Medido el 10-11-2026: Google
+   Play salía primero en «Tiendas» con 108 anuncios. No se muestran ni se cuentan. */
+const NO_SON_TIENDAS = [
+  'play.google.com', 'itunes.apple.com', 'apps.apple.com', 'drive.google.com', 'docs.google.com', 'forms.gle',
+  'transparency.meta.com', 'facebook.com', 'm.facebook.com', 'instagram.com', 'youtube.com', 'youtu.be', 'tiktok.com',
+  't.me', 'bit.ly', 'linktr.ee', 'amazon.com', 'mercadolibre.com.ec', 'mercadolibre.com.mx', 'mercadolibre.com.co',
+];
+
 async function listarTiendas(params = {}, sessionUser = {}) {
   const limit = Math.min(100, Math.max(1, Number(params.limit) || 30));
   const page = Math.max(1, Number(params.page) || 1);
   const idSub = Number(sessionUser.id_sub_usuario) || 0;
-  const where = ['1=1'];
-  const repl = { limit, offset: (page - 1) * limit, idSub };
+  const where = ['t.dominio NOT IN (:noTiendas)'];
+  const repl = { limit, offset: (page - 1) * limit, idSub, noTiendas: NO_SON_TIENDAS };
   const pais = String(params.pais || '').toUpperCase();
   if (pais && pais !== 'ALL') { where.push('(t.pais_principal = :pais OR t.pais_principal IS NULL)'); repl.pais = pais; }
   if (params.q && String(params.q).trim().length >= 2) { where.push('(t.dominio LIKE :q OR t.nombre LIKE :q)'); repl.q = `%${String(params.q).trim()}%`; }
@@ -1641,7 +1723,10 @@ async function estado(paisCrudo) {
     `SELECT COUNT(*) AS n, MAX(ultima_vez_visto) AS ultima FROM espia_anuncio WHERE activo = 1 AND (pais = :pais OR pais = 'ALL')`,
     { pais },
   );
-  const [tie] = await q(`SELECT COUNT(*) AS n FROM espia_tienda WHERE pais_principal = :pais OR pais_principal IS NULL`, { pais });
+  const [tie] = await q(
+    `SELECT COUNT(*) AS n FROM espia_tienda WHERE (pais_principal = :pais OR pais_principal IS NULL) AND dominio NOT IN (:noTiendas)`,
+    { pais, noTiendas: NO_SON_TIENDAS },
+  );
   const [vd] = await q(`SELECT COUNT(DISTINCT fecha) AS dias FROM espia_ventas_dia WHERE pais = :pais`, { pais });
   // Ventas estimadas del último día cerrado (ayer) y lo que va de hoy: el KPI
   // del cliente siempre tiene un número en vez de «se calcula con la próxima
@@ -1942,7 +2027,152 @@ async function radarEquipo() {
   return { ultimo, alerta, pausas_30d: pausas, ultima_pausa: ultimaPausa };
 }
 
+/**
+ * Vuelve a contar las ventas de un país desde las fotos de stock guardadas
+ * (espia_stock_foto), con la regla de calc.ventasCreibles. Sirve para limpiar lo
+ * que se sumó antes de que existiera la regla (ajustes de inventario contados
+ * como ventas) y se puede repetir: siempre parte de las fotos, no de lo ya contado.
+ *
+ * Reproduce lo que hace procesarPagina foto por foto: mismas claves, misma fecha
+ * de carga (la local de la foto anterior del producto) y el mismo historial de
+ * referencia. Con la regla apagada da exactamente lo que hay hoy en la tabla.
+ *
+ * opts.aplicar = false → solo devuelve el resumen (no escribe nada).
+ * opts.aplicar = true  → guarda una copia de lo actual en espia_ventas_dia_respaldo
+ *   (solo la primera vez por país, para conservar el original), reemplaza
+ *   espia_ventas_dia desde la primera foto, corrige ventas_total y recalcula métricas.
+ */
+async function recontarVentas(paisCrudo, opts = {}) {
+  const pais = validarPais(paisCrudo);
+  const log = opts.log || (() => {});
+  const fotos = await q(
+    `SELECT dropi_product_id AS p, warehouse_id AS w, variacion_id AS v, UNIX_TIMESTAMP(fecha_hora) AS t, stock AS s
+       FROM espia_stock_foto WHERE pais = :pais
+      ORDER BY dropi_product_id, fecha_hora, warehouse_id, variacion_id`,
+    { pais },
+  );
+  if (!fotos.length) return { pais, fotos: 0, aplicado: false, antes: 0, despues: 0, ajuste: 0, dias: [], top: [] };
+
+  const filas = []; // { p, fecha, unidades, reab }
+  const totales = new Map(); // producto → unidades creíbles del período
+  let ajuste = 0;
+  let primera = null;
+  let i = 0;
+  while (i < fotos.length) {
+    const p = Number(fotos[i].p);
+    const stock = new Map(); // 'w:v' → stock
+    const dias = new Map(); // fecha → { unidades, reab }
+    let tAnterior = null;
+    while (i < fotos.length && Number(fotos[i].p) === p) {
+      const t = Number(fotos[i].t);
+      const bajadas = [];
+      let subida = 0;
+      let reab = 0;
+      while (i < fotos.length && Number(fotos[i].p) === p && Number(fotos[i].t) === t) {
+        const k = `${fotos[i].w}:${fotos[i].v}`;
+        const s = Number(fotos[i].s);
+        if (stock.has(k)) {
+          const prev = stock.get(k);
+          if (s < prev) bajadas.push({ d: prev - s, prev });
+          else if (s > prev) { subida += s - prev; reab += 1; }
+        }
+        stock.set(k, s);
+        i += 1;
+      }
+      if (tAnterior !== null && (bajadas.length || reab)) {
+        const fecha = calc.fechaDeCarga(new Date(tAnterior * 1000), pais);
+        if (!primera || fecha < primera) primera = fecha;
+        const hist = new Map([...dias.entries()].map(([f, d]) => [f, d.unidades]));
+        const r = calc.ventasCreibles(bajadas, subida, mayorDiaAntes(hist, fecha, pais));
+        ajuste += r.ajuste;
+        if (r.ventas > 0 || reab > 0) {
+          const d = dias.get(fecha) || { unidades: 0, reab: 0 };
+          d.unidades += r.ventas;
+          if (reab) d.reab = 1;
+          dias.set(fecha, d);
+        }
+      }
+      tAnterior = t;
+    }
+    let total = 0;
+    for (const [fecha, d] of dias) {
+      filas.push({ p, fecha, unidades: d.unidades, reab: d.reab });
+      total += d.unidades;
+    }
+    if (total > 0) totales.set(p, total);
+  }
+
+  const desde = primera || calc.fechaLocal(new Date(), pais);
+  const antesPorDia = await q(
+    `SELECT DATE_FORMAT(fecha, '%Y-%m-%d') AS fecha, SUM(unidades) AS u FROM espia_ventas_dia
+      WHERE pais = :pais AND fecha >= :desde GROUP BY fecha ORDER BY fecha`,
+    { pais, desde },
+  );
+  const despuesPorDia = new Map();
+  for (const f of filas) despuesPorDia.set(f.fecha, (despuesPorDia.get(f.fecha) || 0) + f.unidades);
+  const fechas = [...new Set([...antesPorDia.map((x) => x.fecha), ...despuesPorDia.keys()])].sort();
+  const antesMap = new Map(antesPorDia.map((x) => [x.fecha, Number(x.u)]));
+  const dias = fechas.map((f) => ({ fecha: f, antes: antesMap.get(f) || 0, despues: despuesPorDia.get(f) || 0 }));
+  const topIds = [...totales.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15);
+  const nombres = topIds.length
+    ? await q(`SELECT dropi_product_id AS p, nombre, ventas_total FROM espia_producto WHERE pais = :pais AND dropi_product_id IN (:ids)`, { pais, ids: topIds.map((x) => x[0]) })
+    : [];
+  const porId = new Map(nombres.map((n) => [Number(n.p), n]));
+  const resumen = {
+    pais,
+    fotos: fotos.length,
+    desde,
+    antes: dias.reduce((a, d) => a + d.antes, 0),
+    despues: dias.reduce((a, d) => a + d.despues, 0),
+    ajuste,
+    mayor_dia: filas.reduce((m, f) => Math.max(m, f.unidades), 0),
+    dias,
+    top: topIds.map(([p, u]) => ({ dropi_product_id: p, nombre: porId.get(p)?.nombre || '', antes: Number(porId.get(p)?.ventas_total || 0), despues: u })),
+    aplicado: false,
+  };
+  if (!opts.aplicar) return resumen;
+
+  // Copia de lo actual, una sola vez por país (repetir el recuento no pisa el original).
+  await db.query(`CREATE TABLE IF NOT EXISTS espia_ventas_dia_respaldo LIKE espia_ventas_dia`);
+  const [ya] = await q(`SELECT COUNT(*) AS n FROM espia_ventas_dia_respaldo WHERE pais = :pais`, { pais });
+  if (!Number(ya?.n)) {
+    await q(`INSERT INTO espia_ventas_dia_respaldo SELECT * FROM espia_ventas_dia WHERE pais = :pais`, { pais }, QueryTypes.INSERT);
+    log(`respaldo de ${pais} guardado en espia_ventas_dia_respaldo`);
+  }
+  const t = await db.transaction();
+  try {
+    await q(`DELETE FROM espia_ventas_dia WHERE pais = :pais AND fecha >= :desde`, { pais, desde }, QueryTypes.DELETE, t);
+    for (let k = 0; k < filas.length; k += 1000) {
+      const lote = filas.slice(k, k + 1000);
+      await db.query(
+        `INSERT INTO espia_ventas_dia (pais, dropi_product_id, fecha, unidades, reabastecido)
+         VALUES ${lote.map(() => '(?,?,?,?,?)').join(',')}`,
+        { replacements: lote.flatMap((f) => [pais, f.p, f.fecha, f.unidades, f.reab]), type: QueryTypes.INSERT, transaction: t },
+      );
+    }
+    // ventas_total = todo lo que queda en la tabla (lo recontado más lo anterior a la primera foto, si lo hay).
+    await q(
+      `UPDATE espia_producto p
+         LEFT JOIN (SELECT dropi_product_id, SUM(unidades) AS u FROM espia_ventas_dia WHERE pais = :pais GROUP BY dropi_product_id) v
+                ON v.dropi_product_id = p.dropi_product_id
+          SET p.ventas_total = COALESCE(v.u, 0)
+        WHERE p.pais = :pais`,
+      { pais },
+      QueryTypes.BULKUPDATE,
+      t,
+    );
+    await t.commit();
+  } catch (e) {
+    await t.rollback();
+    throw e;
+  }
+  await recalcularMetricas(pais, log);
+  resumen.aplicado = true;
+  return resumen;
+}
+
 module.exports = {
+  recontarVentas,
   PAISES,
   PAISES_REALES,
   NOMBRE_PAIS,
@@ -1973,6 +2203,7 @@ module.exports = {
   perfilarPendientes,
   marcarInactivos,
   listarAnuncios,
+  creativoDe,
   listarTiendas,
   detalleTienda,
   seguir,
