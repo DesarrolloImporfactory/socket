@@ -1774,6 +1774,56 @@ async function suiteA() {
     const g2 = R.validarListaDelModelo({ respuesta: lista411.replace(/Santa Elena/g, 'Puerto Ayora'), ficha: fichaGal, oficinas, mensajeCliente: 'la del muelle', historialBot: [g1?.texto || ''] });
     caso('segunda vez → avanza con "por confirmar" y pide el dato que falta', !!g2 && g2.texto.includes(R.GUARDIA_MARCA_PORCONFIRMAR) && /muelle/.test(g2.texto) && /nombre/.test(g2.texto), g2?.texto);
 
+    /* Caso cfg 1248 (MultiOfertas, chat 1262461, 10-11-2026): el cliente dijo
+       "Guasmo sur" y después "X el Pedregal". El modelo listó 4 oficinas
+       reales que no eran del Guasmo, y la guardia mandó TRES veces la misma
+       lista alfabética (17 Ava, 23 y la Q…), la última después del "Sí" con
+       el que el cliente confirmaba el pedido. */
+    {
+      const fichaGye = { ...fichaSE, ciudad: 'Guayaquil', entrega: 'agencia' };
+      const dicho = (...m) => m.join('\n');
+      const histSector = [`Perfecto, retiro en Guayaquil 😊 ${R.GUARDIA_MARCA_SECTOR}`];
+      const listaAjena =
+        'Las oficinas Servientrega disponibles en Guayaquil son:\n' +
+        '1. *Oficina Servientrega — Sector Florida Norte Av. Principal*\nDirección: Florida Norte MZ 0408 SL.3 Tarqui\n' +
+        '2. *Oficina Servientrega — Sector Francisco Segura*\nDirección: Francisco Segura 1909 entre Tulcán y Carchi PB\n' +
+        '3. *Oficina Servientrega — Sector Garzota*\nDirección: CDLA. La Garzota MZ 32 Villa # 30';
+      const f1 = { ...fichaGye, _textoCliente: dicho('1 nomás', 'Guayaquil', 'Servi entrega', 'Pero el sábado', 'Guasmo sur') };
+      const t1 = R.validarListaDelModelo({ respuesta: listaAjena, ficha: f1, oficinas, mensajeCliente: 'Guasmo sur', historialBot: histSector });
+      caso(
+        'lista real que ignora "Guasmo sur" → se cambia por la ordenada, con el Guasmo primero',
+        !!t1 && t1.texto.includes(R.GUARDIA_MARCA_LISTA) && /GUASMO/i.test(t1.texto.split('\n')[1]),
+        t1?.texto,
+      );
+      caso(
+        'lista real sin referencia que calce ("no sé, cualquiera") se respeta',
+        R.validarListaDelModelo({ respuesta: listaAjena, ficha: { ...fichaGye, _textoCliente: dicho('Guayaquil', 'no sé, cualquiera') }, oficinas, mensajeCliente: 'no sé, cualquiera', historialBot: histSector }) === null,
+      );
+      const inventada = '1. *Oficina Servientrega — Sector Pedregal*\nDirección: Av. Principal del Pedregal y Calle 3';
+      const f2 = { ...fichaGye, agencia: 'Pedregal', _textoCliente: dicho(f1._textoCliente, 'X el Pedregal') };
+      const primera = R.validarListaDelModelo({ respuesta: inventada, ficha: f2, oficinas, mensajeCliente: 'X el Pedregal', historialBot: histSector });
+      caso(
+        '"Pedregal" no está en el directorio: la lista sale ordenada por lo que dijo antes (Guasmo), no alfabética',
+        !!primera && primera.texto.includes(R.GUARDIA_MARCA_LISTA) && /GUASMO/i.test(primera.texto.split('\n')[1]),
+        primera?.texto,
+      );
+      const segunda = R.validarListaDelModelo({ respuesta: inventada, ficha: f2, oficinas, mensajeCliente: 'Pedregal', historialBot: [primera?.texto || '', ...histSector] });
+      caso(
+        'la misma lista NO se manda dos veces: queda por confirmar y pide el dato que falta',
+        !!segunda && !segunda.texto.includes(R.GUARDIA_MARCA_LISTA) && segunda.texto.includes(R.GUARDIA_MARCA_PORCONFIRMAR) && /Pedregal/.test(segunda.texto) && /nombre/.test(segunda.texto),
+        segunda?.texto,
+      );
+      const confirma = '🧑 Nombre: Idian Montaño\n📦 Producto: Boquilla x1\n🏢 Retiro: Oficina Servientrega — Sector Guasmo Sur Lucha Popular\n¿Me confirmas tu teléfono?';
+      caso(
+        'confirmar una oficina real por su sector, sin la dirección, no dispara la lista (el "Sí" del cliente)',
+        R.validarListaDelModelo({ respuesta: confirma, ficha: { ...f2, nombre: 'Idian Montaño' }, oficinas, mensajeCliente: 'Si', historialBot: [primera?.texto || '', ...histSector] }) === null,
+      );
+      caso(
+        'un sector de una sola palabra ("Sector Centro") sigue sin valer como oficina real',
+        !oficinas.some((o) => R.coincideSector('Oficina Servientrega — Sector Centro', { ...o, sector: 'Centro' })),
+      );
+    }
+
     // E2E cfg 610 (2026-09-08): gpt-5-mini listó oficinas REALES de La Libertad
     // y Ancón como si fueran de Santa Elena, con un encabezado que termina en
     // "¿cuál te queda mejor?". El encabezado no es un ítem; los 4 sí, y son de
