@@ -37,12 +37,14 @@ router.get('/anuncios', espiaAddon, ctrl.anuncios);
 router.post('/anuncios', espiaAddon, ctrl.recibirAnuncios); // extensión → lote de hasta 200
 router.get('/radar/cola', espiaAddon, ctrl.radarCola); // extensión → productos a buscar en Meta (con su término)
 router.post('/radar/marcar', espiaAddon, ctrl.radarMarcar); // extensión → «busqué este producto; salieron estos anuncios»
+router.post('/radar/latido', espiaAddon, ctrl.radarLatido); // extensión → «el radar está así» (la portada avisa si se pausa o se cae)
 router.get('/tiendas', espiaAddon, ctrl.tiendas);
 router.post('/tiendas/vista', espiaAddon, ctrl.vistaTienda); // extensión → «analicé esta tienda»
 router.get('/tiendas/:dominio', espiaAddon, ctrl.tienda);
 
 // ── Operar el recolector: solo Imporfactory ──
 router.post('/reporte/enviar', requireSuperAdmin, ctrl.enviarReporte);
+router.post('/extension/sesion-larga', requireSuperAdmin, ctrl.sesionLarga); // extensión del radar → token de 90 días que se renueva solo
 router.post('/pasada', requireSuperAdmin, ctrl.pasada);
 
 // Cuentas de Dropi (correo + token de integración) con las que se mapea cada

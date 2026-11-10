@@ -4,7 +4,9 @@ const Sub_usuarios_chat_center = require('../models/sub_usuarios_chat_center.mod
 require('dotenv').config();
 
 // Generar JWT con id_usuario
-const generarToken = async (id_sub_usuario) => {
+// opciones.expiresIn (por defecto 7 días) y opciones.extra (campos que se suman
+// al payload, p. ej. origen) los usa la sesión larga de la extensión ImporKiller.
+const generarToken = async (id_sub_usuario, opciones = {}) => {
   const subUsuario = await Sub_usuarios_chat_center.findByPk(id_sub_usuario);
 
   if (!subUsuario) {
@@ -31,12 +33,13 @@ const generarToken = async (id_sub_usuario) => {
     estado: usuario.estado,
     email_propietario: usuario.email_propietario,
     id_costumer: usuario.id_costumer,
+    ...(opciones.extra || {}),
   };
 
   console.log('Payload del token:', payload);
 
   return jwt.sign(payload, process.env.SECRET_JWT_SEED, {
-    expiresIn: '7d',
+    expiresIn: opciones.expiresIn || '7d',
   });
 };
 

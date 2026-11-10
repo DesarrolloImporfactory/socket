@@ -2,6 +2,8 @@ const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const espia = require('../services/espia_mercado.service');
 const { ADDON_IMPORKILLER } = require('../middlewares/espiaAcceso.middleware');
+const { generarToken } = require('../utils/jwt');
+const jwt = require('jsonwebtoken');
 
 /**
  * ImporKiller (Dropkiller propio; antes «Espía de mercado»). Quién entra lo
@@ -23,9 +25,31 @@ const accesoDe = (req) => {
   };
 };
 
+/**
+ * Sesión larga para la extensión del radar (solo super administradores).
+ * La sesión normal dura 7 días: en un equipo que queda barriendo Meta sin
+ * nadie delante (la Mac mini), a la semana la extensión quedaba «sin sesión»
+ * hasta que alguien volvía a iniciar sesión. La extensión cambia el token de
+ * la web por uno de SESION_LARGA_DIAS con origen 'extension' y lo renueva
+ * sola llamando aquí con ese mismo token cuando le quedan pocos días. Sigue
+ * valiendo todo lo de sesionVigente (suspendido, cerrar sesión en Imporsuit).
+ */
+const SESION_LARGA_DIAS = 90;
+exports.sesionLarga = catchAsync(async (req, res) => {
+  const idSub = req.sessionUser?.id_sub_usuario;
+  if (!idSub) throw new AppError('Sesión sin sub-usuario', 401);
+  const token = await generarToken(idSub, { expiresIn: `${SESION_LARGA_DIAS}d`, extra: { origen: 'extension' } });
+  const { exp } = jwt.decode(token) || {};
+  return ok(res, { token, vence: exp ? new Date(exp * 1000).toISOString() : null, dias: SESION_LARGA_DIAS });
+});
+
 exports.estado = catchAsync(async (req, res) => {
   const est = await espia.estado(req.query.pais);
   est.acceso = accesoDe(req);
+  if (req.espia?.super_admin) {
+    // Estado del Chrome que barre Meta (la Mac del radar): pausa por verificación o sin señal.
+    est.radar_equipo = await espia.radarEquipo().catch((e) => ({ ultimo: null, alerta: null, error: e.message }));
+  }
   if (!req.espia?.super_admin) {
     // El cliente ve el mercado, no la operación: ni las cuentas de Dropi con
     // las que se fotografía el catálogo, ni páginas, errores, cron o freno del
@@ -72,6 +96,7 @@ exports.recibirAnuncios = catchAsync(async (req, res) =>
 // Radar (extensión): qué productos buscar en la Biblioteca y con qué palabras; y «ya busqué este».
 exports.radarCola = catchAsync(async (req, res) => ok(res, await espia.radarCola(req.query, req.sessionUser)));
 exports.radarMarcar = catchAsync(async (req, res) => ok(res, await espia.radarMarcar(req.body)));
+exports.radarLatido = catchAsync(async (req, res) => ok(res, await espia.radarLatido(req.body, req.sessionUser)));
 
 exports.tiendas = catchAsync(async (req, res) => ok(res, await espia.listarTiendas(req.query, req.sessionUser)));
 
