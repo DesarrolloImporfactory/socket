@@ -9,7 +9,10 @@
 
 const cron = require('node-cron');
 const { db } = require('../database/config');
-const { revisarPaginas } = require('../services/messenger_pages_health.service');
+const {
+  revisarPaginas,
+  revisarInstagram,
+} = require('../services/messenger_pages_health.service');
 
 async function withLock(lockName, fn) {
   const conn = await db.connectionManager.getConnection({ type: 'read' });
@@ -60,6 +63,25 @@ async function ejecutarChequeo() {
       `[cron-ms-health] ⚠️  cfg=${r.id_configuracion} "${r.page_name}" ` +
         `(page_id=${r.page_id}) → ${r.token_error}`,
     );
+  }
+
+  // Instagram guarda su propio token de página y hasta el 10-11-2026 nadie
+  // lo revisaba. Va en su try: un fallo acá no debe tapar lo de Messenger.
+  try {
+    const ig = await revisarInstagram({ persistir: true });
+    console.log(
+      `[cron-ms-health] ✅ Instagram: ${ig.resumen.total} conexiones | ` +
+        `sanas=${ig.resumen.sanas} muertas=${ig.resumen.muertas} ` +
+        `indeterminadas=${ig.resumen.indeterminadas}`,
+    );
+    for (const r of ig.resultados.filter((x) => x.token_valido === false)) {
+      console.warn(
+        `[cron-ms-health] ⚠️  Instagram cfg=${r.id_configuracion} ` +
+          `"${r.ig_username || r.page_name}" (page_id=${r.page_id}) → ${r.token_error}`,
+      );
+    }
+  } catch (err) {
+    console.error('[cron-ms-health] ❌ Instagram:', err.message);
   }
 }
 

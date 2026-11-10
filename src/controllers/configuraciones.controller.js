@@ -21,6 +21,9 @@ const {
   registrarCambioConexion,
 } = require('../services/conexion_numero_audit.service');
 const { codigoErrorIA } = require('../utils/openia/sinSaldo');
+const {
+  anexarSaludInbox,
+} = require('../services/messenger_pages_health.service');
 
 /* Columnas de estado de la IA que /conexiones necesita para decir QUÉ pasa
    con el bot y no solo "sin saldo": por qué está apagado (openai_error_msg,
@@ -396,6 +399,10 @@ exports.listarConexionesSubUser = catchAsync(async (req, res) => {
       ],
     },
   );
+
+  // Messenger/Instagram con el token muerto: la tarjeta pide reconectar
+  // (caso JNstore, 10-11-2026). Nunca lanza; sin dato no hay aviso.
+  await anexarSaludInbox(rows);
 
   return res.json({ status: 'success', data: anexarCodigoErrorIA(rows) });
 });
