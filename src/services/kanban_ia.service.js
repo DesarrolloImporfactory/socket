@@ -849,7 +849,11 @@ function camposFaltantesCierre(respuesta, ficha = null) {
       dicha && !esValorRelleno(dicha) ? resolverVariedad(dicha, variantes) : null;
     const clienteLaDijo =
       Boolean(textoCliente) &&
-      variantes.some((et) => etiquetaEnTexto(et, textoCliente));
+      variantes.some((et) =>
+        // También vale la que propuso el negocio y el cliente aceptó con un
+        // "sí" (ficha._textoAfirmado, caso 1549).
+        etiquetaEnTexto(et, `${textoCliente}\n${ficha?._textoAfirmado || ''}`),
+      );
     if (!resuelta && !clienteLaDijo) {
       faltan.push(
         `- Color/talla/modelo del producto (opciones: ${variantes.join(', ')})`,
