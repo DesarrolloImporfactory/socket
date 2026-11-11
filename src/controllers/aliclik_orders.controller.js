@@ -1,4 +1,4 @@
-const { Op } = require('sequelize');
+const { Op, fn, literal } = require('sequelize');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
@@ -13,6 +13,15 @@ const {
 const {
   enrichOrdersWithChatAndAgent,
 } = require('./dropi_integrations.controller');
+const { getShopifyActivo } = require('./shopify_pedidos.controller');
+
+/* Transportadora del pedido. No tiene columna propia: vive dentro de
+   order_data (ver upsertOrders en aliclik_notifier.service, que la conserva
+   entre sincronizaciones). JSON_VALUE devuelve NULL cuando la clave viene en
+   null, a diferencia de JSON_UNQUOTE(JSON_EXTRACT()), que devuelve el texto
+   'null'. La consulta siempre va acotada por id_configuracion + fecha, que es
+   lo que usa el índice. */
+const SQL_TRANSPORTADORA = "JSON_VALUE(order_data, '$.shipping_company')";
 
 /* ═══════════════════════════════════════════════════════════
    Vista Pedidos — pestaña Aliclik
@@ -108,6 +117,8 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
   const until = strOrNull(req.body?.until);
   const estado = strOrNull(req.body?.status); // estado canónico
   const texto = strOrNull(req.body?.textToSearch);
+  const transportadora = strOrNull(req.body?.transportadora);
+  const producto = strOrNull(req.body?.producto); // product_detail exacto
   const forceSync = req.body?.force_sync === true;
 
   const where = { id_configuracion };
@@ -128,6 +139,26 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
       { city: like },
     ];
   }
+
+  /* Producto y transportadora. Las opciones de cada desplegable se calculan
+     con todos los filtros MENOS el propio (si no, al elegir una opción la
+     lista se quedaría con esa sola), así que se arman tres where: el del
+     listado y uno por desplegable. El spread copia también las claves Symbol
+     (Op.or).
+     El filtro de producto llegaba en el body y no se aplicaba: el desplegable
+     mostraba las opciones pero elegir una no cambiaba la lista. Su valor es el
+     product_detail completo, que es lo que se ofrece como opción. */
+  const filtroTransportadora = transportadora
+    ? {
+        [Op.and]: [
+          literal(`${SQL_TRANSPORTADORA} = ${db.escape(transportadora)}`),
+        ],
+      }
+    : {};
+  const filtroProducto = producto ? { product_detail: producto } : {};
+  const whereSinProducto = { ...where, ...filtroTransportadora };
+  const whereSinTransportadora = { ...where, ...filtroProducto };
+  Object.assign(where, filtroProducto, filtroTransportadora);
 
   // ── Sync si el cache está viejo ──
   let syncInfo = { syncedAt: null, ageMinutes: null, syncing: false };
@@ -205,9 +236,13 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
       delivery_status: r.status || '',
       dispatch_status: r.dispatch_status || '',
       total_order: Number(r.total || 0),
-      // Aliclik no expone guía ni transportadora en ningún endpoint.
-      shipping_guide: '',
-      shipping_company: '',
+      // Aliclik no devuelve guía ni transportadora en sus pedidos. La
+      // transportadora que sí conocemos es la que se eligió al crear el pedido
+      // desde el chat (se guarda en order_data); la guía sigue vacía hasta
+      // que la expongan. Se leen del cache y no se fuerzan a '' para que se
+      // llenen solas el día que lleguen.
+      shipping_guide: od?.shipping_guide || '',
+      shipping_company: od?.shipping_company || '',
       order_created_at: r.order_created_at,
       shop_type: null,
       shop_name: integracion.store_name || 'Aliclik',
@@ -243,11 +278,11 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
 
   // ── Opciones del filtro por producto ──
   // Se calcula sobre las mismas órdenes que devuelve el listado (mismos
-  // filtros), igual que en la vista de Dropi.
+  // filtros, menos el de producto), igual que en la vista de Dropi.
   let productosDisponibles = [];
   try {
     const paraFiltro = await AliclikOrdersCache.findAll({
-      where,
+      where: whereSinProducto,
       attributes: ['product_detail'],
       raw: true,
     });
@@ -263,6 +298,29 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
     console.error('[pedidos-aliclik] productos filtro:', e?.message);
   }
 
+  // ── Opciones del filtro por transportadora (con cuántos pedidos cada una) ──
+  let transportadorasDisponibles = [];
+  try {
+    const porTransp = await AliclikOrdersCache.findAll({
+      where: whereSinTransportadora,
+      attributes: [
+        [literal(SQL_TRANSPORTADORA), 'transportadora'],
+        [fn('COUNT', literal('*')), 'pedidos'],
+      ],
+      group: [literal(SQL_TRANSPORTADORA)],
+      raw: true,
+    });
+    transportadorasDisponibles = porTransp
+      .map((r) => ({
+        nombre: String(r.transportadora || '').trim(),
+        pedidos: Number(r.pedidos || 0),
+      }))
+      .filter((t) => t.nombre && t.nombre.toLowerCase() !== 'null')
+      .sort((a, b) => b.pedidos - a.pedidos);
+  } catch (e) {
+    console.error('[pedidos-aliclik] transportadoras filtro:', e?.message);
+  }
+
   return res.json({
     isSuccess: true,
     data: {
@@ -273,6 +331,7 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
       total_pages: Math.max(1, Math.ceil(count / pageSize)),
       sync: syncInfo,
       productos_disponibles: productosDisponibles,
+      transportadoras_disponibles: transportadorasDisponibles,
       estados_disponibles: ESTADOS_ALICLIK,
     },
   });
@@ -307,6 +366,26 @@ exports.plataformasConectadas = catchAsync(async (req, res, next) => {
       label: 'Aliclik',
       store_name: aliclik.store_name,
     });
+
+  /* Shopify como fuente de pedidos SOLO cuando no hay Dropi ni Aliclik. Sin
+     esto, una cuenta que solo tiene la tienda conectada veía "Conecta tu
+     plataforma de pedidos" con sus pedidos entrando por el webhook (cfg 1565).
+     Con Dropi conectado no se ofrece: esos mismos pedidos ya salen en la
+     lista de Dropi con origen Shopify (y los que no llegaron, en "Faltan por
+     subir"), así que una pestaña aparte los mostraría dos veces. */
+  if (!plataformas.length) {
+    try {
+      const shopify = await getShopifyActivo(id_configuracion);
+      if (shopify)
+        plataformas.push({
+          key: 'shopify',
+          label: 'Shopify',
+          store_name: shopify.shop_domain,
+        });
+    } catch (e) {
+      console.error('[pedidos] plataformas (shopify):', e?.message);
+    }
+  }
 
   return res.json({
     isSuccess: true,

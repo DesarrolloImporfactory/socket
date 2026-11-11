@@ -344,8 +344,57 @@ function normalizeFecha(value) {
   return value.replace('T', ' ').replace(/(\.\d+)?Z?$/, '');
 }
 
+/**
+ * Transportadora ya guardada en el cache, por número de pedido.
+ *
+ * Aliclik no devuelve la transportadora en sus pedidos, así que la única que
+ * conocemos es la que el asesor eligió al crear el pedido desde el chat
+ * (createOrderForClient la deja en order_data). Como cada sincronización
+ * reescribe order_data con lo que manda Aliclik, sin esto se perdería en la
+ * primera pasada del cron y el filtro por transportadora de la vista Pedidos
+ * quedaría vacío.
+ */
+async function transportadorasGuardadas(id_configuracion, orderNumbers) {
+  const mapa = new Map();
+  if (!orderNumbers.length) return mapa;
+  try {
+    const filas = await db.query(
+      `SELECT order_number,
+              JSON_VALUE(order_data, '$.shipping_company') AS transportadora
+         FROM aliclik_orders_cache
+        WHERE id_configuracion = :cfg AND order_number IN (:nums)`,
+      {
+        replacements: { cfg: id_configuracion, nums: orderNumbers },
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    for (const f of filas) {
+      const t = String(f.transportadora || '').trim();
+      if (t && t.toLowerCase() !== 'null') mapa.set(String(f.order_number), t);
+    }
+  } catch (e) {
+    // Best-effort: si falla, el pedido se guarda igual (sin transportadora).
+    console.log('[Aliclik] no se pudo leer la transportadora guardada:', e?.message);
+  }
+  return mapa;
+}
+
 async function upsertOrders(id_configuracion, ordenes) {
   if (!ordenes.length) return;
+
+  // Las que llegan sin transportadora (hoy, todas las que vienen de la API)
+  // conservan la que ya tenían guardada. Si algún día Aliclik la manda, gana
+  // la suya.
+  const guardadas = await transportadorasGuardadas(
+    id_configuracion,
+    ordenes
+      .filter((o) => o.order_number && !o.shipping_company)
+      .map((o) => String(o.order_number)),
+  );
+  ordenes = ordenes.map((o) => {
+    const t = !o.shipping_company && guardadas.get(String(o.order_number));
+    return t ? { ...o, shipping_company: t } : o;
+  });
 
   const bulk = ordenes.map((o) => ({
     order_number: o.order_number,

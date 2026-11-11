@@ -1759,6 +1759,8 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
   const status = strOrNull(req.body?.status);
   const origen = strOrNull(req.body?.origen); // imporsuit | shopify | otros
   const producto = strOrNull(req.body?.producto); // nombre exacto del producto
+  // Transportadora tal como la guarda Dropi (SERVIENTREGA, GINTRACOM…).
+  const transportadora = strOrNull(req.body?.transportadora);
   const texto = strOrNull(req.body?.textToSearch);
   const forceSync = req.body?.force_sync === true;
 
@@ -1843,11 +1845,17 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
     where[Op.or] = orText;
   }
 
-  /* Opciones del desplegable de producto: se calculan con TODOS los filtros
-     activos menos el de producto (si no, al elegir uno la lista se quedaría
-     con esa sola opción). Snapshot antes de agregar el filtro de producto —
-     el spread copia también las claves Symbol (Op.or, Op.and). */
-  const whereSinProducto = { ...where };
+  /* Opciones de los desplegables de producto y transportadora: cada uno se
+     calcula con TODOS los filtros activos menos el propio (si no, al elegir
+     una opción la lista se quedaría con esa sola). Snapshot antes de agregar
+     esos dos filtros — el spread copia también las claves Symbol (Op.or,
+     Op.and); el cruce entre ambos se resuelve en JS más abajo, con una sola
+     consulta para los dos desplegables. */
+  const whereSinProductoNiTransportadora = { ...where };
+
+  // Filtro por transportadora: columna propia del cache (shipping_company),
+  // siempre acotado por configuración + fecha, que es lo que usa el índice.
+  if (transportadora) where.shipping_company = transportadora;
 
   // Filtro por producto: product_names es un JSON array de nombres, así que
   // JSON_CONTAINS empareja por nombre EXACTO (un LIKE haría que "Gafas
@@ -2269,25 +2277,46 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
      del desplegable es el que se ve al elegir ese producto. Antes salía de
      una consulta aparte sin el filtro de origen y decía 32 donde la lista
      mostraba 30 (los 2 de más eran de WhatsApp). */
+  /* Las opciones de transportadora salen de la misma consulta: los productos
+     se cuentan sobre las órdenes de la transportadora elegida y las
+     transportadoras sobre las órdenes del producto elegido, así cada número
+     es el que se ve al elegir esa opción. */
   let productosDisponibles = [];
+  let transportadorasDisponibles = [];
   try {
     const paraFiltro = await DropiOrdersCache.findAll({
-      where: whereSinProducto,
-      attributes: ['dropi_order_id', 'product_names'],
+      where: whereSinProductoNiTransportadora,
+      attributes: ['dropi_order_id', 'product_names', 'shipping_company'],
       raw: true,
     });
+    // Misma comparación que hace MySQL en el WHERE (sin distinguir mayúsculas).
+    const normTransp = (v) => String(v || '').trim().toUpperCase();
+    const transpElegida = normTransp(transportadora);
     const conteo = new Map();
+    const conteoTransp = new Map();
     for (const r of paraFiltro) {
       let names = [];
       try {
         names = JSON.parse(r.product_names || '[]');
       } catch (_) {}
+      if (!Array.isArray(names)) names = [];
+      const transp = String(r.shipping_company || '').trim();
+
       // 1 orden cuenta 1 vez por producto (igual que la tabla del dashboard)
-      for (const n of new Set(names)) {
-        if (n) conteo.set(n, (conteo.get(n) || 0) + 1);
+      if (!transpElegida || normTransp(transp) === transpElegida) {
+        for (const n of new Set(names)) {
+          if (n) conteo.set(n, (conteo.get(n) || 0) + 1);
+        }
+      }
+      // Las órdenes sin transportadora (aún sin guía) no generan opción.
+      if (transp && (!producto || names.includes(producto))) {
+        conteoTransp.set(transp, (conteoTransp.get(transp) || 0) + 1);
       }
     }
     productosDisponibles = [...conteo.entries()]
+      .map(([nombre, pedidos]) => ({ nombre, pedidos }))
+      .sort((a, b) => b.pedidos - a.pedidos);
+    transportadorasDisponibles = [...conteoTransp.entries()]
       .map(([nombre, pedidos]) => ({ nombre, pedidos }))
       .sort((a, b) => b.pedidos - a.pedidos);
   } catch (e) {
@@ -2304,6 +2333,7 @@ exports.listOrdersFromCache = catchAsync(async (req, res, next) => {
       total_pages: Math.max(1, Math.ceil(count / pageSize)),
       sync: syncInfo,
       productos_disponibles: productosDisponibles,
+      transportadoras_disponibles: transportadorasDisponibles,
     },
   });
 });
