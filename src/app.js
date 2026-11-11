@@ -152,6 +152,7 @@ const adminDashboardRouter = require('./routes/admin_dashboard.routes');
 const adminBotSaludRouter = require('./routes/admin_bot_salud.routes');
 const espiaMercadoRouter = require('./routes/espia_mercado.routes');
 const adminAvisosRouter = require('./routes/admin_avisos.routes');
+const adminAsistenteRouter = require('./routes/admin_asistente.routes');
 const mobileAppRouter = require('./routes/mobile_app.routes');
 
 const seguimientosRouter = require('./routes/seguimientos.routes');
@@ -474,6 +475,7 @@ app.use('/api/v1/admin_dashboard', adminDashboardRouter);
 app.use('/api/v1/admin_bot_salud', adminBotSaludRouter);
 app.use('/api/v1/espia', espiaMercadoRouter);
 app.use('/api/v1/admin_avisos', adminAvisosRouter);
+app.use('/api/v1/admin_asistente', adminAsistenteRouter);
 app.use('/api/v1/seguimientos', seguimientosRouter);
 app.use('/api/v1/recuperacion', recuperacionRouter);
 // API pública para terceros (auth por API key) + gestión de llaves
