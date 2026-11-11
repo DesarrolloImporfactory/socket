@@ -51,6 +51,12 @@
  *       Guarda copia propia de las imágenes de anuncios que siguen con enlace
  *       de Meta (vencen a los 4–5 días). Lo hace solo cada vez que la extensión
  *       manda anuncios; esto es para poner al día lo anterior.
+ *   node scripts/espiaMercado.js vinculos --pais EC|TODOS [--aplicar]
+ *       Repasa los anuncios que el radar vinculó a cada producto con la regla
+ *       de utils/espiaVinculo: quedan los que nombran el producto, los que lo
+ *       nombran a medias pasan a «parecido» y el resto se desvincula (el
+ *       anuncio sigue en Anuncios y Tiendas). Sin --aplicar solo cuenta; con
+ *       --aplicar guarda copia en espia_anuncio_producto_respaldo.
  *   node scripts/espiaMercado.js reporte --pais EC [--enviar]
  *   node scripts/espiaMercado.js limpiar --pais QA --si
  *       Borra TODO lo del país (solo pensado para QA).
@@ -304,6 +310,85 @@ async function miniaturas() {
   });
 }
 
+async function vinculos() {
+  const aplicar = Boolean(opt('aplicar'));
+  await conBD(async () => {
+    const espia = require('../src/services/espia_mercado.service');
+    const pedido = String(opt('pais', 'EC')).toUpperCase();
+    const paises = pedido === 'TODOS' ? espia.PAISES_REALES : [pedido];
+    for (const pais of paises) {
+      const r = await espia.repasarVinculos(pais, { aplicar });
+      if (!r.revisados) { console.log(`\n${pais}: sin vínculos del radar`); continue; }
+      const pc = (n) => `${n} (${Math.round((100 * n) / r.revisados)}%)`;
+      console.log(`\n${pais} · ${r.revisados} vínculos del radar · ${aplicar ? 'APLICADO (copia en espia_anuncio_producto_respaldo)' : 'vista previa (sin --aplicar no escribe)'}`);
+      console.log(`  quedan exactos ${pc(r.exactos)} · pasan a parecido ${pc(r.parecidos)} · se quitan ${pc(r.borrados)}`);
+      console.log(`  productos: ${r.productos} · se quedan sin ningún anuncio exacto: ${r.productos_sin_exactos}`);
+      console.log('  Productos a los que más anuncios se les quitan (antes → exactos + parecidos):');
+      for (const p of r.mas_afectados) {
+        console.log(`    ${String(p.antes).padStart(4)} → ${String(p.exactos).padStart(3)} + ${String(p.parecidos).padStart(3)}  ${p.id} ${String(p.nombre).slice(0, 50)}`);
+      }
+    }
+  });
+}
+
+function probarVinculo() {
+  const { clasificarVinculo, estaEnIngles } = require('../src/utils/espiaVinculo');
+  console.log('\nRegla de vínculo anuncio–producto');
+  const ad = (texto, extra = {}) => ({ titulo: '', texto, ...extra });
+  assert(
+    clasificarVinculo('X1 Aceite Batana', ad('¿Cada vez encuentras más cabello en la almohada? El aceite de batana lo detiene')) === 'exacto',
+    'palabras juntas con una de relleno en medio → exacto',
+  );
+  assert(
+    clasificarVinculo('FAJA SAUNA HOMBRE MOLDEADORA', ad('Chaleco Faja Sauna para hombre AUMENTA LA TEMPERATURA')) === 'exacto',
+    'las tres palabras dentro de la ventana → exacto',
+  );
+  assert(
+    clasificarVinculo('Fajas reductoras', ad('Las mejores fajas reductoras del país, paga al recibir')) === 'exacto',
+    'el plural del anuncio cuenta',
+  );
+  assert(
+    clasificarVinculo(
+      'boquilla pistola de alta presion agua',
+      ad('Boquilla de regalo por tu compra. Envío gratis a todo el país y paga al recibir en casa. Hidrolavadora con pistola recargable y mucha presión'),
+    ) === 'parecido',
+    'todas las palabras pero regadas → parecido',
+  );
+  assert(
+    clasificarVinculo('Brazalete Rosas + CAJA REGALO', ad('Descarga ahora para ver todo gratis', { dominio: 'play.google.com' })) === 'ninguno',
+    'falta alguna palabra → no se vincula',
+  );
+  assert(
+    clasificarVinculo('BERBERINE', ad('Another shelf of berberine and you still wake up tired. This is why your sleep is not getting better with it')) === 'ninguno',
+    'anuncio en inglés → no se vincula aunque nombre el producto',
+  );
+  assert(
+    clasificarVinculo('DR MELAXIN', ad('Menu ¡Despídete de las manchas y la piel áspera! Dr.Melaxin Peel Shot Exfoliating Kojic')) === 'exacto',
+    'marca en inglés dentro de un anuncio en español → exacto',
+  );
+  assert(
+    !estaEnIngles('This ad has multiple versions Open Dropdown ¡Adiós canas! ¿Quieres recuperar tu juventud? Este shampoo cubre canas en minutos y paga al recibir'),
+    'los letreros de la Biblioteca en inglés no cuentan como idioma del anuncio',
+  );
+  assert(
+    clasificarVinculo('Pets Visión', ad('Comprar ahora', { url_destino: 'https://tienda.com/products/pets-vision-ec' })) === 'exacto',
+    'el nombre en la dirección de destino también vale',
+  );
+  assert(
+    clasificarVinculo('ASTAXANTHIN', ad('La Astaxantina 12 mg es un poderoso antioxidante natural, paga al recibir')) === 'exacto',
+    'el nombre traducido con una o dos letras de diferencia cuenta',
+  );
+  assert(
+    clasificarVinculo('Chaleco De Compresion Disimulador', ad('PROMOCIÓN PARA HOMBRES 2 CHALECOS DE COMPRESIÓN POR SOLO $30, paga al recibir')) === 'parecido',
+    'dos de tres palabras juntas → parecido',
+  );
+  assert(
+    clasificarVinculo('Set por 3 bandejas acero inoxidable', ad('Fabricantes directos de equipos en acero para tu negocio. Entregas en todo el país, paga al recibir y pide hoy tu cocina industrial con acabado inoxidable')) === 'ninguno',
+    'dos de tres palabras pero regadas → no se vincula',
+  );
+  assert(clasificarVinculo('Kit x3 500ml', ad('cualquier texto en español para probar')) === 'ninguno', 'nombre sin palabras con peso → no se vincula');
+}
+
 async function reporte() {
   const pais = String(opt('pais', 'EC')).toUpperCase();
   await conBD(async () => {
@@ -439,7 +524,8 @@ async function proveedores() {
 (async () => {
   try {
     switch (cmd) {
-      case 'probar': probar(); break;
+      case 'probar': probar(); probarVinculo(); break;
+      case 'vinculos': await vinculos(); break;
       case 'proveedor': await proveedor(); break;
       case 'proveedores': await proveedores(); break;
       case 'tablas': await tablas(); break;
