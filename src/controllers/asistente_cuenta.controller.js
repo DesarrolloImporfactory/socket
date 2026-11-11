@@ -15,8 +15,15 @@
  * consultas viven en services/asistente_cuenta.service.js y siempre filtran
  * por el id_configuracion que ya validó protectConfigOwner.
  *
- * API key: la de la cuenta; si no tiene (o se quedó sin saldo / es inválida),
- * la de la plataforma (OPENAI_API_KEY_SOPORTE) con un tope diario más bajo.
+ * Con qué llave responde, en este orden (si una falla se pasa a la siguiente):
+ *   1. la de OpenAI de la cuenta, si hay cuenta elegida y tiene llave;
+ *   2. la de la plataforma que el super admin marcó como principal en
+ *      /administrador-asistente (OpenAI o Claude);
+ *   3. la otra llave de la plataforma, si está cargada;
+ *   4. OPENAI_API_KEY_SOPORTE del .env, si sigue puesta (último recurso).
+ * Las de la plataforma tienen un tope diario más bajo. Con Claude el prompt,
+ * las herramientas y los datos que vuelven al front son los mismos que con
+ * OpenAI: solo cambia quién redacta. Ver services/asistente_plataforma.service.
  */
 
 const axios = require('axios');
@@ -40,7 +47,19 @@ const {
 const {
   esSinSaldoOpenAI,
   esApiKeyInvalida,
+  esRateLimitTransitorio,
+  mensajeErrorOpenAI,
 } = require('../utils/openia/sinSaldo');
+const {
+  esSinSaldoClaude,
+  esApiKeyClaudeInvalida,
+  esRateLimitClaude,
+  mensajeErrorClaude,
+} = require('../utils/claude/claude');
+const {
+  ejecutarConClaudeHerramientas,
+} = require('../utils/claude/herramientas');
+const plataforma = require('../services/asistente_plataforma.service');
 
 const OPENAI_MODEL = 'gpt-4o-mini';
 const OPENAI_MAX_TOKENS = 800;
@@ -53,30 +72,17 @@ const MAX_DATOS_RESPUESTA = 4;
 // Periodo que el usuario fija en la cabecera del tablero.
 const PERIODOS = ['hoy', 'semana', 'mes', '30d'];
 
-// Topes por cuenta y día. Viven en memoria: se reinician con el proceso y no
-// se comparten entre instancias; alcanzan para frenar abuso, no para facturar.
+// Topes por cuenta y día. El de la llave de la plataforma lo fija el super
+// admin (asistente_plataforma_config.tope_diario) y el conteo vive en BD
+// (asistente_plataforma_uso): en memoria se reiniciaba con cada deploy.
 const TOPE_DIARIO_KEY_PROPIA = 200;
-const TOPE_DIARIO_KEY_PLATAFORMA = 40;
-const usoDiario = new Map(); // `${id_configuracion}|${YYYY-MM-DD}` -> n
 const enCurso = new Set(); // id_configuracion con una pregunta en proceso
-
-function claveUso(sujeto) {
-  return `${sujeto}|${hoyEcuador()}`;
-}
-
-function usoDeHoy(sujeto) {
-  return usoDiario.get(claveUso(sujeto)) || 0;
-}
-
-function registrarUso(sujeto) {
-  const hoy = hoyEcuador();
-  // Limpieza perezosa de los días anteriores.
-  for (const k of usoDiario.keys()) {
-    if (!k.endsWith(`|${hoy}`)) usoDiario.delete(k);
-  }
-  const k = claveUso(sujeto);
-  usoDiario.set(k, (usoDiario.get(k) || 0) + 1);
-}
+// Ninguna llave pudo responder (sin saldo, inválida o proveedor caído). El
+// front muestra el botón de asesor junto a este texto.
+const MENSAJE_SIN_SERVICIO =
+  'El asistente no está disponible en este momento. Escríbele a un asesor y te ayudamos.';
+// Con Claude el turno incluye razonamiento y hasta 4 rondas de herramientas.
+const CLAUDE_TOPE_TURNO_MS = 45000;
 
 function sanitizarMensajes(messages) {
   if (!Array.isArray(messages)) return [];
@@ -431,11 +437,11 @@ function quitarEnlacesVideo(texto) {
     .trim();
 }
 
-async function llamarOpenAI(apiKey, messages, tools) {
+async function llamarOpenAI(apiKey, messages, tools, modelo = OPENAI_MODEL) {
   const { data } = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     {
-      model: OPENAI_MODEL,
+      model: modelo,
       messages,
       ...(tools.length ? { tools, tool_choice: 'auto' } : {}),
       max_tokens: OPENAI_MAX_TOKENS,
@@ -452,7 +458,14 @@ async function llamarOpenAI(apiKey, messages, tools) {
   return data;
 }
 
-async function conversar({ apiKey, mensajes, tools, contexto, ejecutar = ejecutarTool }) {
+async function conversar({
+  apiKey,
+  modelo = OPENAI_MODEL,
+  mensajes,
+  tools,
+  contexto,
+  ejecutar = ejecutarTool,
+}) {
   const conversacion = [...mensajes];
   const datos = []; // resultados de las tools, para que el front los grafique
   let tokens = 0;
@@ -460,7 +473,7 @@ async function conversar({ apiKey, mensajes, tools, contexto, ejecutar = ejecuta
   for (let ronda = 0; ronda <= MAX_RONDAS_TOOLS; ronda++) {
     // En la última ronda se quitan las tools para forzar una respuesta final.
     const toolsRonda = ronda < MAX_RONDAS_TOOLS ? tools : [];
-    const data = await llamarOpenAI(apiKey, conversacion, toolsRonda);
+    const data = await llamarOpenAI(apiKey, conversacion, toolsRonda, modelo);
     tokens += data?.usage?.total_tokens || 0;
 
     const msg = data?.choices?.[0]?.message;
@@ -501,6 +514,114 @@ async function conversar({ apiKey, mensajes, tools, contexto, ejecutar = ejecuta
   return { respuesta: '', tokens, datos };
 }
 
+/* Lo mismo que `conversar`, redactado por Claude. El bucle de herramientas es
+   el de utils/claude/herramientas.js (el del bot de soporte): acá solo se
+   traducen las definiciones de OpenAI a las de Anthropic y se guarda lo que
+   devolvió cada herramienta para que el front lo dibuje igual. */
+async function conversarClaude({
+  apiKey,
+  modelo,
+  sistema,
+  mensajes,
+  tools,
+  contexto,
+  ejecutar = ejecutarTool,
+}) {
+  const datos = [];
+  const herramientas = tools.map((t) => {
+    const nombre = t.function.name;
+    return {
+      definicion: {
+        name: nombre,
+        description: t.function.description,
+        input_schema: t.function.parameters || { type: 'object', properties: {} },
+      },
+      ejecutar: async (input) => {
+        let resultado;
+        try {
+          const args = { ...(input || {}) };
+          if (contexto.rango && !args.desde && !args.hasta) {
+            Object.assign(args, contexto.rango);
+          }
+          resultado = await ejecutar(nombre, args, contexto);
+        } catch (err) {
+          console.error(
+            `[AsistenteCuenta] tool ${nombre} cfg=${contexto.idConfiguracion}:`,
+            err.message,
+          );
+          resultado = { error: 'No se pudo consultar ese dato en este momento.' };
+        }
+        if (resultado && !resultado.error) {
+          datos.push({ herramienta: nombre, resultado });
+        }
+        return JSON.stringify(resultado);
+      },
+    };
+  });
+
+  // La API de Claude exige que la conversación empiece con el usuario; el
+  // recorte a los últimos mensajes puede dejar primero una respuesta.
+  const historial = mensajes.slice(0, -1);
+  while (historial.length && historial[0].role !== 'user') historial.shift();
+
+  const r = await ejecutarConClaudeHerramientas({
+    instructions: sistema,
+    input: mensajes[mensajes.length - 1].content,
+    model: modelo,
+    max_tokens: OPENAI_MAX_TOKENS,
+    api_key_claude: apiKey,
+    herramientas,
+    maxLlamadas: MAX_RONDAS_TOOLS + 1,
+    mensajesPrevios: historial,
+    maxCarResultado: MAX_CHARS_RESULTADO_TOOL,
+    deps: { topeTurnoMs: CLAUDE_TOPE_TURNO_MS },
+  });
+  // Sin llamadas = se agotó el tiempo: que lo intente la siguiente llave.
+  if (!r.llamadas) throw new Error('Claude no respondió a tiempo');
+  return { respuesta: r.respuesta, tokens: r.total_tokens, datos };
+}
+
+/* Por qué falló una llave, con los mismos códigos de utils/openia/sinSaldo. */
+function clasificarError(proveedor, err) {
+  if (proveedor === 'claude') {
+    const mensaje = mensajeErrorClaude(err);
+    if (esApiKeyClaudeInvalida(err)) return { codigo: 'KEY_INVALIDA', mensaje };
+    if (esSinSaldoClaude(err)) return { codigo: 'SIN_SALDO', mensaje };
+    if (esRateLimitClaude(err)) return { codigo: 'RATE_LIMIT', mensaje };
+    return { codigo: 'ERROR', mensaje };
+  }
+  const mensaje = mensajeErrorOpenAI(err);
+  // El 429 de OpenAI es tanto «sin saldo» como «vas muy rápido»: se distingue
+  // por el texto (ver sinSaldo.js), nunca por el status.
+  if (esSinSaldoOpenAI(err)) return { codigo: 'SIN_SALDO', mensaje };
+  if (esApiKeyInvalida(err)) return { codigo: 'KEY_INVALIDA', mensaje };
+  if (esRateLimitTransitorio(err) || err?.response?.status === 429) {
+    return { codigo: 'RATE_LIMIT', mensaje };
+  }
+  return { codigo: 'ERROR', mensaje };
+}
+
+/* Llaves con las que se puede responder, en orden de preferencia. */
+function armarCandidatos({ keyPropia, cfg }) {
+  const candidatos = [];
+  if (keyPropia) {
+    candidatos.push({ origen: 'propia', proveedor: 'openai', apiKey: keyPropia });
+  }
+  const orden = cfg.proveedor === 'claude' ? ['claude', 'openai'] : ['openai', 'claude'];
+  for (const p of orden) {
+    if (cfg.llaves[p]) {
+      candidatos.push({ origen: 'plataforma', proveedor: p, apiKey: cfg.llaves[p] });
+    }
+  }
+  const keyEnv = String(process.env.OPENAI_API_KEY_SOPORTE || '').trim();
+  if (keyEnv && keyEnv !== cfg.llaves.openai) {
+    candidatos.push({ origen: 'env', proveedor: 'openai', apiKey: keyEnv });
+  }
+  return candidatos;
+}
+
+exports._interno = { conversarClaude, clasificarError, armarCandidatos };
+
 exports.preguntar = async (req, res) => {
   const idConfiguracion = Number(req.body?.id_configuracion) || null;
   // Sin configuración elegida: solo tutorials + integraciones, key de plataforma.
@@ -535,20 +656,32 @@ exports.preguntar = async (req, res) => {
         );
 
     const keyPropia = leerApiKeyOpenAI(config?.api_key_openai);
-    const keyPlataforma = process.env.OPENAI_API_KEY_SOPORTE || null;
+    const cfg = await plataforma.leerConfig();
+    const todos = armarCandidatos({ keyPropia, cfg });
 
-    if (!keyPropia && !keyPlataforma) {
+    if (!todos.length) {
+      console.error(`[AsistenteCuenta] ${sujeto}: no hay ninguna llave configurada`);
       return res.status(503).json({
-        message: 'El asistente no está disponible en este momento.',
+        code: 'ASISTENTE_SIN_SERVICIO',
+        message: MENSAJE_SIN_SERVICIO,
       });
     }
 
-    const tope = keyPropia ? TOPE_DIARIO_KEY_PROPIA : TOPE_DIARIO_KEY_PLATAFORMA;
-    if (usoDeHoy(sujeto) >= tope) {
-      return res.status(429).json({
+    // Las llaves de la plataforma dejan de usarse al llegar a su tope; la
+    // propia del cliente tiene uno más alto.
+    const hoy = hoyEcuador();
+    const usados = await plataforma.usoDeHoy(sujeto, hoy);
+    const candidatos = todos.filter((c) =>
+      c.origen === 'propia'
+        ? usados < TOPE_DIARIO_KEY_PROPIA
+        : usados < cfg.tope_diario,
+    );
+    const tope = keyPropia ? TOPE_DIARIO_KEY_PROPIA : cfg.tope_diario;
+    const respuestaTope = () =>
+      res.status(429).json({
         message: `Alcanzaste el límite de ${tope} preguntas por hoy. Vuelve a intentarlo mañana.`,
       });
-    }
+    if (!candidatos.length) return respuestaTope();
 
     // Cuenta de Soporte Importaciones: bot propio, con la cartera del ERP.
     const modoSoporte = idConfiguracion === ID_CONFIG_SOPORTE;
@@ -560,22 +693,20 @@ exports.preguntar = async (req, res) => {
     const tools = modoSoporte
       ? construirToolsSoporte(perfil)
       : construirTools(integraciones);
-    const conversacion = [
-      {
-        role: 'system',
-        content: modoSoporte
-          ? construirPromptSoporte({ perfil, hoy: hoyEcuador() })
-          : construirSystemPrompt({
-          indiceVideos: await indiceVideosTexto(),
-          nombreCuenta: config?.nombre_configuracion || 'tu cuenta',
-          pais: config?.pais,
-          integraciones,
-          modoGeneral,
-          periodo: PERIODOS.includes(req.body?.periodo) ? req.body.periodo : null,
-          conGraficas: req.body?.formato === 'tablero',
-            }),
-      },
-      ...mensajes,
+    // Instrucciones del turno: el prompt y, si aplica, la base de envíos. Con
+    // OpenAI van como mensajes de sistema; con Claude, juntas en `system`.
+    const sistema = [
+      modoSoporte
+        ? construirPromptSoporte({ perfil, hoy: hoyEcuador() })
+        : construirSystemPrompt({
+            indiceVideos: await indiceVideosTexto(),
+            nombreCuenta: config?.nombre_configuracion || 'tu cuenta',
+            pais: config?.pais,
+            integraciones,
+            modoGeneral,
+            periodo: PERIODOS.includes(req.body?.periodo) ? req.body.periodo : null,
+            conGraficas: req.body?.formato === 'tablero',
+          }),
     ];
     const contexto = {
       idConfiguracion,
@@ -594,47 +725,86 @@ exports.preguntar = async (req, res) => {
         contexto,
       );
       if (ayuda?.secciones?.length) {
-        conversacion.splice(1, 0, {
-          role: 'system',
-          content:
+        sistema.push(
             'Base de conocimiento de transportadoras de Dropi Ecuador para esta pregunta. Responde con esto y no con conocimiento general; si no cubre lo que preguntan, dilo. Ya tienes lo necesario: NO vuelvas a llamar buscar_ayuda_transportadoras salvo que necesites otro tema distinto. Si el usuario nombró una transportadora, responde solo por esa; si no nombró ninguna y el procedimiento es igual en todas, explícalo una sola vez y menciona la excepción si la hay:\n\n' +
             ayuda.secciones
               .map((x) => `## ${x.titulo}\n${x.contenido}`)
               .join('\n\n'),
-        });
+        );
       }
     }
 
-    let resultado;
-    let origenKey = keyPropia ? 'propia' : 'plataforma';
-    try {
-      resultado = await conversar({
-        apiKey: keyPropia || keyPlataforma,
-        mensajes: conversacion,
-        tools,
-        contexto,
-        ejecutar,
-      });
-    } catch (err) {
-      // La key del cliente sin saldo o revocada no debe dejarlo sin asistente.
-      const recuperable = esSinSaldoOpenAI(err) || esApiKeyInvalida(err);
-      if (!(keyPropia && keyPlataforma && recuperable)) throw err;
-      if (usoDeHoy(sujeto) >= TOPE_DIARIO_KEY_PLATAFORMA) {
+    // Se prueba cada llave en orden: la del cliente sin saldo o la de la
+    // plataforma caída no deben dejar al usuario sin asistente.
+    let resultado = null;
+    let usada = null;
+    const fallos = [];
+    for (const c of candidatos) {
+      try {
+        resultado =
+          c.proveedor === 'claude'
+            ? await conversarClaude({
+                apiKey: c.apiKey,
+                modelo: cfg.modelo_claude,
+                sistema: sistema.join('\n\n'),
+                mensajes,
+                tools,
+                contexto,
+                ejecutar,
+              })
+            : await conversar({
+                apiKey: c.apiKey,
+                // El modelo elegido aplica a la llave de la plataforma; con la
+                // del cliente o la del .env se mantiene el económico.
+                modelo: c.origen === 'plataforma' ? cfg.modelo_openai : OPENAI_MODEL,
+                mensajes: [
+                  ...sistema.map((content) => ({ role: 'system', content })),
+                  ...mensajes,
+                ],
+                tools,
+                contexto,
+                ejecutar,
+              });
+        usada = c;
+        break;
+      } catch (err) {
+        const fallo = clasificarError(c.proveedor, err);
+        fallos.push({ ...fallo, origen: c.origen });
+        console.error(
+          `[AsistenteCuenta] ${sujeto} llave ${c.origen}/${c.proveedor} falló (${fallo.codigo}): ${fallo.mensaje}`,
+        );
+        // Queda a la vista del super admin en /administrador-asistente.
+        if (c.origen === 'plataforma') {
+          await plataforma.marcarError(c.proveedor, fallo.codigo, fallo.mensaje);
+        }
+      }
+    }
+
+    if (!resultado) {
+      // La llave del cliente falló y la de la plataforma ya no le toca hoy.
+      if (candidatos.length < todos.length) {
         return res.status(429).json({
-          message: `Alcanzaste el límite de ${TOPE_DIARIO_KEY_PLATAFORMA} preguntas por hoy. Vuelve a intentarlo mañana.`,
+          message: `Alcanzaste el límite de ${cfg.tope_diario} preguntas por hoy. Vuelve a intentarlo mañana.`,
         });
       }
-      origenKey = 'plataforma';
-      resultado = await conversar({
-        apiKey: keyPlataforma,
-        mensajes: conversacion,
-        tools,
-        contexto,
-        ejecutar,
+      // Solo límite de velocidad: es pasajero, que reintente.
+      if (fallos.every((f) => f.codigo === 'RATE_LIMIT')) {
+        return res.status(429).json({
+          message: 'El asistente está recibiendo muchas consultas. Intenta en un momento.',
+        });
+      }
+      // Sin saldo, llave inválida o proveedor caído: reintentar no sirve.
+      return res.status(503).json({
+        code: 'ASISTENTE_SIN_SERVICIO',
+        message: MENSAJE_SIN_SERVICIO,
       });
     }
 
-    registrarUso(sujeto);
+    if (usada.origen === 'plataforma' && cfg.errores[usada.proveedor]) {
+      await plataforma.limpiarError(usada.proveedor);
+    }
+    const origenKey = usada.origen === 'plataforma' ? usada.proveedor : usada.origen;
+    await plataforma.registrarUso(sujeto, hoy, origenKey, resultado.tokens);
 
     // El prompt lleva el índice de títulos, así que el modelo a veces nombra
     // un video sin llamar a la herramienta: sin datos no habría reproductor.
@@ -660,16 +830,10 @@ exports.preguntar = async (req, res) => {
       datos,
     });
   } catch (err) {
-    const status = err?.response?.status;
     console.error(
       `[AsistenteCuenta] ${sujeto} error:`,
       err?.response?.data?.error?.message || err.message,
     );
-    if (status === 429) {
-      return res.status(429).json({
-        message: 'El asistente está recibiendo muchas consultas. Intenta en un momento.',
-      });
-    }
     return res.status(500).json({
       message: 'No pude consultar tus datos en este momento. Intenta nuevamente.',
     });

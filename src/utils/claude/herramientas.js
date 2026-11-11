@@ -50,6 +50,9 @@ async function ejecutarConClaudeHerramientas({
   herramientas = [],
   maxLlamadas = 3,
   mensajesPrevios = [],
+  // Tope del texto que devuelve cada herramienta. El asistente de la cuenta
+  // pasa uno mayor: sus resultados son tablas de guías y fichas de ayuda.
+  maxCarResultado = MAX_CAR_RESULTADO,
   deps = {},
 }) {
   const client = deps.client || cliente(api_key_claude);
@@ -147,7 +150,7 @@ async function ejecutarConClaudeHerramientas({
           error = true;
           await anotar(`⚠️ herramienta ${b.name} falló: ${e.message}`);
         }
-        texto = String(texto ?? '').slice(0, MAX_CAR_RESULTADO) || 'Sin datos.';
+        texto = String(texto ?? '').slice(0, maxCarResultado) || 'Sin datos.';
         if (!error) hechos.push(texto);
         resultados.push({ type: 'tool_result', tool_use_id: b.id, content: texto, is_error: error });
         await anotar(`🛠️ ${b.name} → ${error ? 'error' : `${texto.length} car.`}`);

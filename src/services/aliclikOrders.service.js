@@ -734,6 +734,14 @@ async function createOrderForClient({ id_configuracion, body = {} }) {
     const remoto = await aliclikService.getOrderByNumber({ token, orderNumber });
     if (remoto) {
       orden = normalizarOrden(remoto);
+      // Aliclik no devuelve la transportadora del pedido; la única vez que
+      // sabemos su nombre es acá, en el courier que el asesor eligió de la
+      // cotización. Se guarda para poder filtrar por ella en la vista Pedidos
+      // (upsertOrders la conserva en las sincronizaciones siguientes).
+      const transportadora = strOrNull(body?.courier?.transportName);
+      if (!orden.shipping_company && transportadora) {
+        orden.shipping_company = transportadora;
+      }
       await upsertOrders(id_configuracion, [orden]);
     }
   } catch (err) {
