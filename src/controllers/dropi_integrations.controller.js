@@ -5578,6 +5578,7 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
         'dropi_order_id',
         'total_order',
         'dropshipper_profit',
+        'flete_amount',
         'status',
         'classified_status',
         'shop_type',
@@ -5873,9 +5874,19 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
   const blankCanal = () => ({
     pedidos: 0,
     facturado: 0,
+    flete: 0,
     ganancia: 0,
     entregadas: 0,
     canceladas: 0,
+    // Para el encabezado del dashboard v2 (10-nov, Daniel): los cancelados
+    // se ven en el facturado pero no ponen flete ni utilidad; lo devuelto
+    // no tiene costo de producto (vuelve a bodega) y su flete se pierde.
+    devoluciones: 0,
+    facturadoCancelado: 0,
+    facturadoDevuelto: 0,
+    costoVivos: 0,
+    gananciaVivos: 0,
+    fleteDevoluciones: 0,
     confirmados: 0,
     // confirmadas = superaron "pendiente confirmación" (y no canceladas).
     // Es la confirmación REAL: un pedido puede estar en Dropi pero seguir
@@ -5913,6 +5924,19 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
     C.pedidos += 1;
     C.facturado += total;
     C.ganancia += profit;
+    const flete = Number(o.flete_amount || 0);
+    if (cat === 'cancelada') {
+      C.facturadoCancelado += total;
+    } else if (cat === 'devolucion') {
+      C.devoluciones += 1;
+      C.facturadoDevuelto += total;
+      C.flete += flete;
+      C.fleteDevoluciones += flete;
+    } else {
+      C.flete += flete;
+      C.gananciaVivos += profit;
+      C.costoVivos += Math.max(0, total - profit - flete);
+    }
     if (cat === 'entregada') C.entregadas += 1;
     if (cat === 'cancelada') C.canceladas += 1;
     if (rawStatus !== 'PENDIENTE CONFIRMACION') C.confirmados += 1;
@@ -6078,6 +6102,18 @@ async function buildConnectionSummary({ id_configuracion, from, until }) {
       pedidos: c.pedidos,
       facturado: r2(c.facturado),
       ganancia: r2(c.ganancia),
+      // facturado = costo del producto + fletes + utilidad real
+      //           + lo cancelado + lo devuelto (que no se cobra).
+      // flete: de todo lo que salió (sin cancelados, con devueltos).
+      // costoProducto: de lo entregado y lo que va en camino.
+      // utilidadReal: ganancia de lo entregado y en camino − flete de lo devuelto.
+      flete: r2(c.flete),
+      costoProducto: r2(c.costoVivos),
+      utilidadReal: r2(c.gananciaVivos - c.fleteDevoluciones),
+      devoluciones: c.devoluciones,
+      facturadoCancelado: r2(c.facturadoCancelado),
+      facturadoDevuelto: r2(c.facturadoDevuelto),
+      fleteDevoluciones: r2(c.fleteDevoluciones),
       entregadas: c.entregadas,
       canceladas: c.canceladas,
       pedidosNeto: neto,
