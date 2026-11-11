@@ -614,3 +614,6 @@ exports.rankingPublicoEc = catchAsync(async (req, res) => {
   CACHE_RANKING_PUB.set(clave, { at: Date.now(), data });
   return res.json({ success: true, data });
 });
+
+// Reutilizado por services/dropi_efectividad.service.js (tasa del mercado por ciudad).
+exports._pais = { resolverPaisRaw, configsDePais };

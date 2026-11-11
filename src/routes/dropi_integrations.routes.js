@@ -7,6 +7,9 @@ const checkToolAccess = require('../middlewares/checkToolAccess.middleware');
 const excluirRoles = require('../middlewares/excluirRoles.middleware');
 const ctrl = require('../controllers/dropi_integrations.controller');
 const dropiAutoOrderController = require('../controllers/dropi_auto_orders.controller');
+const efectividadCtrl = require('../controllers/dropi_efectividad.controller');
+const rentabilidadCtrl = require('../controllers/dropi_rentabilidad.controller');
+const carteraCtrl = require('../controllers/dropi_cartera.controller');
 
 const dropiboardGuard = [checkPlanActivo, checkToolAccess('dropiboard')];
 
@@ -223,6 +226,45 @@ router.post(
   auth.protectConfigOwner,
   excluirRoles('ventas'),
   ctrl.getConnectionSummary,
+);
+
+// Efectividad por ciudad y transportadora del vendedor (dashboard v2) + el
+// análisis con IA sobre esa misma tabla (llave de IA del propio negocio).
+router.post(
+  '/dashboard/efectividad',
+  auth.protectConfigOwner,
+  excluirRoles('ventas'),
+  efectividadCtrl.getEfectividad,
+);
+router.post(
+  '/dashboard/efectividad-ia',
+  auth.protectConfigOwner,
+  excluirRoles('ventas'),
+  efectividadCtrl.analizarEfectividadIA,
+);
+
+// Rentabilidad real del vendedor (dashboard v2): cuánto le queda en el
+// bolsillo tras producto, fletes, publicidad y otros gastos.
+router.post(
+  '/dashboard/rentabilidad',
+  auth.protectConfigOwner,
+  excluirRoles('ventas'),
+  rentabilidadCtrl.getRentabilidad,
+);
+
+// Cobros de Dropi para reclamar (dashboard v2): revisa la cartera de Dropi
+// guía por guía (history_wallet de cada orden) y marca lo cobrado de más.
+router.post(
+  '/dashboard/cartera',
+  auth.protectConfigOwner,
+  excluirRoles('ventas'),
+  carteraCtrl.getCartera,
+);
+router.post(
+  '/dashboard/cartera/marcar',
+  auth.protectConfigOwner,
+  excluirRoles('ventas'),
+  carteraCtrl.marcarReclamo,
 );
 
 module.exports = router;
