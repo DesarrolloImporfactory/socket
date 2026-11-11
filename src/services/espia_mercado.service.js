@@ -85,6 +85,7 @@ const FRONTEND_URL = (
 ).replace(/\/$/, '');
 
 const frenoHasta = {}; // pais → ms epoch
+const { clasificarVinculo } = require('../utils/espiaVinculo');
 const corriendo = {}; // pais → true mientras hay una pasada en este proceso
 
 const q = (sql, replacements = {}, type = QueryTypes.SELECT, transaction) =>
@@ -720,9 +721,21 @@ async function pasada(paisCrudo, opts = {}) {
   }
   if (corriendo[pais]) throw new AppError(`Ya hay una pasada de ${pais} corriendo en este proceso`, 409);
 
+  // El candado de MySQL es de la CONEXIÓN que lo pide. Pedido por el pool, la
+  // conexión volvía al pool y se reciclaba a los 10 s de ocio (idle), y el
+  // candado se soltaba solo: hasta el 11-11-2026 dos procesos contra la misma
+  // base corrían la cadena de países dos veces cada noche (el doble de
+  // consultas a Dropi y de 429). Se pide dentro de una transacción, que deja
+  // la conexión apartada mientras dura la pasada.
   const lockName = `espia_pasada_${pais}`;
-  const [lock] = await q(`SELECT GET_LOCK(:n, 1) AS got`, { n: lockName });
+  const candado = await db.transaction();
+  const soltarCandado = async () => {
+    await q(`DO RELEASE_LOCK(:n)`, { n: lockName }, QueryTypes.RAW, candado).catch(() => {});
+    await candado.commit().catch(() => {});
+  };
+  const [lock] = await q(`SELECT GET_LOCK(:n, 1) AS got`, { n: lockName }, QueryTypes.SELECT, candado).catch(() => []);
   if (!lock || Number(lock.got) !== 1) {
+    await candado.commit().catch(() => {});
     throw new AppError(`Ya hay una pasada de ${pais} corriendo en otro proceso`, 409);
   }
   corriendo[pais] = true;
@@ -743,7 +756,7 @@ async function pasada(paisCrudo, opts = {}) {
       cuenta = await cuentaDe(pais);
     } catch (e) {
       corriendo[pais] = false;
-      await q(`DO RELEASE_LOCK(:n)`, { n: lockName }, QueryTypes.RAW).catch(() => {});
+      await soltarCandado();
       throw e;
     }
   }
@@ -780,6 +793,8 @@ async function pasada(paisCrudo, opts = {}) {
       if (stats.paginas % 25 === 0) {
         log(`… ${pais} pág ${stats.paginas} · ${stats.productos} productos · ${stats.ventas_sumadas} ventas`);
         await registro.update({ ...stats });
+        // Mantiene viva la conexión del candado en pasadas de varias horas.
+        await q('SELECT 1', {}, QueryTypes.SELECT, candado).catch(() => {});
       }
     }
 
@@ -812,7 +827,7 @@ async function pasada(paisCrudo, opts = {}) {
     throw err;
   } finally {
     corriendo[pais] = false;
-    await q(`DO RELEASE_LOCK(:n)`, { n: lockName }, QueryTypes.RAW).catch(() => {});
+    await soltarCandado();
   }
 }
 
@@ -904,7 +919,7 @@ async function recalcularMetricas(paisCrudo, log = () => {}) {
        LEFT JOIN (SELECT ap.dropi_product_id, COUNT(*) AS n
                     FROM espia_anuncio_producto ap
                     JOIN espia_anuncio a ON a.ad_archive_id = ap.ad_archive_id AND a.activo = 1
-                   WHERE ap.pais = :pais GROUP BY ap.dropi_product_id) x
+                   WHERE ap.pais = :pais AND ap.origen <> 'parecido' GROUP BY ap.dropi_product_id) x
               ON x.dropi_product_id = p.dropi_product_id
        SET p.n_anuncios = COALESCE(x.n, 0)
      WHERE p.pais = :pais`,
@@ -1070,11 +1085,11 @@ async function detalleProducto(paisCrudo, idCrudo, opts = {}) {
                      a.titulo, a.texto, a.ultima_vez_visto,
                      a.tienda_plataforma, a.n_duplicados, DATEDIFF(CURDATE(), a.inicio) AS dias_activo`;
   const pVinculados = q(
-    `SELECT ${CAMPOS_AD}, 'radar' AS origen
+    `SELECT ${CAMPOS_AD}, IF(ap.origen = 'parecido', 'parecido', 'radar') AS origen
        FROM espia_anuncio_producto ap
        JOIN espia_anuncio a ON a.ad_archive_id = ap.ad_archive_id
       WHERE ap.pais = :pais AND ap.dropi_product_id = :id AND a.activo = 1
-      ORDER BY a.ultima_vez_visto DESC LIMIT 30`,
+      ORDER BY (ap.origen = 'parecido'), a.ultima_vez_visto DESC LIMIT 30`,
     { pais, id },
   );
   const palabras = String(fila?.nombre_norm || '').split(' ').filter((w) => w.length >= 4).slice(0, 2);
@@ -1091,7 +1106,11 @@ async function detalleProducto(paisCrudo, idCrudo, opts = {}) {
   const [iguales, vinculados, porNombre] = await Promise.all([pIguales, pVinculados, pAnuncios]);
   const vistos = new Set(vinculados.map((a) => a.ad_archive_id));
   const anuncios = [...vinculados, ...porNombre.filter((a) => !vistos.has(a.ad_archive_id))];
-  producto.radar = { buscado_en: producto.radar_en || null, vinculados: vinculados.length, termino: terminoBusqueda(producto.nombre) };
+  producto.radar = {
+    buscado_en: producto.radar_en || null,
+    vinculados: vinculados.filter((a) => a.origen === 'radar').length,
+    termino: terminoBusqueda(producto.nombre),
+  };
   const suma_iguales = {
     proveedores: iguales.length + 1,
     ventas_30d: Number(producto.ventas_30d) + iguales.reduce((n, i) => n + Number(i.ventas_30d), 0),
@@ -1370,31 +1389,123 @@ async function limpiarVinculosNoBuscables(paisCrudo) {
   return { pais, revisados: filas.length, limpiados: malos.map((m) => ({ id: Number(m.dropi_product_id), nombre: m.nombre })), vinculos_borrados: borrados };
 }
 
+// Lo que la regla de vínculo necesita leer de cada anuncio.
+const CAMPOS_VINCULO = 'a.ad_archive_id, a.titulo, a.texto, a.producto, a.pagina_nombre, a.dominio, a.url_destino';
+
 // Vincula anuncios ya guardados con un producto y refresca su conteo + radar_en.
 async function vincularProducto(pais, idCrudo, adIds = [], origen = 'radar') {
   const id = Number(idCrudo);
   if (!Number.isInteger(id) || id <= 0) throw new AppError('Producto inválido', 400);
   const ids = [...new Set((Array.isArray(adIds) ? adIds : []).map((x) => String(x || '').replace(/\D/g, '')).filter(Boolean))].slice(0, 500);
   const ahora = ahoraSql();
-  if (ids.length) {
-    // Solo anuncios que existen (los manda el mismo lote justo antes); INSERT IGNORE = idempotente.
-    await db.query(
-      `INSERT IGNORE INTO espia_anuncio_producto (pais, dropi_product_id, ad_archive_id, origen, creado_en)
-       SELECT :pais, :id, a.ad_archive_id, :origen, :ahora FROM espia_anuncio a WHERE a.ad_archive_id IN (:ids)`,
-      { replacements: { pais, id, origen: origen === 'manual' ? 'manual' : 'radar', ahora, ids }, type: QueryTypes.INSERT },
-    );
+  const insertar = (lista, comoOrigen) =>
+    lista.length
+      ? db.query(
+          // Solo anuncios que existen (los manda el mismo lote justo antes); INSERT IGNORE = idempotente.
+          `INSERT IGNORE INTO espia_anuncio_producto (pais, dropi_product_id, ad_archive_id, origen, creado_en)
+           SELECT :pais, :id, a.ad_archive_id, :origen, :ahora FROM espia_anuncio a WHERE a.ad_archive_id IN (:ids)`,
+          { replacements: { pais, id, origen: comoOrigen, ahora, ids: lista }, type: QueryTypes.INSERT },
+        )
+      : null;
+  let vinculados = ids.length;
+  if (origen === 'manual') {
+    await insertar(ids, 'manual'); // lo que vincula una persona no se discute
+  } else if (ids.length) {
+    // Lo que trae el radar pasa por la regla (utils/espiaVinculo): Meta devuelve
+    // mucho anuncio que no es del producto. Lo que no coincide no se vincula.
+    const [prod] = await q(`SELECT nombre FROM espia_producto WHERE pais = :pais AND dropi_product_id = :id`, { pais, id });
+    const anuncios = await q(`SELECT ${CAMPOS_VINCULO} FROM espia_anuncio a WHERE a.ad_archive_id IN (:ids)`, { ids });
+    const exactos = [];
+    const parecidos = [];
+    for (const a of anuncios) {
+      const clase = clasificarVinculo(prod?.nombre, a);
+      if (clase === 'exacto') exactos.push(a.ad_archive_id);
+      else if (clase === 'parecido') parecidos.push(a.ad_archive_id);
+    }
+    await insertar(exactos, 'radar');
+    await insertar(parecidos, 'parecido');
+    vinculados = exactos.length;
   }
   await db.query(
     `UPDATE espia_producto p
         SET p.radar_en = :ahora,
             p.n_anuncios = (SELECT COUNT(*) FROM espia_anuncio_producto ap
                               JOIN espia_anuncio a ON a.ad_archive_id = ap.ad_archive_id AND a.activo = 1
-                             WHERE ap.pais = p.pais AND ap.dropi_product_id = p.dropi_product_id)
+                             WHERE ap.pais = p.pais AND ap.dropi_product_id = p.dropi_product_id AND ap.origen <> 'parecido')
       WHERE p.pais = :pais AND p.dropi_product_id = :id`,
     { replacements: { pais, id, ahora }, type: QueryTypes.UPDATE },
   );
   const [fila] = await q(`SELECT n_anuncios, radar_en FROM espia_producto WHERE pais = :pais AND dropi_product_id = :id`, { pais, id });
-  return { dropi_product_id: id, vinculados: ids.length, n_anuncios: Number(fila?.n_anuncios || 0), radar_en: fila?.radar_en || ahora };
+  return { dropi_product_id: id, vinculados, n_anuncios: Number(fila?.n_anuncios || 0), radar_en: fila?.radar_en || ahora };
+}
+
+/**
+ * Repasa los vínculos que ya guardó el radar con la regla de utils/espiaVinculo:
+ * los que coinciden quedan como exactos, los regados pasan a «parecido» y el
+ * resto se borra (el anuncio se queda en Anuncios y Tiendas). Los manuales no se
+ * tocan. Sin `aplicar` solo cuenta. Antes de escribir copia la tabla a
+ * espia_anuncio_producto_respaldo (INSERT IGNORE: conserva el estado original).
+ */
+async function repasarVinculos(paisCrudo, { aplicar = false } = {}) {
+  const pais = validarPais(paisCrudo);
+  const filas = await q(
+    `SELECT ap.dropi_product_id AS id, ap.origen, p.nombre, ${CAMPOS_VINCULO}
+       FROM espia_anuncio_producto ap
+       JOIN espia_producto p ON p.pais = ap.pais AND p.dropi_product_id = ap.dropi_product_id
+       JOIN espia_anuncio a ON a.ad_archive_id = ap.ad_archive_id
+      WHERE ap.pais = :pais AND ap.origen <> 'manual'`,
+    { pais },
+  );
+  const cambios = { radar: [], parecido: [], borrar: [] };
+  const resumen = { pais, revisados: filas.length, exactos: 0, parecidos: 0, borrados: 0, sin_cambio: 0 };
+  const porProducto = new Map();
+  for (const f of filas) {
+    const clase = clasificarVinculo(f.nombre, f);
+    const destino = clase === 'exacto' ? 'radar' : clase === 'parecido' ? 'parecido' : 'borrar';
+    const cuenta = clase === 'exacto' ? 'exactos' : clase === 'parecido' ? 'parecidos' : 'borrados';
+    resumen[cuenta] += 1;
+    const pp = porProducto.get(f.id) || { id: Number(f.id), nombre: f.nombre, antes: 0, exactos: 0, parecidos: 0, borrados: 0 };
+    pp.antes += 1;
+    pp[cuenta] += 1;
+    porProducto.set(f.id, pp);
+    if (destino === f.origen) resumen.sin_cambio += 1;
+    else cambios[destino].push([Number(f.id), String(f.ad_archive_id)]);
+  }
+  const productos = [...porProducto.values()];
+  resumen.productos = productos.length;
+  resumen.productos_sin_exactos = productos.filter((p) => !p.exactos).length;
+  resumen.mas_afectados = productos.sort((a, b) => b.borrados - a.borrados).slice(0, 15);
+  if (!aplicar) return resumen;
+
+  await q(`CREATE TABLE IF NOT EXISTS espia_anuncio_producto_respaldo LIKE espia_anuncio_producto`, {}, QueryTypes.RAW);
+  await q(
+    `INSERT IGNORE INTO espia_anuncio_producto_respaldo SELECT * FROM espia_anuncio_producto WHERE pais = :pais`,
+    { pais },
+    QueryTypes.INSERT,
+  );
+  const LOTE = 400;
+  const porLotes = async (pares, sql) => {
+    for (let i = 0; i < pares.length; i += LOTE) {
+      await db.query(sql, { replacements: { pais, pares: pares.slice(i, i + LOTE) }, type: QueryTypes.RAW });
+    }
+  };
+  await porLotes(cambios.borrar, `DELETE FROM espia_anuncio_producto WHERE pais = :pais AND (dropi_product_id, ad_archive_id) IN (:pares)`);
+  await porLotes(cambios.parecido, `UPDATE espia_anuncio_producto SET origen = 'parecido' WHERE pais = :pais AND (dropi_product_id, ad_archive_id) IN (:pares)`);
+  await porLotes(cambios.radar, `UPDATE espia_anuncio_producto SET origen = 'radar' WHERE pais = :pais AND (dropi_product_id, ad_archive_id) IN (:pares)`);
+  await q(
+    `UPDATE espia_producto p
+       LEFT JOIN (SELECT ap.dropi_product_id, COUNT(*) AS n
+                    FROM espia_anuncio_producto ap
+                    JOIN espia_anuncio a ON a.ad_archive_id = ap.ad_archive_id AND a.activo = 1
+                   WHERE ap.pais = :pais AND ap.origen <> 'parecido' GROUP BY ap.dropi_product_id) x
+              ON x.dropi_product_id = p.dropi_product_id
+       SET p.n_anuncios = COALESCE(x.n, 0)
+     WHERE p.pais = :pais`,
+    { pais },
+    QueryTypes.BULKUPDATE,
+  );
+  resumen.aplicado = true;
+  return resumen;
 }
 
 /** La extensión terminó de buscar un producto (haya o no anuncios): marca radar_en y vincula lo que vio. */
@@ -2198,6 +2309,7 @@ module.exports = {
   terminoBusqueda,
   esBuscable,
   limpiarVinculosNoBuscables,
+  repasarVinculos,
   registrarVistaTienda,
   perfilarTienda,
   perfilarPendientes,
