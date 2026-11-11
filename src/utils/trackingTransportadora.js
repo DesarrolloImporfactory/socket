@@ -13,8 +13,11 @@ const POR_TRANSPORTADORA = [
       `https://fenixoper.laarcourier.com/Tracking/Guiacompleta.aspx?guia=${g}`,
   },
   {
+    // Gintracom cambió su rastreo: /web/site/tracking?guia= pasó a responder
+    // 401 "Credenciales inválidas" (visto el 11-11-2026). La página nueva
+    // recibe la guía igual y abre con la búsqueda ya hecha.
     test: (c) => c.includes('GINTRACOM'),
-    url: (g) => `https://ec.gintracom.site/web/site/tracking?guia=${g}`,
+    url: (g) => `https://ec.gintracom.site/tracking?guia=${g}`,
   },
   {
     test: (c) => c.includes('VELOCES'),
