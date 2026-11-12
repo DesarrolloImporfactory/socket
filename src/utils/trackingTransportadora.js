@@ -24,11 +24,6 @@ const POR_TRANSPORTADORA = [
     url: (g) => `https://tracking.veloces.app/tracking-client/${g}`,
   },
   {
-    test: (c) => c.includes('URBANO'),
-    url: (g) =>
-      `https://app.urbano.com.ec/plugin/etracking/etracking/?guia=${g}`,
-  },
-  {
     test: (c) => c.includes('SERVIENTREGA'),
     url: (g) => `https://www.servientrega.com.ec/Tracking/?guia=${g}&tipo=GUIA`,
   },
@@ -61,6 +56,14 @@ const RASTREADOR_SIN_GUIA = [
     test: (c) => c.includes('AFIMEX'),
     url: 'https://afimex.net/rastrea-envio',
   },
+  {
+    // Urbano dejó de aceptar ?guia= (visto el 12-11-2026: "No se encontraron
+    // resultados" con 19 guías reales en todos los estados). Su página ahora
+    // exige ?tkn=, un token cifrado que arma su propia web y caduca a los
+    // 5 minutos, así que no hay enlace que lleve la guía puesta.
+    test: (c) => c.includes('URBANO'),
+    url: 'https://www.urbano.com.ec/',
+  },
 ];
 
 // Adivinar por prefijo solo sirve cuando no sabemos la transportadora.
@@ -80,8 +83,13 @@ function urlTrackingTransportadora(shippingCompany, guide) {
   return t ? t.url(encodeURIComponent(g)) : '';
 }
 
-function urlRastreadorSinGuia(shippingCompany) {
-  const comp = String(shippingCompany || '').toUpperCase();
+// `guide` solo sirve para adivinar la transportadora cuando no se conoce.
+function urlRastreadorSinGuia(shippingCompany, guide = '') {
+  let comp = String(shippingCompany || '').toUpperCase();
+  if (!comp) {
+    const g = String(guide || '').trim();
+    comp = POR_PREFIJO.find((p) => p.re.test(g))?.comp || '';
+  }
   return RASTREADOR_SIN_GUIA.find((x) => x.test(comp))?.url || '';
 }
 
@@ -96,7 +104,39 @@ function urlTrackingParaCliente(shippingCompany, guide) {
   );
 }
 
+/* El botón "Rastrear" de las plantillas es .../kanban_plantillas/t/{{1}} y
+   espera el número de guía. Si una cuenta configura ese botón con la variable
+   `tracking` (el enlace completo), al cliente le llega
+   .../t/https://www.servientrega.com.ec/Tracking/?guia=1800131048&tipo=GUIA
+   y la ruta respondía 404 (cfg 862, 12-11-2026). Acá se saca la guía de
+   cualquiera de nuestros enlaces para que el redirect siga el camino normal.
+   Nunca se redirige al enlace recibido: solo se usa para leer la guía. */
+function guiaDesdeEnlace(valor) {
+  let s = String(valor || '').trim();
+  try {
+    s = decodeURIComponent(s);
+  } catch {
+    /* se queda como vino */
+  }
+  if (!/^https?:/i.test(s)) return s;
+  // Dentro de una ruta el navegador deja "https://" como "https:/".
+  s = s.replace(/^(https?:)\/+/i, '$1//');
+  let u;
+  try {
+    u = new URL(s);
+  } catch {
+    return '';
+  }
+  for (const k of ['guia', 'tracking-id', 'info']) {
+    const v = (u.searchParams.get(k) || '').trim();
+    if (v) return v;
+  }
+  // Veloces, TIUI y nuestro propio redirect llevan la guía al final de la ruta.
+  return u.pathname.split('/').filter(Boolean).pop() || '';
+}
+
 module.exports = {
+  guiaDesdeEnlace,
   urlTrackingTransportadora,
   urlRastreadorSinGuia,
   urlTrackingParaCliente,

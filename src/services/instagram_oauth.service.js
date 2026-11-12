@@ -90,10 +90,16 @@ class InstagramOAuthService {
       .randomBytes(8)
       .toString('hex')}`;
 
+    /* pages_messaging es obligatorio: connect suscribe la página al campo
+       `messages` y Meta lo rechaza sin ese permiso. Faltaba, así que solo
+       conectaba quien ya lo había concedido por Messenger: de las sesiones del
+       04 al 12-11-2026, las 45 sin pages_messaging fallaron con 500 y todas
+       las que conectaron lo tenían (caso cfg 1589). */
     const scope = [
       'pages_show_list',
       'pages_manage_metadata',
       'pages_read_engagement',
+      'pages_messaging',
       'instagram_basic',
       'instagram_manage_messages',
     ].join(',');

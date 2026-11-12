@@ -41,7 +41,9 @@ router.post(
 /* templates Meta + respuestas rápidas */
 router.post('/crear_templates_meta', ctrl.crearTemplatesMeta);
 router.post('/crear_respuestas_rapidas', ctrl.crearRespuestasRapidas);
-router.get('/t/:guide', ctrl.trackingRedirect);
+// (*) acepta barras: si el botón se configuró con el enlace completo en vez
+// de la guía, llega /t/https://... y el controlador saca la guía de ahí.
+router.get('/t/:guide(*)', ctrl.trackingRedirect);
 // Redirect del botón de carritos abandonados → landing real del carrito
 router.get('/carrito/:token', ctrl.carritoRedirect);
 

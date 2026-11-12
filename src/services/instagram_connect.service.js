@@ -5,6 +5,7 @@ const {
   dejarSoloEstaPagina,
 } = require('../utils/unified/conexionCanal');
 const InstagramOAuthService = require('./instagram_oauth.service');
+const AppError = require('../utils/appError');
 
 const FB_VERSION = 'v23.0';
 
@@ -67,8 +68,15 @@ module.exports = {
         type: g?.type,
         message: g?.message,
       });
-      throw new Error(
-        `No se pudo suscribir la Página a la app. ${g?.message || 'Error 400'}`
+      // 400 con motivo: como Error plano salía un 500 "Something went wrong"
+      // y ni el cliente ni soporte sabían qué había fallado.
+      const faltaPermiso =
+        g?.code === 200 || g?.code === 10 || /permission/i.test(g?.message || '');
+      throw new AppError(
+        faltaPermiso
+          ? 'Meta no dio permiso para recibir los mensajes de esta página. Vuelve a pulsar "Conectar Instagram" y acepta todos los permisos que pide Meta.'
+          : `No se pudo suscribir la página en Meta. ${g?.message || ''}`.trim(),
+        400,
       );
     }
 
