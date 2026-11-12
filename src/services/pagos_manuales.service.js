@@ -87,7 +87,7 @@ const SUB_MUERTA = new Set(['canceled', 'incomplete_expired']);
 async function usuarioDe(id_usuario) {
   const [u] = await db.query(
     `SELECT u.id_usuario, u.nombre AS empresa, u.email_propietario AS email, u.estado,
-            u.id_costumer, u.stripe_subscription_id, u.stripe_subscription_status AS stripe_status,
+            u.id_plan, u.id_costumer, u.stripe_subscription_id, u.stripe_subscription_status AS stripe_status,
             u.fecha_renovacion, u.permanente, u.periodo_pago, p.nombre_plan, p.precio_plan
        FROM usuarios_chat_center u
        LEFT JOIN planes_chat_center p ON p.id_plan = u.id_plan
@@ -170,8 +170,23 @@ async function panelCliente(id_usuario) {
   }
 
   const pagos = await listarDeCliente(id_usuario);
+  // Sin suscripción viva se puede activar un plan creando la suscripción ya
+  // pagada; con una viva lo correcto es saldar su factura.
+  const sub_viva = !!suscripcion && SUB_VIVA.has(suscripcion.status);
+  let planes = [];
+  try {
+    planes = (await planesActivables()).map((p) => ({
+      id_plan: p.id_plan,
+      nombre_plan: p.nombre_plan,
+      precio_plan: p.precio_plan != null ? Number(p.precio_plan) : null,
+    }));
+  } catch (e) {
+    console.log('[pagos_manuales] planes no disponibles:', e?.message);
+  }
   return {
     modo: MODO,
+    planes,
+    puede_activar_plan: !sub_viva && !stripe_error && MODO === 'live',
     usuario: { ...u, precio_plan: u.precio_plan != null ? Number(u.precio_plan) : null },
     suscripcion,
     facturas,
@@ -367,6 +382,150 @@ async function cobrosRebotados({ fresh = false } = {}) {
   return data;
 }
 
+const SUB_VIVA = new Set(['active', 'trialing', 'past_due', 'unpaid']);
+const esFacturaDeCheckout = (e) => /created by Checkout/i.test(String(e?.message || ''));
+
+/** Planes que se pueden activar a mano: los reales, con precio en Stripe. */
+async function planesActivables() {
+  return db.query(
+    `SELECT id_plan, nombre_plan, precio_plan, id_price
+       FROM planes_chat_center
+      WHERE activo = 1 AND id_price IS NOT NULL AND id_price <> ''
+        AND nombre_plan NOT LIKE '%TEST%'
+      ORDER BY sort_order, id_plan`,
+    SELECT,
+  );
+}
+
+/**
+ * El cliente pagó por fuera y NO hay una factura que se pueda saldar:
+ *  - nunca tuvo suscripción (caso 3674, 2026-11-12), o
+ *  - intentó pagar por checkout y la tarjeta rebotó: quedan suscripciones
+ *    `incomplete` cuya factura Stripe no deja marcar como pagada ("You cannot
+ *    perform this action on Invoices created by Checkout") ni anular mientras
+ *    la sesión siga abierta (caso 2452, mismo día).
+ *
+ * Camino: cerrar los checkouts abiertos (así no paga además con tarjeta),
+ * limpiar las suscripciones incompletas, crear la suscripción por API y
+ * saldar SU primera factura con `paid_out_of_band`. Queda una suscripción
+ * normal: el mes siguiente Stripe cobra la tarjeta o emite la factura.
+ *
+ * El acceso se escribe aquí mismo en la BD: el webhook también llega, pero
+ * en 3674 dejó plan y fecha sin pasar el estado a 'activo'.
+ */
+async function activarConSuscripcion(u, id_plan) {
+  const [plan] = await db.query(
+    `SELECT id_plan, nombre_plan, id_price FROM planes_chat_center
+      WHERE id_plan = ? AND activo = 1 LIMIT 1`,
+    { replacements: [id_plan], ...SELECT },
+  );
+  if (!plan?.id_price) throw new Error(`El plan ${id_plan} no tiene precio en Stripe`);
+
+  let customer = u.id_costumer;
+  if (!customer) {
+    const c = await stripe.customers.create({
+      email: u.email || undefined,
+      name: u.empresa || undefined,
+      metadata: { id_usuario: String(u.id_usuario) },
+    });
+    customer = c.id;
+    await db.query(`UPDATE usuarios_chat_center SET id_costumer = ? WHERE id_usuario = ?`, {
+      replacements: [customer, u.id_usuario],
+      type: db.QueryTypes.UPDATE,
+    });
+  }
+
+  const subs = (await stripe.subscriptions.list({ customer, status: 'all', limit: 30 })).data;
+  const viva = subs.find((s) => SUB_VIVA.has(s.status));
+  if (viva) {
+    throw new Error(
+      `Ya tiene una suscripción ${viva.status} (${viva.id}): salda su factura en vez de crear otra`,
+    );
+  }
+
+  const limpiadas = [];
+  const sesiones = await stripe.checkout.sessions.list({ customer, limit: 30 });
+  for (const s of sesiones.data.filter((x) => x.status === 'open')) {
+    try {
+      await stripe.checkout.sessions.expire(s.id);
+    } catch (e) {
+      console.log('[pagos_manuales] no se pudo cerrar el checkout', s.id, e?.message);
+    }
+  }
+  for (const s of subs.filter((x) => x.status === 'incomplete')) {
+    const invId = idDe(s.latest_invoice);
+    try {
+      if (invId) {
+        const inv = await stripe.invoices.retrieve(invId);
+        if (inv.status === 'open') await stripe.invoices.voidInvoice(invId);
+        limpiadas.push(invId);
+      }
+    } catch (e) {
+      console.log('[pagos_manuales] no se pudo anular', invId, e?.message);
+    }
+    try {
+      const actual = await stripe.subscriptions.retrieve(s.id);
+      if (actual.status === 'incomplete') await stripe.subscriptions.cancel(s.id);
+    } catch (e) {
+      console.log('[pagos_manuales] no se pudo cancelar la incompleta', s.id, e?.message);
+    }
+  }
+
+  const creada = await stripe.subscriptions.create({
+    customer,
+    items: [{ price: plan.id_price }],
+    payment_behavior: 'default_incomplete',
+    metadata: {
+      id_usuario: String(u.id_usuario),
+      id_plan: String(plan.id_plan),
+      periodo: 'mensual',
+      origen: 'pago_manual',
+    },
+  });
+  const pagada = await stripe.invoices.pay(idDe(creada.latest_invoice), { paid_out_of_band: true });
+  const sub = await stripe.subscriptions.retrieve(creada.id);
+  const inicio = ts(sub.current_period_start || sub.items?.data?.[0]?.current_period_start);
+  const fin = ts(sub.current_period_end || sub.items?.data?.[0]?.current_period_end);
+
+  await db.query(
+    `UPDATE usuarios_chat_center
+        SET id_plan = ?, estado = 'activo', id_costumer = ?,
+            stripe_subscription_id = ?, stripe_subscription_status = ?,
+            fecha_inicio = COALESCE(fecha_inicio, ?), fecha_renovacion = ?,
+            cancel_at_period_end = 0
+      WHERE id_usuario = ?`,
+    {
+      replacements: [plan.id_plan, customer, sub.id, sub.status, inicio, fin, u.id_usuario],
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+
+  return { pagada, sub, plan, limpiadas, acceso_hasta: fin };
+}
+
+/** Plan de la suscripción a la que pertenece una factura (por su precio). */
+async function planDeFactura(inv, u) {
+  const priceId =
+    inv.lines?.data?.[0]?.price?.id || inv.lines?.data?.[0]?.pricing?.price_details?.price || null;
+  if (priceId) {
+    const [p] = await db.query(`SELECT id_plan FROM planes_chat_center WHERE id_price = ? LIMIT 1`, {
+      replacements: [priceId],
+      ...SELECT,
+    });
+    if (p) return p.id_plan;
+  }
+  const subId = subDeFactura(inv);
+  if (subId) {
+    try {
+      const s = await stripe.subscriptions.retrieve(subId);
+      if (Number(s.metadata?.id_plan)) return Number(s.metadata.id_plan);
+    } catch (e) {
+      /* sin metadata: cae al plan de la cuenta */
+    }
+  }
+  return u.id_plan || null;
+}
+
 /**
  * Registra el pago. El orden importa: primero Stripe (si falla, el pago se
  * guarda igual con stripe_accion='error' para que el dinero recibido no
@@ -385,6 +544,7 @@ async function registrar({
   stripe_invoice_id = null,
   anular_invoice_ids = [],
   acceso_hasta = null,
+  activar_plan_id = null,
   admin = {},
 }) {
   await ensureTabla();
@@ -402,8 +562,34 @@ async function registrar({
   let stripe_accion = 'sin_factura';
   let stripe_detalle = null;
   let factura = null;
+  let suscripcion_creada = null;
 
-  if (stripe_invoice_id) {
+  // Deja el registro apuntando a la factura de la suscripción recién creada.
+  const anotarActivacion = (r, motivo) => {
+    factura = mapFactura(r.pagada, r.sub.id);
+    stripe_invoice_id = r.pagada.id;
+    stripe_accion = 'saldada';
+    stripe_detalle = `${r.pagada.status}; sub ${r.sub.id} | sub creada por API (${motivo})`;
+    suscripcion_creada = {
+      id: r.sub.id,
+      plan: r.plan.nombre_plan,
+      acceso_hasta: r.acceso_hasta,
+    };
+  };
+
+  if (!stripe_invoice_id && activar_plan_id) {
+    if (acceso_hasta) {
+      throw Object.assign(new Error('Elige activar un plan o fijar la fecha a mano, no ambos'), {
+        status: 400,
+      });
+    }
+    try {
+      anotarActivacion(await activarConSuscripcion(u, Number(activar_plan_id)), 'sin factura que saldar');
+    } catch (e) {
+      stripe_accion = 'error';
+      stripe_detalle = String(e?.message || 'Stripe no respondió').slice(0, 255);
+    }
+  } else if (stripe_invoice_id) {
     if (!/^in_[A-Za-z0-9]+$/.test(String(stripe_invoice_id))) {
       throw Object.assign(new Error('Id de factura inválido'), { status: 400 });
     }
@@ -419,10 +605,22 @@ async function registrar({
           { status: 400 },
         );
       }
-      const pagada = await stripe.invoices.pay(stripe_invoice_id, { paid_out_of_band: true });
-      factura = mapFactura(pagada, u.stripe_subscription_id);
-      stripe_accion = 'saldada';
-      stripe_detalle = `${pagada.status}; sub ${factura.subscription || 'ninguna'}`;
+      try {
+        const pagada = await stripe.invoices.pay(stripe_invoice_id, { paid_out_of_band: true });
+        factura = mapFactura(pagada, u.stripe_subscription_id);
+        stripe_accion = 'saldada';
+        stripe_detalle = `${pagada.status}; sub ${factura.subscription || 'ninguna'}`;
+      } catch (e) {
+        // Factura nacida de un checkout: Stripe no deja saldarla. Se reemplaza
+        // por una suscripción creada por API, que sí se puede saldar.
+        if (!esFacturaDeCheckout(e)) throw e;
+        const id_plan = await planDeFactura(inv, u);
+        if (!id_plan) throw e;
+        anotarActivacion(
+          await activarConSuscripcion(u, id_plan),
+          `reemplaza la factura de checkout ${inv.id}`,
+        );
+      }
     } catch (e) {
       // Validaciones nuestras: se corta antes de registrar nada.
       if (e?.status) throw e;
@@ -443,6 +641,11 @@ async function registrar({
       const inv = await stripe.invoices.retrieve(id);
       if (!u.id_costumer || inv.customer !== u.id_costumer) {
         noAnuladas.push(`${id}: de otro cliente`);
+        continue;
+      }
+      // Ya anulada (p. ej. al limpiar los checkouts abiertos): está hecho.
+      if (inv.status === 'void') {
+        anuladas.push(id);
         continue;
       }
       if (inv.status !== 'open') {
@@ -519,7 +722,14 @@ async function registrar({
 
   return {
     pago,
-    stripe: { accion: stripe_accion, detalle: stripe_detalle, factura, anuladas, no_anuladas: noAnuladas },
+    stripe: {
+      accion: stripe_accion,
+      detalle: stripe_detalle,
+      factura,
+      anuladas,
+      no_anuladas: noAnuladas,
+      suscripcion_creada,
+    },
   };
 }
 
