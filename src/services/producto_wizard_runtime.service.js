@@ -52,6 +52,7 @@ const {
   tokens: tokensMensaje,
 } = require('../utils/wizardProducto/respuestasRapidas');
 const { resolverUpsell, directivaUpsell } = require('../utils/upsellProducto');
+const { registrarIncidencia } = require('./bot_incidencias.service');
 
 // Responsables distintos para que el chat muestre qué salió sin IA: el
 // paquete fijo y las respuestas rápidas. ('IA_wizard' queda como legado.)
@@ -567,6 +568,8 @@ async function enviarPaqueteInicial({
   });
 
   let enviados = 0;
+  // Piezas que Meta rechazó o dejó colgadas: van a bot_incidencias_log.
+  const fallos = [];
   const mandarMedia = async (tipo, url, filename = null) => {
     const r = await enviarMedioWhatsapp({
       tipo,
@@ -580,7 +583,9 @@ async function enviarPaqueteInicial({
     });
     if (!r?.ok) {
       olvidarEnviado(id_cliente, url);
-      await decir(`⚠️ wizard: falló ${tipo} ${url}: ${r?.error?.message || r?.error || ''}`);
+      const motivo = r?.error?.message || r?.error || '';
+      fallos.push(`${tipo} ${url}: ${motivo}`);
+      await decir(`⚠️ wizard: falló ${tipo} ${url}: ${motivo}`);
       return;
     }
     enviados += 1;
@@ -604,27 +609,62 @@ async function enviarPaqueteInicial({
     await new Promise((r) => setTimeout(r, 2000));
   }
 
+  /* El texto es LA pieza del paquete (precio, combos, pregunta gancho): si no
+     sale se reintenta una vez. Quien llama mira `textoEnviado` para no dar el
+     turno por cerrado con un cliente que solo vio la foto (caso 1325,
+     12-11-2026: salió la imagen y nada más, y nadie retomó el chat). */
+  let textoEnviado = !texto;
   if (texto) {
-    await enviarMensajeWhatsapp({
-      phone_whatsapp_to: telefono,
-      texto_mensaje: texto,
-      business_phone_id,
-      accessToken,
+    const mandarTexto = () =>
+      enviarMensajeWhatsapp({
+        phone_whatsapp_to: telefono,
+        texto_mensaje: texto,
+        business_phone_id,
+        accessToken,
+        id_configuracion,
+        responsable: RESPONSABLE,
+        total_tokens: 0,
+      });
+    let r = await mandarTexto();
+    if (r?.ok === false) {
+      await decir(`⚠️ wizard: falló el texto del paquete (${r.error || ''}); reintento`);
+      await new Promise((res) => setTimeout(res, 1500));
+      r = await mandarTexto();
+    }
+    if (r?.ok === false) {
+      fallos.push(`texto: ${r.error || ''}`);
+      await decir(`⚠️ wizard: el texto del paquete NO salió tras el reintento: ${r.error || ''}`);
+    } else {
+      textoEnviado = true;
+      enviados += 1;
+    }
+  }
+
+  if (fallos.length) {
+    registrarIncidencia({
       id_configuracion,
-      responsable: RESPONSABLE,
-      total_tokens: 0,
+      id_cliente,
+      tipo: 'envio_fallido',
+      respuesta_enviada: textoEnviado ? texto : null,
+      error: fallos.join(' | '),
+      lineas: [
+        `paquete fijo producto ${producto.id} "${producto.nombre}"`,
+        `texto del paquete: ${textoEnviado ? 'enviado' : 'NO enviado'}`,
+        ...fallos,
+      ],
     });
-    enviados += 1;
   }
 
   await decir(
-    `📦 wizard: paquete fijo enviado (producto ${producto.id} "${producto.nombre}", ${imgsNuevas.length} img, ${vidsNuevos.length} video, ${docsNuevos.length} pdf, texto ${texto ? 'sí' : 'no'})`,
+    `📦 wizard: paquete fijo ${fallos.length ? 'INCOMPLETO' : 'enviado'} (producto ${producto.id} "${producto.nombre}", ${imgsNuevas.length} img, ${vidsNuevos.length} video, ${docsNuevos.length} pdf, texto ${!texto ? 'no' : textoEnviado ? 'sí' : 'FALLÓ'})`,
   );
   return {
     enviados,
     imagenes: imgsNuevas.length,
     videos: vidsNuevos.length,
     documentos: docsNuevos.length,
+    textoEnviado,
+    fallos,
   };
 }
 
@@ -985,7 +1025,7 @@ async function intentarMensajeFijoWizard({
     return { ...nada, bloqueMotor };
   }
 
-  await enviarPaqueteInicial({
+  const paquete = await enviarPaqueteInicial({
     id_configuracion,
     id_cliente,
     telefono,
@@ -995,6 +1035,14 @@ async function intentarMensajeFijoWizard({
     wizard,
     log: decir,
   });
+
+  /* El texto con el precio no salió ni con el reintento: el turno NO se cierra.
+     Sigue la IA con la ficha del producto, que es quien le contesta al
+     cliente. Antes se devolvía saltarIA=true igual y el chat quedaba mudo. */
+  if (paquete && paquete.textoEnviado === false) {
+    await decir(`wizard: paquete sin texto → sigue la IA con la ficha`);
+    return { paqueteEnviado: false, saltarIA: false, bloqueMotor };
+  }
 
   // Con flujo de pasos configurado, el embudo arranca junto al paquete: el
   // paso 0 queda esperando la respuesta a la pregunta gancho.
@@ -2437,6 +2485,7 @@ module.exports = {
   RESPONSABLES_SIN_IA,
   wizardActivoDeProducto,
   resolverWizardPorId,
+  resolverWizardPorTexto,
   sembrarProductoEnJuego,
   botHabilitado,
   olvidarWizard,

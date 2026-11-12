@@ -228,6 +228,51 @@ function datoTraza(clave, valor) {
   if (t) t.datos[clave] = valor;
 }
 
+/**
+ * Una incidencia suelta, fuera de la traza del motor: lo que NO pasa por
+ * procesarMensajeKanban (paquete fijo del wizard, respuestas rápidas) y aun
+ * así falla — p. ej. Meta rechazó o dejó colgado un envío (`envio_fallido`).
+ * Sin await en quien llama y sin lanzar: registrar no frena el turno.
+ */
+async function registrarIncidencia({
+  id_configuracion,
+  id_cliente = null,
+  tipo,
+  columna = null,
+  mensaje_cliente = null,
+  respuesta_enviada = null,
+  error = null,
+  lineas = [],
+  canal = 'wa',
+}) {
+  try {
+    await ensureTablas();
+    await db.query(
+      `INSERT INTO bot_incidencias_log
+         (id_configuracion, id_cliente, canal, columna, tipo, marcas,
+          mensaje_cliente, respuesta_enviada, error, traza)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      {
+        replacements: [
+          Number(id_configuracion) || 0,
+          Number(id_cliente) || null,
+          recortar(canal, 8),
+          recortar(columna, 60),
+          recortar(tipo, 40),
+          recortar(tipo, 255),
+          recortar(mensaje_cliente, 4000),
+          recortar(respuesta_enviada, 8000),
+          recortar(error, 1000),
+          recortar((lineas || []).join('\n'), MAX_TRAZA),
+        ],
+        type: db.QueryTypes.INSERT,
+      },
+    );
+  } catch (e) {
+    console.warn('[bot_incidencias] no se pudo guardar:', e.message);
+  }
+}
+
 async function vigilar(id_configuracion, dias = 3, nota = null) {
   await ensureTablas();
   await db.query(
@@ -246,6 +291,7 @@ module.exports = {
   conTraza,
   anotar,
   datoTraza,
+  registrarIncidencia,
   vigilar,
   ensureTablas,
   clasificar,

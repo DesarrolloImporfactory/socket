@@ -18,6 +18,8 @@ async function enviarEscribiendoWhatsapp(
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
+      // El "escribiendo" va antes de la respuesta: colgado, la bloquea.
+      timeout: 8000,
     });
   } catch (error) {
     console.error('Error al enviar el estado "escribiendo":', error);
@@ -44,6 +46,7 @@ const detenerEscribiendoWhatsapp = async (
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
+      timeout: 8000,
     });
   } catch (error) {
     console.error("Error al detener 'escribiendo' en WhatsApp:", error);
