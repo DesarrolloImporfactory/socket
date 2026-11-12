@@ -1432,6 +1432,86 @@ exports.cancelarSuscripcion = catchAsync(async (req, res, next) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// Deshacer la cancelación programada
+// ─────────────────────────────────────────────────────────────
+/**
+ * El cliente se arrepiente antes de que la suscripción termine y quiere
+ * seguir con el servicio.
+ *
+ * Stripe guarda la cancelación de dos formas y se deshacen distinto:
+ *  - "al final del periodo" (cancel_at_period_end): la que programa
+ *    cancelarSuscripcion desde la plataforma.
+ *  - "en una fecha fija" (cancel_at con cancel_at_period_end en false): la que
+ *    queda cuando alguien edita la fecha de fin en el panel de Stripe (caso
+ *    3152, 2026-11-04). Mandar cancel_at_period_end=false ahí no quita nada.
+ * No se pueden enviar los dos parámetros en la misma llamada.
+ */
+exports.reanudarSuscripcion = catchAsync(async (req, res, next) => {
+  const { id_usuario } = req.body;
+  if (!id_usuario) return next(new AppError('Falta id_usuario.', 400));
+
+  const user = await getUserById(id_usuario);
+  if (!user) return next(new AppError('Usuario no existe.', 404));
+
+  if (!user.stripe_subscription_id) {
+    return next(new AppError('Usuario no tiene stripe_subscription_id.', 400));
+  }
+
+  const actual = await stripe.subscriptions.retrieve(
+    user.stripe_subscription_id,
+  );
+
+  // Una sub ya terminada no se revive: hay que contratar de nuevo.
+  if (['canceled', 'incomplete_expired'].includes(actual.status)) {
+    return next(
+      new AppError(
+        'La suscripción ya terminó. Elija un plan para volver a activarla.',
+        409,
+      ),
+    );
+  }
+
+  if (!actual.cancel_at_period_end && !actual.cancel_at) {
+    return res.status(200).json({
+      success: true,
+      message: 'La suscripción no tiene cancelación programada.',
+      stripe_status: actual.status,
+    });
+  }
+
+  const sub = await stripe.subscriptions.update(
+    user.stripe_subscription_id,
+    actual.cancel_at_period_end
+      ? { cancel_at_period_end: false }
+      : { cancel_at: '' },
+  );
+
+  // El webhook también lo sincroniza, pero llega después: sin esto el aviso
+  // de cancelación sigue en pantalla al recargar justo tras el clic.
+  await db.query(
+    `UPDATE usuarios_chat_center
+        SET cancel_at_period_end = 0,
+            cancel_at = NULL,
+            canceled_at = NULL
+      WHERE id_usuario = ?
+        AND stripe_subscription_id = ?
+      LIMIT 1`,
+    {
+      replacements: [id_usuario, user.stripe_subscription_id],
+      type: db.QueryTypes.UPDATE,
+    },
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: 'Cancelación anulada. Su suscripción sigue activa.',
+    stripe_status: sub.status,
+    cancel_at_period_end: sub.cancel_at_period_end,
+    cancel_at: sub.cancel_at ? new Date(sub.cancel_at * 1000) : null,
+  });
+});
+
+// ─────────────────────────────────────────────────────────────
 // Portal métodos
 // ─────────────────────────────────────────────────────────────
 exports.portalGestionMetodos = catchAsync(async (req, res, next) => {

@@ -53,6 +53,13 @@ router.post(
   stripeController.cancelarSuscripcion,
 );
 
+// Deshacer la cancelación programada y seguir con el servicio
+router.post(
+  '/reanudarSuscripcion',
+  soloAdministrador,
+  stripeController.reanudarSuscripcion,
+);
+
 // Portales específicos
 router.post(
   '/portalGestionMetodos',
