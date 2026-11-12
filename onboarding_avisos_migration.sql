@@ -31,3 +31,13 @@ CREATE TABLE IF NOT EXISTS onboarding_avisos_chat_center (
 
 -- Cuántos agendaron / pospusieron / descartaron:
 -- SELECT estado, COUNT(*) FROM onboarding_avisos_chat_center WHERE aviso = 'agendar_implementacion' GROUP BY estado;
+
+-- 2026-11-11: la misma tabla guarda la oferta del complemento ImporKiller
+-- (aviso = 'imporkiller_addon'): sale cada vez que el administrador entra, a
+-- cuentas con suscripción viva (active/trialing) que no lo tienen. descartado
+-- = «No volver a mostrar». Interruptor: MODAL_IMPORKILLER_ACTIVO en
+-- src/services/onboarding.service.js. No requiere SQL nuevo.
+-- Alcance y conversión de la oferta:
+-- SELECT COUNT(*) vieron, SUM(a.estado = 'descartado') descartaron, SUM(u.imporkiller > 0) compraron
+--   FROM onboarding_avisos_chat_center a JOIN usuarios_chat_center u ON u.id_usuario = a.id_usuario
+--  WHERE a.aviso = 'imporkiller_addon';

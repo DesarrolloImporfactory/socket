@@ -10,4 +10,9 @@ router.get('/implementacion', ctrl.implementacion);
 router.post('/implementacion/mostrado', ctrl.mostrado);
 router.post('/implementacion/respuesta', ctrl.respuesta);
 
+// Oferta del complemento ImporKiller (modal al entrar, 2026-11-11).
+router.get('/imporkiller', ctrl.imporkiller);
+router.post('/imporkiller/mostrado', ctrl.imporkillerMostrado);
+router.post('/imporkiller/no-mostrar', ctrl.imporkillerNoMostrar);
+
 module.exports = router;
