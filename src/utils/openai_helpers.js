@@ -9,7 +9,7 @@ const obtenerTrackingGuia = (transportadora, numeroGuia) => {
       urlTracking = `https://www.servientrega.com.ec/Tracking/?guia=${numeroGuia}&tipo=GUIA`;
       break;
     case 'GINTRACOM':
-      urlTracking = `https://ec.gintracom.site/web/site/tracking?guia=${numeroGuia}`;
+      urlTracking = `https://ec.gintracom.site/tracking?guia=${numeroGuia}`;
       break;
   }
 
