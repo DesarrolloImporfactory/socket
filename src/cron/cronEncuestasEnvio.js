@@ -175,7 +175,7 @@ async function procesarEnviosPendientes() {
       }
 
       // Números en la lista de no contactar: la encuesta no sale.
-      if (await estaBloqueado(envio.celular)) {
+      if (await estaBloqueado(envio.celular, envio.id_configuracion)) {
         await db.query(
           `UPDATE encuestas_envios_programados
            SET estado = 'cancelado', error_ultimo = 'contacto_bloqueado'

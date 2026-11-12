@@ -236,7 +236,7 @@ cron.schedule('* * * * *', async () => {
             // Números en la lista de no contactar: el envío se cierra en
             // error con el motivo, sin consumir intento ni llegar a Meta.
             // (No 'cancelado': ese estado lo lee la lógica de lote cancelado.)
-            if (await estaBloqueado(item.telefono)) {
+            if (await estaBloqueado(item.telefono, item.id_configuracion)) {
               await db.query(
                 `UPDATE template_envios_programados
                  SET estado = 'error',

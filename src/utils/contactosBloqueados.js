@@ -47,11 +47,51 @@ async function cargar() {
   return cache.set;
 }
 
-/** ¿Ese número está en la lista de no contactar? */
-async function estaBloqueado(telefono) {
-  const clave = ultimos9(telefono);
-  if (!clave) return false;
-  return (await cargar()).has(clave);
+/* Segunda lista: contactos bloqueados en WhatsApp desde el chat
+   (services/whatsapp_bloqueo.service.js, tabla `whatsapp_bloqueados`). A
+   diferencia de la de arriba va POR CONEXIÓN: Meta rechaza cualquier envío de
+   esa línea a ese número, así que intentarlo solo gasta. Se consulta aquí
+   para que los crons tengan una sola pregunta que hacer. */
+let cacheWa = { at: 0, set: new Set() };
+
+async function cargarWa() {
+  if (Date.now() - cacheWa.at < TTL_MS) return cacheWa.set;
+  try {
+    const rows = await db.query(
+      `SELECT id_configuracion, celular FROM whatsapp_bloqueados`,
+      { type: db.QueryTypes.SELECT },
+    );
+    cacheWa = {
+      at: Date.now(),
+      set: new Set(
+        rows.map((r) => `${r.id_configuracion}:${ultimos9(r.celular)}`),
+      ),
+    };
+  } catch (e) {
+    console.error(
+      '[contactosBloqueados] no se pudo leer whatsapp_bloqueados:',
+      e.message,
+    );
+    cacheWa.at = Date.now();
+  }
+  return cacheWa.set;
 }
 
-module.exports = { estaBloqueado, ultimos9 };
+/** Tras bloquear/desbloquear: que el próximo cron lea la lista fresca. */
+function olvidarBloqueadosWhatsapp() {
+  cacheWa.at = 0;
+}
+
+/**
+ * ¿Ese número no debe recibir envíos automáticos?
+ * Con `id_configuracion` también cuenta el bloqueo en WhatsApp de esa conexión.
+ */
+async function estaBloqueado(telefono, id_configuracion = null) {
+  const clave = ultimos9(telefono);
+  if (!clave) return false;
+  if ((await cargar()).has(clave)) return true;
+  if (!id_configuracion) return false;
+  return (await cargarWa()).has(`${id_configuracion}:${clave}`);
+}
+
+module.exports = { estaBloqueado, ultimos9, olvidarBloqueadosWhatsapp };

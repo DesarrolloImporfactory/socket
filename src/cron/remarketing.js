@@ -861,7 +861,12 @@ cron.schedule('*/1 * * * *', async () => {
           }
 
           // 2.55) Número en la lista de no contactar → cancelar sin enviar
-          if (await estaBloqueado(cliente.celular_cliente || record.telefono)) {
+          if (
+            await estaBloqueado(
+              cliente.celular_cliente || record.telefono,
+              record.id_configuracion,
+            )
+          ) {
             await db.query(
               `UPDATE remarketing_pendientes
                SET cancelado = 1,
