@@ -23,6 +23,7 @@ const {
 
 const axios = require('axios');
 const {
+  guiaDesdeEnlace,
   urlTrackingTransportadora,
   urlRastreadorSinGuia,
 } = require('../utils/trackingTransportadora');
@@ -1802,7 +1803,14 @@ exports.crearRespuestasRapidas = catchAsync(async (req, res, next) => {
    Servientrega Ecuador (las guías de México caían ahí). Ahora la
    transportadora sale de la orden: link directo si existe, si no → estado. */
 exports.trackingRedirect = catchAsync(async (req, res) => {
-  const g = String(req.params.guide || '').trim();
+  // Lo normal es la guía sola. Si llegó un enlace completo, su "?guia=" quedó
+  // como query de esta petición: se lee de la URL original, no del parámetro.
+  const param = String(req.params.guide || '').trim();
+  const g = guiaDesdeEnlace(
+    /^https?:/i.test(param)
+      ? req.originalUrl.slice(req.originalUrl.indexOf('/t/') + 3)
+      : param,
+  );
   if (!g || g === '-') return res.status(400).send('Guía requerida');
 
   const [orden] = await db.query(
@@ -1830,8 +1838,10 @@ exports.trackingRedirect = catchAsync(async (req, res) => {
   }
 
   // Orden que no está en caché (vieja, de Ecuador): comportamiento de siempre.
+  // Una guía de Urbano (WYB…) va a su web, no al rastreo de Servientrega.
   const url =
     urlTrackingTransportadora('', g) ||
+    urlRastreadorSinGuia('', g) ||
     urlTrackingTransportadora('SERVIENTREGA', g);
   return res.redirect(url);
 });
