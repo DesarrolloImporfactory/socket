@@ -47,13 +47,18 @@ async function main() {
   const [{ ahora }] = await db.query('SELECT UNIX_TIMESTAMP() * 1000 AS ahora', { type: db.QueryTypes.SELECT });
   // Chats con algo del cliente en los últimos `dias` días, abiertos y con el bot sin apagar.
   const chats = await db.query(
+    /* Se parte de los mensajes recientes (índice cuenta+rol+fecha) y no de los
+       ~77.000 clientes de la cuenta: la versión con EXISTS por cliente tardaba
+       minutos. Los mensajes borrados no cuentan (la lectura por chat de abajo
+       tampoco los mira). */
     `SELECT c.id, c.celular_cliente, c.id_encargado, c.bot_openia
-       FROM clientes_chat_center c
-      WHERE c.id_configuracion = ? AND c.propietario <> 1 AND c.deleted_at IS NULL
-        AND EXISTS (SELECT 1 FROM mensajes_clientes m
-                     WHERE m.celular_recibe = CAST(c.id AS CHAR) AND m.id_configuracion = c.id_configuracion
-                       AND m.rol_mensaje = 0 AND m.created_at >= NOW() - INTERVAL ? DAY)`,
-    { replacements: [id_configuracion, dias], type: db.QueryTypes.SELECT },
+       FROM (SELECT DISTINCT m.celular_recibe AS id
+               FROM mensajes_clientes m FORCE INDEX (idx_mc_conf_rol_del_at_cel)
+              WHERE m.id_configuracion = ? AND m.rol_mensaje = 0 AND m.deleted_at IS NULL
+                AND m.created_at >= NOW() - INTERVAL ? DAY) t
+       JOIN clientes_chat_center c
+         ON c.id = t.id AND c.id_configuracion = ? AND c.propietario <> 1 AND c.deleted_at IS NULL`,
+    { replacements: [id_configuracion, dias, id_configuracion], type: db.QueryTypes.SELECT },
   );
 
   const cuenta = {};

@@ -34,15 +34,22 @@ async function main() {
   const horario = ajustes.soporte_expertos.horario_equipo || undefined;
   const [{ ahora }] = await db.query('SELECT UNIX_TIMESTAMP() * 1000 AS ahora', { type: db.QueryTypes.SELECT });
   // Chats con un mensaje de la IA en 3 días, con encargado.
+  /* Se parte de los MENSAJES de los últimos 3 días (unos miles, por el índice
+     cuenta+rol+fecha) y no de los clientes: recorrer los ~77.000 clientes de
+     la cuenta preguntando por cada uno tardaba más de 3 minutos y frenaba la
+     BD (12-11-2026). Los mensajes borrados no cuentan: la lectura por chat de
+     más abajo tampoco los mira. */
   const chats = await db.query(
     `SELECT c.id, c.nombre_cliente, c.id_encargado, s.nombre_encargado
-       FROM clientes_chat_center c
-       LEFT JOIN sub_usuarios_chat_center s ON s.id_sub_usuario = c.id_encargado
-      WHERE c.id_configuracion = ? AND c.propietario <> 1 AND c.deleted_at IS NULL
-        AND EXISTS (SELECT 1 FROM mensajes_clientes m
-                     WHERE m.celular_recibe = CAST(c.id AS CHAR) AND m.id_configuracion = c.id_configuracion
-                       AND m.rol_mensaje = 1 AND m.responsable LIKE 'IA\\_%' AND m.created_at >= NOW() - INTERVAL 3 DAY)`,
-    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+       FROM (SELECT DISTINCT m.celular_recibe AS id
+               FROM mensajes_clientes m FORCE INDEX (idx_mc_conf_rol_del_at_cel)
+              WHERE m.id_configuracion = ? AND m.rol_mensaje = 1 AND m.deleted_at IS NULL
+                AND m.created_at >= NOW() - INTERVAL 3 DAY
+                AND m.responsable LIKE 'IA\\_%') t
+       JOIN clientes_chat_center c
+         ON c.id = t.id AND c.id_configuracion = ? AND c.propietario <> 1 AND c.deleted_at IS NULL
+       LEFT JOIN sub_usuarios_chat_center s ON s.id_sub_usuario = c.id_encargado`,
+    { replacements: [id_configuracion, id_configuracion], type: db.QueryTypes.SELECT },
   );
   const avisos = [];
   for (const c of chats) {

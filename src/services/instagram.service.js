@@ -419,7 +419,8 @@ class InstagramService {
             page_id: conv.page_id,
             external_id: conv.external_id,
             watermark: Date.now(),
-            id_cliente: conv.id_cliente,
+            // conv.id_cliente es el id de la fila del chat (el contacto).
+            id_contacto: conv.id_cliente,
           });
         } catch (e) {
           console.warn('[IG_MARK_SEEN][WARN]', e.response?.data || e.message);

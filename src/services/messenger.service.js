@@ -473,8 +473,8 @@ class MessengerService {
       // senderPsid aquí puede venir vacío en algunos reads.
       const psid = event.sender?.id || senderPsid || null;
 
-      // si tenemos psid, podemos resolver id_cliente para marcar visto
-      let id_cliente = null;
+      // si tenemos psid, podemos resolver el contacto para marcar visto
+      let id_contacto = null;
       if (psid) {
         const uni = await Store.ensureUnifiedConversation({
           id_configuracion: cfg,
@@ -483,7 +483,8 @@ class MessengerService {
           external_id: psid,
           customer_name: '',
         });
-        id_cliente = uni?.id_cliente || null;
+        // OJO: uni.id_cliente es el DUEÑO de la cuenta; el chat es el contacto.
+        id_contacto = uni?.id_cliente_contacto || null;
       }
 
       await Store.markReadUnified({
@@ -492,7 +493,7 @@ class MessengerService {
         page_id: pageId,
         external_id: psid || '',
         watermark,
-        id_cliente,
+        id_contacto,
       });
 
       if (IO) {
