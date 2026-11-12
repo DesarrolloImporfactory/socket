@@ -2,6 +2,7 @@ const catchAsync = require('../utils/catchAsync');
 const { db } = require('../database/config');
 const AppError = require('../utils/appError');
 const { cobrosEnRango } = require('../services/stripe_cobros.service');
+const { facturacionPorAddon } = require('../services/stripe_addons.service');
 const {
   metricasEnVivo,
   COND_COBRO_REAL,
@@ -348,5 +349,27 @@ exports.cobros = catchAsync(async (req, res, next) => {
       return next(new AppError(`Stripe: ${e.message}`, 502));
     }
     return next(new AppError(e.message || 'Error consultando cobros', 400));
+  }
+});
+
+/* ══════════════════════════════════════════════════════════════
+   GET /admin_dashboard/addons?desde=YYYY-MM-DD&hasta=YYYY-MM-DD
+   Facturación por complemento: recurrente de hoy (cobrando, en prueba,
+   en mora), otorgados a mano y lo cobrado en el rango.
+   ══════════════════════════════════════════════════════════════ */
+exports.addons = catchAsync(async (req, res, next) => {
+  const { desde, hasta } = req.query;
+  try {
+    const data = await facturacionPorAddon(desde, hasta, {
+      fresh: req.query.fresh === '1',
+    });
+    res.json({ status: 'success', data });
+  } catch (e) {
+    if (e?.type?.startsWith?.('Stripe')) {
+      return next(new AppError(`Stripe: ${e.message}`, 502));
+    }
+    return next(
+      new AppError(e.message || 'Error consultando complementos', 400),
+    );
   }
 });
