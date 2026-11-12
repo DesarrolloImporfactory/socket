@@ -29,6 +29,43 @@ exports.mostrado = catchAsync(async (req, res, next) => {
   res.json({ status: 'success' });
 });
 
+/* ── Oferta del complemento ImporKiller (2026-11-11) ──────────────────────
+   Solo el administrador de la cuenta puede comprar complementos: a los demás
+   roles el back les dice que no, aunque el front ya no pregunta por ellos. */
+const esAdministrador = (req) => req.sessionUser?.rol === 'administrador';
+
+/* GET /api/v1/onboarding/imporkiller → { mostrar, motivo, precio, en_trial, nombre } */
+exports.imporkiller = catchAsync(async (req, res, next) => {
+  const id_usuario = Number(req.sessionUser?.id_usuario);
+  if (!id_usuario) return next(new AppError('Sesión sin cuenta', 401));
+  if (!esAdministrador(req)) {
+    return res.json({ status: 'success', data: { mostrar: false, motivo: 'no_administrador' } });
+  }
+  const data = await svc.estadoImporKiller(id_usuario);
+  data.nombre = String(req.sessionUser?.nombre_encargado || '').trim() || null;
+  res.json({ status: 'success', data });
+});
+
+/* POST /api/v1/onboarding/imporkiller/mostrado — el modal se abrió (métrica). */
+exports.imporkillerMostrado = catchAsync(async (req, res, next) => {
+  const id_usuario = Number(req.sessionUser?.id_usuario);
+  if (!id_usuario) return next(new AppError('Sesión sin cuenta', 401));
+  await svc.marcarMostrado(id_usuario, svc.AVISO_IMPORKILLER);
+  res.json({ status: 'success' });
+});
+
+/* POST /api/v1/onboarding/imporkiller/no-mostrar — «No volver a mostrar». */
+exports.imporkillerNoMostrar = catchAsync(async (req, res, next) => {
+  const id_usuario = Number(req.sessionUser?.id_usuario);
+  if (!id_usuario) return next(new AppError('Sesión sin cuenta', 401));
+  if (!esAdministrador(req)) return next(new AppError('Solo el administrador de la cuenta', 403));
+  const data = await svc.descartarImporKiller({
+    id_usuario,
+    id_sub_usuario: req.sessionUser?.id_sub_usuario || null,
+  });
+  res.json({ status: 'success', data });
+});
+
 /* POST /api/v1/onboarding/implementacion/respuesta { accion: agendo | no_por_ahora | no_mostrar } */
 exports.respuesta = catchAsync(async (req, res, next) => {
   const id_usuario = Number(req.sessionUser?.id_usuario);

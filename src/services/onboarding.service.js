@@ -138,14 +138,91 @@ async function estadoImplementacion(id_usuario) {
 }
 
 /* Se llama cuando el modal se muestra: cuenta las veces (dato para medir). */
-async function marcarMostrado(id_usuario) {
+async function marcarMostrado(id_usuario, aviso = AVISO_IMPLEMENTACION) {
   await ensureTabla();
   await db.query(
     `INSERT INTO onboarding_avisos_chat_center (id_usuario, aviso, estado, veces_mostrado)
      VALUES (?, ?, 'pendiente', 1)
      ON DUPLICATE KEY UPDATE veces_mostrado = veces_mostrado + 1`,
-    { replacements: [id_usuario, AVISO_IMPLEMENTACION], type: db.QueryTypes.INSERT },
+    { replacements: [id_usuario, aviso], type: db.QueryTypes.INSERT },
   );
+}
+
+// ════════════════════════════════════════════════════════════
+// Oferta del complemento ImporKiller (pedido 2026-11-11, tras la clase donde
+// se mostró la herramienta).
+//
+// Sale CADA VEZ que el administrador entra (la X solo lo oculta en esa sesión
+// del navegador) hasta que lo compra o pulsa «No volver a mostrar». Solo a
+// cuentas que pueden activarlo con un clic: suscripción de Stripe viva
+// (active o trialing), porque «Obtenerlo ahora» llama a comprarAddon y suma
+// el complemento al plan con la tarjeta guardada. Sin suscripción la compra
+// respondería NO_SUBSCRIPTION: a esas cuentas ya las empuja el modal de
+// planes y no se les encima otro. Tampoco sale a quien debe (past_due), a las
+// cuentas permanentes (lo tienen incluido) ni a quien ya lo tiene.
+//
+// Reutiliza onboarding_avisos_chat_center con aviso = 'imporkiller_addon':
+// descartado = «No volver a mostrar»; veces_mostrado mide el alcance.
+// Conversión: cuentas con fila de este aviso y usuarios_chat_center.imporkiller = 1.
+// ════════════════════════════════════════════════════════════
+const AVISO_IMPORKILLER = 'imporkiller_addon';
+// Interruptor general de la oferta (en código, como MODAL_ACTIVO).
+const MODAL_IMPORKILLER_ACTIVO = true;
+const PRECIO_IMPORKILLER = 10;
+
+async function estadoImporKiller(id_usuario) {
+  await ensureTabla();
+  const base = { mostrar: false, motivo: null, precio: PRECIO_IMPORKILLER, en_trial: false };
+  if (!MODAL_IMPORKILLER_ACTIVO) return { ...base, motivo: 'desactivado' };
+
+  const [[cuenta], [aviso]] = await Promise.all([
+    db.query(
+      `SELECT permanente, imporkiller, estado, stripe_subscription_id, stripe_subscription_status
+         FROM usuarios_chat_center WHERE id_usuario = ? LIMIT 1`,
+      { replacements: [id_usuario], type: db.QueryTypes.SELECT },
+    ),
+    db.query(
+      `SELECT estado, veces_mostrado FROM onboarding_avisos_chat_center
+        WHERE id_usuario = ? AND aviso = ? LIMIT 1`,
+      { replacements: [id_usuario, AVISO_IMPORKILLER], type: db.QueryTypes.SELECT },
+    ),
+  ]);
+
+  if (!cuenta) return { ...base, motivo: 'sin_cuenta' };
+  if (Number(cuenta.imporkiller || 0) > 0) return { ...base, motivo: 'ya_lo_tiene' };
+  if (Number(cuenta.permanente) === 1) return { ...base, motivo: 'incluido' };
+  if (!cuenta.stripe_subscription_id) return { ...base, motivo: 'sin_suscripcion' };
+  // Filas viejas sin stripe_subscription_status: se cae al estado de la cuenta.
+  const estadoSub = String(cuenta.stripe_subscription_status || '').toLowerCase();
+  const viva = estadoSub
+    ? ['active', 'trialing'].includes(estadoSub)
+    : cuenta.estado === 'activo';
+  if (!viva) return { ...base, motivo: 'suscripcion_no_activa' };
+  if (aviso?.estado === 'descartado') return { ...base, motivo: 'no_mostrar' };
+
+  return {
+    ...base,
+    mostrar: true,
+    motivo: 'oferta',
+    // En prueba comprarAddon no cobra hoy: se factura con el plan al terminar.
+    en_trial: estadoSub === 'trialing',
+    veces_mostrado: Number(aviso?.veces_mostrado || 0),
+  };
+}
+
+/* «No volver a mostrar» de la oferta de ImporKiller. */
+async function descartarImporKiller({ id_usuario, id_sub_usuario }) {
+  await ensureTabla();
+  await db.query(
+    `INSERT INTO onboarding_avisos_chat_center (id_usuario, aviso, estado, respondido_por)
+     VALUES (?, ?, 'descartado', ?)
+     ON DUPLICATE KEY UPDATE estado = 'descartado', respondido_por = VALUES(respondido_por)`,
+    {
+      replacements: [id_usuario, AVISO_IMPORKILLER, id_sub_usuario || null],
+      type: db.QueryTypes.INSERT,
+    },
+  );
+  return { estado: 'descartado' };
 }
 
 // dias = en cuántos días se vuelve a ofrecer si sigue sin avanzar (null = nunca).
@@ -194,4 +271,7 @@ module.exports = {
   estadoImplementacion,
   marcarMostrado,
   responderImplementacion,
+  AVISO_IMPORKILLER,
+  estadoImporKiller,
+  descartarImporKiller,
 };
