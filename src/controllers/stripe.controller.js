@@ -1296,10 +1296,46 @@ exports.facturasUsuario = catchAsync(async (req, res, next) => {
 
   const invoices = await stripe.invoices.list({ customer, limit: 20 });
 
-  const data = (invoices?.data || []).map((inv) => ({
+  // Pagos recibidos fuera de Stripe (transferencia, efectivo) que saldaron
+  // alguna de estas facturas: el cliente ve su comprobante junto a la
+  // factura. Si la tabla aún no existe, las facturas salen igual.
+  const pagoManualDe = new Map();
+  const idsFacturas = (invoices?.data || []).map((inv) => inv.id);
+  if (idsFacturas.length) {
+    try {
+      const pagos = await db.query(
+        `SELECT stripe_invoice_id, monto, metodo, fecha_pago, comprobante_url
+           FROM pagos_manuales_chat_center
+          WHERE id_usuario = :id_usuario AND stripe_invoice_id IN (:ids)
+          ORDER BY id`,
+        {
+          replacements: { id_usuario: user.id_usuario, ids: idsFacturas },
+          type: db.QueryTypes.SELECT,
+        },
+      );
+      for (const p of pagos) pagoManualDe.set(p.stripe_invoice_id, p);
+    } catch (e) {
+      console.log('[facturasUsuario] pagos manuales no disponibles:', e?.message);
+    }
+  }
+
+  const data = (invoices?.data || []).map((inv) => {
+    const pm = pagoManualDe.get(inv.id) || null;
+    return {
     id: inv.id,
     created: inv.created,
     paid: inv.paid,
+    // Saldada a mano (transferencia/efectivo): Stripe la deja en `paid` con
+    // amount_paid = 0, así que el front toma el monto de `total`.
+    paid_out_of_band: !!inv.paid_out_of_band,
+    pago_manual: pm
+      ? {
+          monto: Number(pm.monto),
+          metodo: pm.metodo,
+          fecha_pago: pm.fecha_pago,
+          comprobante_url: pm.comprobante_url || null,
+        }
+      : null,
     amount_paid: inv.amount_paid,
     // Una factura abierta tiene amount_paid = 0: el front mostraba USD 0.00
     // justo en la que el cliente debe. Lo adeudado va aparte.
@@ -1311,7 +1347,8 @@ exports.facturasUsuario = catchAsync(async (req, res, next) => {
     hosted_invoice_url: inv.hosted_invoice_url,
     invoice_pdf: inv.invoice_pdf,
     status: inv.status,
-  }));
+    };
+  });
 
   return res.status(200).json({ success: true, data });
 });

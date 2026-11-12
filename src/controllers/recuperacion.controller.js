@@ -329,7 +329,8 @@ exports.panelPagosManuales = catchAsync(async (req, res, next) => {
  * body: monto, moneda?, metodo?, referencia?, fecha_pago?, nota?,
  *       stripe_invoice_id? (factura a saldar fuera de banda),
  *       anular_invoice_ids? ("in_a,in_b": otras facturas abiertas que se anulan),
- *       acceso_hasta? (fecha hasta la que queda el acceso cuando no hay factura)
+ *       acceso_hasta? (fecha hasta la que queda el acceso cuando no hay factura),
+ *       activar_plan_id? (sin factura: crea la suscripción de ese plan y la deja pagada)
  */
 exports.registrarPagoManual = catchAsync(async (req, res, next) => {
   if (!soloSuper(req, next)) return;
@@ -356,6 +357,8 @@ exports.registrarPagoManual = catchAsync(async (req, res, next) => {
         .map((s) => s.trim())
         .filter(Boolean),
       acceso_hasta: b.acceso_hasta || null,
+      // Sin factura que saldar: crea la suscripción de ese plan ya pagada.
+      activar_plan_id: Number(b.activar_plan_id) || null,
       admin: { id_sub_usuario: req.sessionUser.id_sub_usuario, nombre: nombreDe(req) },
     });
     /* `comprobante_subido` en false con archivo adjunto = el uploader falló:
