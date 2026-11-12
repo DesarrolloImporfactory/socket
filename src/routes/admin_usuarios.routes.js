@@ -40,4 +40,11 @@ router.post(
   ctrl.suscripcionCortesiaAdmin,
 );
 
+// Combos vendidos por fuera (Combo Implementación): meses gratis de un plan
+// más complementos, activados por correo → solo super_administrador.
+router.get('/combos', requireSuperAdmin, ctrl.combosListarAdmin);
+router.post('/combos/previa', requireSuperAdmin, ctrl.combosPreviaAdmin);
+router.post('/combos/otorgar', requireSuperAdmin, ctrl.combosOtorgarAdmin);
+router.post('/combos/anular', requireSuperAdmin, ctrl.combosAnularAdmin);
+
 module.exports = router;

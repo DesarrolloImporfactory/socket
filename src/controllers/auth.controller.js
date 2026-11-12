@@ -11,6 +11,7 @@ const Openai_assistants = require('../models/openai_assistants.model');
 const Configuraciones = require('../models/configuraciones.model');
 const Comunidad = require('../models/comunidad_chat_center.model');
 const referidosService = require('../services/referidos.service');
+const combosService = require('../services/combos.service');
 const { Op } = require('sequelize');
 const AppError = require('../utils/appError');
 const jwt = require('jsonwebtoken');
@@ -232,6 +233,10 @@ exports.registrarUsuario = catchAsync(async (req, res, next) => {
           id_sub_usuario: nuevoSubUsuario.id_sub_usuario,
         };
       });
+
+    // Si el equipo le había activado un combo por correo antes de que tuviera
+    // cuenta, se le aplica ahora (nunca lanza).
+    await combosService.reclamarPorCorreo(email);
 
     const token = await generarToken(id_sub_usuario);
 
@@ -510,6 +515,13 @@ const aplicarPlanCortesiaEstudiante = async (email) => {
       email,
       cuenta.stripe_subscription_id,
     );
+    return null;
+  }
+
+  // Un combo a la espera de tarjeta ya le dio plan, meses y complementos:
+  // la cortesía lo devolvería al plan 21 con 3 meses en cada login.
+  if (await combosService.comboPendienteDeUsuario(cuenta.id_usuario)) {
+    console.warn('[cortesia] no se aplica, tiene un combo pendiente:', email);
     return null;
   }
 
@@ -846,6 +858,10 @@ exports.newLogin = async (req, res) => {
                   id_sub_usuario: crear_sub_usuario.id_sub_usuario,
                 };
               });
+
+            // Combo guardado por correo antes de tener cuenta (nunca lanza).
+            // Va antes de la cortesía: si hay combo, la cortesía no lo pisa.
+            await combosService.reclamarPorCorreo(email_users);
 
             //  Plan cortesía del alumno (después del commit, best-effort)
             if (tieneCortesiaEstudiante) {

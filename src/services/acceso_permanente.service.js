@@ -605,6 +605,7 @@ module.exports = {
   anotarSeguimiento,
   invalidarCacheDeLaCuenta,
   cancelarSuscripcionStripe,
+  tarjetaDelCustomer,
   activarAccesoPermanente,
   quitarAccesoPermanente,
   crearSuscripcionCortesia,

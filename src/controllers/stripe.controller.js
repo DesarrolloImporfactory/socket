@@ -2,6 +2,7 @@ const Stripe = require('stripe');
 const catchAsync = require('../utils/catchAsync');
 const AppError = require('../utils/appError');
 const { db } = require('../database/config');
+const combosService = require('../services/combos.service');
 const {
   MESES_POR_PERIODO,
   normalizarPeriodo,
@@ -2457,6 +2458,49 @@ exports.capturarTarjetaPlan21 = catchAsync(async (req, res, next) => {
 
   const user = await getUserById(id_usuario);
   if (!user) return next(new AppError('Usuario no existe.', 404));
+
+  // Combo activado por el equipo a una cuenta sin tarjeta: el checkout lleva
+  // el plan y los complementos del combo, y sus meses gratis cuentan desde hoy.
+  const comboPendiente = user.stripe_subscription_id
+    ? null
+    : await combosService.comboPendienteDeUsuario(id_usuario);
+  if (comboPendiente) {
+    const datos = await combosService.checkoutDeComboPendiente(comboPendiente);
+    if (!datos) {
+      return next(
+        new AppError('El plan del combo no tiene precio en Stripe.', 500),
+      );
+    }
+    const metaCombo = { id_usuario: String(id_usuario), ...datos.metadata };
+    const sessionCombo = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      payment_method_types: ['card'],
+      line_items: datos.line_items,
+      ...(user.id_costumer
+        ? {
+            customer: user.id_costumer,
+            customer_update: { address: 'auto', name: 'auto' },
+          }
+        : { customer_email: user.email_propietario || undefined }),
+      client_reference_id: String(id_usuario),
+      payment_method_collection: 'always',
+      metadata: metaCombo,
+      subscription_data: {
+        trial_end: Math.floor(datos.trialEnd.getTime() / 1000),
+        metadata: metaCombo,
+      },
+      success_url: FRONT_SUCCESS_URL,
+      cancel_url: FRONT_CANCEL_URL,
+    });
+    const finTxt = datos.trialEnd.toISOString().split('T')[0];
+    return res.status(200).json({
+      success: true,
+      url: sessionCombo.url,
+      sessionId: sessionCombo.id,
+      trialEnd: finTxt,
+      message: `Checkout creado con ${comboPendiente.meses} meses de acceso incluido desde hoy. Primer cobro de $${datos.precio_despues}: ${finTxt}.`,
+    });
+  }
 
   if (Number(user.id_plan) !== 21) {
     return next(
