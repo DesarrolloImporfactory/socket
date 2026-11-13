@@ -186,6 +186,124 @@ async function obtenerMiniaturaVideo(conn, video_id, intentos = 5) {
   return null;
 }
 
+/* Meta devuelve en `picture` una imagen de relleno (un .gif estático de
+   rsrc.php) mientras procesa el video y también cuando el procesamiento
+   falló. No sirve de portada: el creativo la rechaza con el subcode 1443226
+   ("Your ad needs a video thumbnail"). */
+const esPortadaDeRelleno = (url) =>
+  !url || /\/\/static\.[a-z0-9.-]*fbcdn\.net\/rsrc\.php/i.test(String(url));
+
+/* Revisión de los videos ANTES de crear la campaña. Devuelve
+   Map<video_id, miniatura> y lanza un error legible si algún video no puede
+   usarse:
+     - VIDEO_NO_PROCESADO: Meta lo dejó en estado `error` (archivo dañado o
+       formato que no pudo convertir). Caso real: cuenta 360, 2026-11-11, el
+       video 6 de 10 tumbó el lanzamiento entero en "crear creativo · V6" y
+       el cliente solo vio el mensaje crudo de Meta.
+     - VIDEO_PROCESANDO: sigue en proceso tras ~1 minuto de espera.
+     - VIDEO_SIN_PORTADA: está listo pero Meta no entrega ninguna miniatura.
+   Si Meta no responde el estado, no se bloquea: se sigue con la miniatura
+   que haya y Meta decide al crear el creativo, como antes. */
+async function prepararVideosParaLanzar(conn, creativos) {
+  const miniaturas = new Map();
+  const videos = creativos
+    .map((c, i) => ({ c, n: i + 1 }))
+    .filter((x) => x.c.tipo === 'video' && x.c.video_id);
+  if (!videos.length) return miniaturas;
+
+  const ax = metaAx(conn.access_token);
+  const leerEstados = async () => {
+    const r = await ax.get(`${GRAPH_BASE}/`, {
+      params: {
+        ids: videos.map((x) => x.c.video_id).join(','),
+        fields: 'status,picture',
+      },
+    });
+    if (r.status < 200 || r.status >= 300) {
+      logger.warn(
+        `prepararVideosParaLanzar: ${r.status} ${JSON.stringify(r.data?.error || '')}`,
+      );
+      return {};
+    }
+    return r.data || {};
+  };
+  const estadoDe = (info, x) =>
+    info[String(x.c.video_id)]?.status?.video_status || null;
+
+  let info = await leerEstados();
+  // Un video recién subido tarda segundos en quedar listo: se espera hasta
+  // ~1 minuto antes de darlo por "todavía procesando".
+  for (let vuelta = 0; vuelta < 6; vuelta++) {
+    const enProceso = videos.some((x) => {
+      const e = estadoDe(info, x);
+      return e && e !== 'ready' && e !== 'error' && e !== 'expired';
+    });
+    if (!enProceso) break;
+    await esperar(10000);
+    info = await leerEstados();
+  }
+
+  const fallar = (clave, lista, texto) => {
+    const numeros = lista.map((x) => x.n);
+    const err = new Error(`${clave}: ${texto} (video ${numeros.join(', ')})`);
+    err.paso = `revisar video ${numeros.join(', ')}`;
+    err.videos = numeros;
+    err.meta_error = {
+      message: err.message,
+      videos: lista.map((x) => ({
+        n: x.n,
+        video_id: String(x.c.video_id),
+        status: info[String(x.c.video_id)]?.status || null,
+      })),
+    };
+    return err;
+  };
+
+  const rotos = videos.filter((x) =>
+    ['error', 'expired'].includes(estadoDe(info, x)),
+  );
+  if (rotos.length) {
+    throw fallar('VIDEO_NO_PROCESADO', rotos, 'Meta no pudo procesar el video');
+  }
+  const pendientes = videos.filter((x) => {
+    const e = estadoDe(info, x);
+    return e && e !== 'ready';
+  });
+  if (pendientes.length) {
+    throw fallar(
+      'VIDEO_PROCESANDO',
+      pendientes,
+      'Meta todavía está procesando el video',
+    );
+  }
+
+  // Miniatura fresca de cada video: la guardada al subir suele ser el cuadro
+  // de relleno de "procesando" y con esa el anuncio saldría con portada gris.
+  const sinPortada = [];
+  await Promise.all(
+    videos.map(async (x) => {
+      const id = String(x.c.video_id);
+      const candidatas = [
+        await obtenerMiniaturaVideo(conn, id, 2),
+        info[id]?.picture,
+        x.c.thumb_url,
+      ];
+      const buena = candidatas.find((u) => !esPortadaDeRelleno(u));
+      if (buena) miniaturas.set(id, buena);
+      else sinPortada.push(x);
+    }),
+  );
+  if (sinPortada.length) {
+    sinPortada.sort((a, b) => a.n - b.n);
+    throw fallar(
+      'VIDEO_SIN_PORTADA',
+      sinPortada,
+      'Meta no generó la portada del video',
+    );
+  }
+  return miniaturas;
+}
+
 /* Fuente reproducible + miniatura de un video de la cuenta. `source` es un
    enlace temporal del CDN de Meta (dura horas, no días): se pide cada vez
    que se abre la vista previa y no se guarda en la plantilla. */
@@ -289,7 +407,11 @@ async function refrescarUrlsCreativos({ conn, plantillas }) {
       });
       if (r.status >= 200 && r.status < 300) {
         for (const [id, v] of Object.entries(r.data || {})) {
-          if (v?.picture) nuevasVid.set(String(id), v.picture);
+          // El relleno de "procesando / con error" no es una portada: si
+          // se guarda, la plantilla aparenta tener miniatura y no la tiene.
+          if (!esPortadaDeRelleno(v?.picture)) {
+            nuevasVid.set(String(id), v.picture);
+          }
         }
       } else {
         logger.warn(
@@ -569,14 +691,77 @@ function construirWelcomeMessage(texto) {
 /* Borrado best-effort de la campaña cuando un paso posterior falla: borrar la
    campaña arrastra conjuntos, creativos y anuncios hijos, y evita dejar
    basura a medias en la cuenta del cliente. */
+/* Devuelve cómo quedó la campaña: 'eliminada' | 'pausada' | 'activa'.
+   OJO: el cliente de axios no lanza con 4xx (validateStatus), así que hay
+   que mirar la respuesta. Antes se daba por borrada sin comprobarlo y, en
+   cuentas donde Meta niega la escritura (saldo pendiente, account_status 3),
+   el lanzamiento decía "error" pero la campaña y su conjunto quedaban vivos:
+   el cliente reintentaba y juntaba 4-5 campañas vacías en el Ads Manager
+   (cuentas 1383 y 1384, 2026-11-05/09). Si no se puede borrar se intenta al
+   menos pausarla, y quien llama avisa al cliente de lo que quedó. */
 async function eliminarCampania(ax, campaignId) {
+  const ok = (r) => r && r.status >= 200 && r.status < 300;
+  let ultimo = null;
+  for (let intento = 1; intento <= 2; intento++) {
+    try {
+      ultimo = await ax.delete(`${GRAPH_BASE}/${campaignId}`);
+      if (ok(ultimo)) return 'eliminada';
+    } catch (e) {
+      ultimo = { status: 0, data: { error: { message: e.message } } };
+    }
+    if (intento < 2) await esperar(1500);
+  }
+  logger.error(
+    `metaAdsLauncher: no se pudo borrar la campaña ${campaignId}: ` +
+      `${ultimo?.status} ${JSON.stringify(ultimo?.data?.error || '')}`,
+  );
   try {
-    await ax.delete(`${GRAPH_BASE}/${campaignId}`);
+    const p = await ax.post(`${GRAPH_BASE}/${campaignId}`, {
+      status: 'PAUSED',
+    });
+    if (ok(p)) return 'pausada';
+    logger.error(
+      `metaAdsLauncher: tampoco se pudo pausar la campaña ${campaignId}: ` +
+        `${p.status} ${JSON.stringify(p.data?.error || '')}`,
+    );
   } catch (e) {
     logger.error(
-      `metaAdsLauncher: no se pudo limpiar la campaña ${campaignId}: ${e.message}`,
+      `metaAdsLauncher: tampoco se pudo pausar la campaña ${campaignId}: ${e.message}`,
     );
   }
+  return 'activa';
+}
+
+/* Estado de la cuenta publicitaria antes de crear nada. Con la cuenta
+   bloqueada Meta SÍ deja crear la campaña y el conjunto, rechaza el creativo
+   y además niega el borrado: es el origen de las campañas vacías. Se corta
+   antes. Solo bloquean los estados que impiden publicar con certeza
+   (2 deshabilitada, 3 saldo pendiente, 100 cierre pendiente, 101 cerrada);
+   si Meta no responde el estado, se sigue como antes. */
+const ESTADOS_CUENTA_BLOQUEADA = new Set([2, 3, 100, 101]);
+
+async function verificarCuentaPublicitaria(ax, act) {
+  let r;
+  try {
+    r = await ax.get(`${GRAPH_BASE}/${act}`, {
+      params: { fields: 'account_status,disable_reason' },
+    });
+  } catch {
+    return;
+  }
+  if (r.status < 200 || r.status >= 300) return;
+  const estado = Number(r.data?.account_status);
+  if (!ESTADOS_CUENTA_BLOQUEADA.has(estado)) return;
+  const err = new Error(
+    `CUENTA_PUBLICITARIA_BLOQUEADA: account_status=${estado}`,
+  );
+  err.paso = 'revisar cuenta publicitaria';
+  err.meta_error = {
+    message: err.message,
+    account_status: estado,
+    disable_reason: r.data?.disable_reason ?? null,
+  };
+  throw err;
 }
 
 /**
@@ -607,6 +792,20 @@ async function lanzarPaquete({ conn, cfg }) {
     .slice(0, 16)
     .replace('T', ' ');
   const nombreBase = `${cfg.nombre} · ${sello}`;
+
+  const creativos = (
+    Array.isArray(cfg.creativos) && cfg.creativos.length
+      ? cfg.creativos
+      : [{ tipo: 'imagen', hash: cfg.imagen_hash }]
+  ).slice(0, 10);
+
+  // 0) Cuenta publicitaria en condiciones de publicar.
+  await verificarCuentaPublicitaria(ax, act);
+
+  // 0) Videos: se revisan ANTES de crear nada. Un solo video que Meta no
+  // pudo procesar tumbaba el paquete a mitad de camino (campaña y conjunto
+  // creados y luego borrados) con un mensaje que el cliente no entendía.
+  const miniaturasVideo = await prepararVideosParaLanzar(conn, creativos);
 
   // 1) Campaña — objetivo de mensajes (CTWA)
   const campResp = await ax.post(`${GRAPH_BASE}/${act}/campaigns`, {
@@ -695,12 +894,6 @@ async function lanzarPaquete({ conn, cfg }) {
     };
     if (cfg.descripcion) linkDataBase.description = cfg.descripcion;
 
-    const creativos = (
-      Array.isArray(cfg.creativos) && cfg.creativos.length
-        ? cfg.creativos
-        : [{ tipo: 'imagen', hash: cfg.imagen_hash }]
-    ).slice(0, 10);
-
     let usarWelcome = !!cfg.mensaje_bienvenida;
     const ads = [];
 
@@ -708,17 +901,11 @@ async function lanzarPaquete({ conn, cfg }) {
       const creativo = creativos[i];
       const sufijo = creativos.length > 1 ? ` · V${i + 1}` : '';
 
-      // Los videos necesitan miniatura y se pide SIEMPRE fresca aquí: la que
-      // pudo guardarse al subir suele ser el cuadro gris de "procesando" de
-      // Meta, y con esa el anuncio saldría con portada gris. La guardada
-      // queda solo como último recurso.
-      let thumbVideo = null;
-      if (creativo.tipo === 'video') {
-        thumbVideo =
-          (await obtenerMiniaturaVideo(conn, creativo.video_id)) ||
-          creativo.thumb_url ||
-          null;
-      }
+      // Miniatura del video: ya viene resuelta (y validada) del paso 0.
+      const thumbVideo =
+        creativo.tipo === 'video'
+          ? miniaturasVideo.get(String(creativo.video_id)) || null
+          : null;
 
       const crearCreativo = async (conWelcome) => {
         let spec;
@@ -790,7 +977,12 @@ async function lanzarPaquete({ conn, cfg }) {
   } catch (err) {
     // Si cualquier paso posterior a la campaña falla, se limpia todo el
     // paquete para que el cliente no encuentre campañas fantasma a medias.
-    await eliminarCampania(ax, campaign_id);
+    // Si Meta no deja borrarla, el error viaja con lo que quedó creado para
+    // que el cliente lo sepa y no relance a ciegas.
+    const quedo = await eliminarCampania(ax, campaign_id);
+    if (quedo !== 'eliminada') {
+      err.campania_restante = { campaign_id, estado: quedo };
+    }
     throw err;
   }
 }
@@ -1249,6 +1441,7 @@ module.exports = {
   subirImagen,
   subirVideo,
   obtenerMiniaturaVideo,
+  prepararVideosParaLanzar,
   obtenerInfoVideo,
   refrescarUrlsCreativos,
   lanzarPaquete,
