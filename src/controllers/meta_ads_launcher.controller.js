@@ -23,6 +23,36 @@ async function getAdConnection(id_configuracion) {
   return rows[0] || null;
 }
 
+/* Producto de la cuenta cuyo nombre coincide EXACTO con un texto (sin
+   distinguir mayúsculas, tildes ni espacios de más). Solo devuelve algo si la
+   coincidencia es única.
+   Por qué existe: los productos se borran y se vuelven a crear (la máscara
+   facial de la cuenta 360 tuvo tres ids en un mes), y la plantilla quedaba
+   apuntando a un id muerto o el cliente escribía el nombre a mano creyendo
+   que no podía vincularlo. Sin vínculo el anuncio no se registra en
+   anuncios_producto y el bot depende de adivinar por el texto. */
+const normalizarNombre = (s) =>
+  String(s || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+
+async function productoPorNombre(id_configuracion, texto) {
+  const buscado = normalizarNombre(texto);
+  if (!buscado) return null;
+  const productos = await db.query(
+    `SELECT id, nombre FROM productos_chat_center
+      WHERE id_configuracion = ? AND eliminado = 0`,
+    { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  const iguales = productos.filter(
+    (p) => normalizarNombre(p.nombre) === buscado,
+  );
+  return iguales.length === 1 ? iguales[0] : null;
+}
+
 const PAISES_VALIDOS = /^[A-Z]{2}$/;
 // Tope de creativos por plantilla (= anuncios por conjunto). Debe coincidir
 // con MAX_IMAGENES del wizard del front.
@@ -367,6 +397,15 @@ exports.guardarPlantilla = async (req, res) => {
       if (prod) c.titulo = String(prod.nombre).slice(0, 255);
       else c.id_producto = null;
     }
+    // Sin producto (no se eligió, o el vinculado ya no existe): si el título
+    // es el nombre exacto de un producto de la cuenta, se vincula solo.
+    if (!c.id_producto) {
+      const prod = await productoPorNombre(id_configuracion, c.titulo);
+      if (prod) {
+        c.id_producto = prod.id;
+        c.titulo = String(prod.nombre).slice(0, 255);
+      }
+    }
 
     if (id) {
       // La existencia se comprueba con un SELECT y no con affectedRows del
@@ -579,7 +618,54 @@ exports.subirMedia = async (req, res) => {
 // 4) LANZAR — un click: campaña + conjunto + creativo + anuncio
 // ══════════════════════════════════════════════
 
+/* Candado contra lanzamientos repetidos de la misma plantilla.
+   Un lanzamiento con 7-10 videos tarda más que la paciencia del cliente (y
+   que el timeout del navegador): si vuelve a pulsar, cada pulsación crea
+   OTRA campaña completa. Caso real: cuenta 1384, 2026-11-05, dos campañas
+   idénticas con un segundo de diferencia.
+   - En curso: Set en memoria (por proceso).
+   - Recién lanzada: la BD, para cubrir el reintento tras un timeout y los
+     despliegues con más de un proceso. */
+const lanzamientosEnCurso = new Set();
+const VENTANA_RELANZAR_SEG = 180;
+
+const motivoDuplicado = (titulo, porque) => ({
+  titulo,
+  porque,
+  pasos: [
+    'Abre el centro de campañas y revisa si la campaña ya aparece.',
+    'Si aparece, ya está creada: no hace falta lanzar otra vez.',
+    'Si quieres una segunda campaña igual a propósito, espera unos minutos y lanza de nuevo.',
+  ],
+  enlace: null,
+  culpa: 'reintentar',
+  codigo: null,
+  crudo: '',
+});
+
 exports.lanzar = async (req, res) => {
+  const llave = `${Number(req.body.id_configuracion)}:${Number(req.body.id_plantilla)}`;
+  if (lanzamientosEnCurso.has(llave)) {
+    const motivo = motivoDuplicado(
+      'Esta plantilla ya se está lanzando',
+      'Hay un lanzamiento de esta misma plantilla en curso (con varios videos puede tardar unos minutos). No se inició otro para no duplicar la campaña.',
+    );
+    return res.json({
+      success: false,
+      en_curso: true,
+      message: `${motivo.titulo}. ${motivo.porque}`,
+      motivo,
+    });
+  }
+  lanzamientosEnCurso.add(llave);
+  try {
+    return await lanzarPlantilla(req, res);
+  } finally {
+    lanzamientosEnCurso.delete(llave);
+  }
+};
+
+async function lanzarPlantilla(req, res) {
   try {
     const id_configuracion = Number(req.body.id_configuracion);
     const id_plantilla = Number(req.body.id_plantilla);
@@ -587,6 +673,31 @@ exports.lanzar = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'id_configuracion e id_plantilla requeridos.',
+      });
+    }
+
+    const [reciente] = await db.query(
+      `SELECT campaign_id, TIMESTAMPDIFF(SECOND, created_at, NOW()) AS hace
+         FROM meta_ads_lanzamientos
+        WHERE id_configuracion = ? AND id_plantilla = ? AND resultado = 'ok'
+          AND created_at >= NOW() - INTERVAL ? SECOND
+        ORDER BY id DESC LIMIT 1`,
+      {
+        replacements: [id_configuracion, id_plantilla, VENTANA_RELANZAR_SEG],
+        type: db.QueryTypes.SELECT,
+      },
+    );
+    if (reciente) {
+      const motivo = motivoDuplicado(
+        'Esta plantilla se acaba de lanzar',
+        `La campaña ya se creó hace ${reciente.hace} segundos (id ${reciente.campaign_id}). No se lanzó otra para no duplicarla.`,
+      );
+      return res.json({
+        success: false,
+        ya_lanzada: true,
+        campaign_id: reciente.campaign_id,
+        message: `${motivo.titulo}. ${motivo.porque}`,
+        motivo,
       });
     }
 
@@ -607,6 +718,37 @@ exports.lanzar = async (req, res) => {
       return res
         .status(404)
         .json({ success: false, message: 'Plantilla no encontrada.' });
+    }
+
+    // Plantilla sin producto vivo (nunca se eligió, o el producto se borró y
+    // se recreó con otro id): se re-vincula por nombre exacto antes de
+    // lanzar, para que los anuncios queden registrados en anuncios_producto.
+    if (!plantilla.producto_nombre) {
+      const prod = await productoPorNombre(
+        id_configuracion,
+        plantilla.titulo || plantilla.nombre,
+      );
+      plantilla.id_producto = prod ? prod.id : null;
+      plantilla.producto_nombre = prod ? prod.nombre : null;
+      if (prod) {
+        await db.query(
+          `UPDATE meta_ads_plantillas
+              SET id_producto = ?, titulo = ?, updated_at = updated_at
+            WHERE id = ?`,
+          {
+            replacements: [
+              prod.id,
+              String(prod.nombre).slice(0, 255),
+              id_plantilla,
+            ],
+            type: db.QueryTypes.UPDATE,
+          },
+        );
+        logger.info(
+          `[ADS_LANZAR] plantilla=${id_plantilla} re-vinculada por nombre ` +
+            `al producto ${prod.id} "${prod.nombre}"`,
+        );
+      }
     }
 
     const faltan = faltantesParaLanzar(plantilla);
@@ -705,14 +847,17 @@ exports.lanzar = async (req, res) => {
     } catch (err) {
       await db.query(
         `INSERT INTO meta_ads_lanzamientos
-           (id_configuracion, id_plantilla, plantilla_nombre, resultado,
-            estado_inicial, presupuesto_diario, error_meta)
-         VALUES (?, ?, ?, 'error', ?, ?, ?)`,
+           (id_configuracion, id_plantilla, plantilla_nombre, campaign_id,
+            resultado, estado_inicial, presupuesto_diario, error_meta)
+         VALUES (?, ?, ?, ?, 'error', ?, ?, ?)`,
         {
           replacements: [
             id_configuracion,
             id_plantilla,
             plantilla.nombre,
+            // Solo si Meta no dejó borrarla: queda el id para poder ubicar
+            // la campaña que sobró (resultado sigue siendo 'error').
+            err.campania_restante?.campaign_id || null,
             estado_inicial,
             plantilla.presupuesto_diario,
             JSON.stringify(err.meta_error || err.message).slice(0, 5000),
@@ -734,7 +879,28 @@ exports.lanzar = async (req, res) => {
         paso: err.paso,
         numero: whatsapp?.numero,
         pagina: plantilla.page_name || plantilla.page_id,
+        videos: err.videos,
       });
+      // El lanzamiento falló Y Meta no dejó borrar lo que ya se había creado:
+      // el cliente tiene que saberlo, o reintenta y junta campañas vacías.
+      if (err.campania_restante) {
+        const { campaign_id: idRestante, estado } = err.campania_restante;
+        motivo.campania_restante = err.campania_restante;
+        motivo.porque +=
+          ` OJO: Meta alcanzó a crear la campaña "${plantilla.nombre}" y no ` +
+          `nos dejó borrarla; quedó ${
+            estado === 'pausada' ? 'pausada' : 'activa'
+          } y sin anuncios en tu Administrador de anuncios.`;
+        motivo.pasos = [
+          'No vuelvas a lanzar hasta resolver el motivo de arriba: cada intento deja otra campaña vacía.',
+          `En tu Administrador de anuncios, elimina la campaña vacía (id ${idRestante}).`,
+          ...motivo.pasos,
+        ];
+        logger.warn(
+          `[ADS_LANZAR] campaña restante · cfg=${id_configuracion} ` +
+            `plantilla=${id_plantilla} campaign=${idRestante} estado=${estado}`,
+        );
+      }
       // Dos líneas a propósito: la primera se lee de un vistazo filtrando por
       // ADS_LANZAR, la segunda trae la respuesta de Meta ENTERA (fbtrace_id
       // incluido, que es lo que piden si hay que abrir un caso con ellos).
@@ -851,7 +1017,7 @@ exports.lanzar = async (req, res) => {
     logger.error(`launcher lanzar: ${err.message}`);
     return res.status(500).json({ success: false, message: err.message });
   }
-};
+}
 
 // ══════════════════════════════════════════════
 // 4b) BUSCAR ZONAS (provincias/ciudades) para segmentar
