@@ -1756,6 +1756,25 @@ async function procesarMensajeKanbanTurno(params) {
     { mensaje: mensajeParaBuscar, id_cliente },
   );
 
+  // ── 6.3 Descuento del remarketing por producto ──
+  /* El cliente tocó «🎁 Quiero mi 10% OFF» en un recordatorio: mientras el
+     descuento valga (72 h o hasta crear el pedido) el bot lo lleva en el
+     contexto de cada turno, no solo en el del botón. El total del resumen se
+     cuadra además en código (paso 9.6). */
+  let descuentoRmk = null;
+  try {
+    descuentoRmk = await require('./remarketing_producto.service').descuentoVigente({
+      id_configuracion,
+      id_cliente,
+    });
+    if (descuentoRmk) {
+      bloqueContexto += `${require('./remarketing_producto.service').bloqueDescuentoParaIA(descuentoRmk)}\n\n`;
+      await log(`🎁 [descuento remarketing] ${descuentoRmk.pct}% vigente para el cliente ${id_cliente}: bloque inyectado`);
+    }
+  } catch (eDesc) {
+    await log(`⚠️ [descuento remarketing] no se pudo leer: ${eDesc.message}`);
+  }
+
   // ── 6.4 Experimento MX: respuesta a la pregunta de precio ──
   /* Solo en columnas de venta (contexto_productos), solo cuando el texto es
      del cliente y pregunta el precio, solo cuentas de México y solo el brazo
@@ -3522,6 +3541,25 @@ async function procesarMensajeKanbanTurno(params) {
     await log(`⚠️ Corrección de precio por combo falló (se sigue igual): ${ePrecio.message}`);
   }
 
+  /* ── 9.6b Descuento del remarketing por producto sobre el total ──
+     Si el cliente tiene un descuento vigente (tocó el botón del recordatorio)
+     y el resumen trae el precio normal del catálogo, el total se corrige con
+     el descuento antes de que salga y de que lo lea el auto-orden. */
+  if (descuentoRmk) {
+    try {
+      const { aplicarDescuentoAlTotal } = require('../utils/resumenPedido');
+      const corrDesc = await aplicarDescuentoAlTotal(respuestaRaw, id_configuracion, descuentoRmk.pct);
+      if (corrDesc) {
+        respuestaRaw = corrDesc.texto;
+        await log(
+          `🎁 Precio total con descuento ${descuentoRmk.pct}%: $${corrDesc.de} → $${corrDesc.a} (${corrDesc.motivo})`,
+        );
+      }
+    } catch (eDesc) {
+      await log(`⚠️ Descuento sobre el total falló (se sigue igual): ${eDesc.message}`);
+    }
+  }
+
   /* ── 9.7 Wizard: no recitar otra vez la lista de precios ───────
      El mensaje fijo ya dio precio, combos y foto y preguntó la ciudad; el
      guion trae "precio + combos + ¿cuántas unidades?" como paso siguiente y el
@@ -3832,7 +3870,13 @@ async function procesarMensajeKanbanTurno(params) {
       }
       // Esta respuesta ES un cierre de venta. Se marca para que el paso 13 no
       // mande el mismo resumen dos veces cuando el cliente escribió en ráfaga.
-      if (estadoDestino === 'generar_guia') cerroLaVenta = true;
+      if (estadoDestino === 'generar_guia') {
+        cerroLaVenta = true;
+        // El descuento del remarketing vale para UN pedido.
+        require('./remarketing_producto.service')
+          .marcarDescuentoUsado({ id_configuracion, id_cliente })
+          .catch(() => {});
+      }
       await db.query(
         `UPDATE clientes_chat_center SET estado_contacto = ? WHERE id = ?`,
         {
