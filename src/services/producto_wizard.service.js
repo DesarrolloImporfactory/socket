@@ -354,8 +354,18 @@ function limpiarPasosFlujo(lista) {
         const noPedir = (Array.isArray(p.no_pedir) ? p.no_pedir : [])
           .map((d) => texto(d, 30).toLowerCase())
           .filter((d) => DATOS_NO_PEDIR.includes(d));
-        return noPedir.length
-          ? { espera: 'ajustes', no_pedir: [...new Set(noPedir)] }
+        // Cómo salen las ofertas en el mensaje fijo: 'botones' (los precios
+        // van solo en los botones) es el valor por defecto y no se guarda;
+        // solo se guarda si el negocio eligió 'texto' o 'ambos'.
+        const ofertasModo = ['texto', 'ambos'].includes(p.ofertas_modo)
+          ? p.ofertas_modo
+          : null;
+        return noPedir.length || ofertasModo
+          ? {
+              espera: 'ajustes',
+              no_pedir: [...new Set(noPedir)],
+              ...(ofertasModo ? { ofertas_modo: ofertasModo } : {}),
+            }
           : null;
       }
       /* Entrada especial: las respuestas que salen DESPUÉS del cierre. Viven
