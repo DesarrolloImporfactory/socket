@@ -132,6 +132,9 @@ async function startServer() {
       // Secuencias de recuperación desde Expertos: encola plantillas para
       // templateProgramadoMasivo. Nace apagado; se prende en /recuperacion.
       require('./cron/recuperacionAutomatizaciones.js');
+      // Resumen diario del consumo de IA: a las 03:40 resume el día cerrado
+      // de las cuentas que usan el panel, para no releer mensajes_clientes.
+      require('./cron/consumoIaDiario.js');
     } else {
       console.warn('⏸️  Crons DESACTIVADOS (CRONS_ENABLED=false)');
     }

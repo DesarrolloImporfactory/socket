@@ -16,32 +16,10 @@ const {
   PRECIOS,
 } = require('../utils/preciosOpenAI');
 
-// Salen con prefijo IA_ pero NO llaman al modelo (texto fijo): no cuestan.
-const SIN_IA = [
-  'IA_wizard',
-  'IA_mensaje_fijo',
-  'IA_respuesta_rapida',
-  'IA_colchon',
-  'IA_respaldo',
-  'IA_flujo_venta',
-];
-/* Recordatorios de remarketing redactados por la IA (cron). Cada uno es una
-   llamada completa al modelo (prompt + catálogo + recap) y NO lleva prefijo
-   IA_: hasta 2026-11-12 no se medían ni se mostraban, y en cuentas con
-   remarketing activo eran la mayor parte de la factura (cfg 1512: 373
-   recordatorios en dos días contra 153 respuestas del bot). Los nuevos
-   guardan tokens; los anteriores se ESTIMAN. */
-const REMARKETING_IA = 'cron_remarketing_ia';
-
-function leerAnalytics(raw) {
-  if (!raw) return null;
-  try {
-    const o = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    return o && typeof o === 'object' && o.modelo ? o : null;
-  } catch {
-    return null;
-  }
-}
+/* Qué mensajes cuentan y cómo (con IA, sin IA, remarketing) lo decide
+   services/consumo_ia_diario.service.js, que además guarda resumidos los días
+   ya cerrados: aquí solo se les pone precio. */
+const { consumoDelPeriodo } = require('../services/consumo_ia_diario.service');
 
 /** Modelo más usado en las columnas con IA de la cuenta (para estimar). */
 async function modeloReferencia(id_configuracion) {
@@ -102,64 +80,36 @@ async function calcularConsumo({
     /* sin la columna se asume OpenAI */
   }
 
-  /* Una sola pasada por los mensajes salientes del bot en el rango. Se traen
-     solo los campos necesarios; el desglose por día se arma en JS para poder
-     calcular el costo exacto donde hay analytics y estimado donde no. */
-  /* Va en dos mitades (vivos + borrados) a propósito: los índices de la tabla
-     llevan deleted_at ANTES de created_at, así que sin fijar deleted_at MySQL
-     no puede acotar por fecha y recorre todos los salientes de la cuenta
-     (cfg 322: 300.000 filas para devolver 615). Con las dos mitades entra por
-     el rango de fechas. Los borrados se cuentan igual: sus tokens se pagaron. */
-  const CAMPOS_CONSUMO = `DATE(created_at) AS dia, responsable, celular_recibe,
-            COALESCE(total_tokens_openai_mensaje, 0) AS tokens,
-            json_analytics_mensaje`;
-  const FILTRO_CONSUMO = `id_configuracion = ?
-        AND rol_mensaje = 1
-        AND (responsable LIKE 'IA\\_%' OR responsable = ?)
-        AND created_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)`;
-  const filas = await db.query(
-    `SELECT ${CAMPOS_CONSUMO}
-       FROM mensajes_clientes
-      WHERE ${FILTRO_CONSUMO}
-        AND deleted_at IS NULL
-      UNION ALL
-     SELECT ${CAMPOS_CONSUMO}
-       FROM mensajes_clientes
-      WHERE ${FILTRO_CONSUMO}
-        AND deleted_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)`,
-    {
-      replacements: [
-        id_configuracion,
-        REMARKETING_IA,
-        dias,
-        id_configuracion,
-        REMARKETING_IA,
-        dias,
-        dias,
-      ],
-      type: db.QueryTypes.SELECT,
-    },
-  );
+  /* Cubos del período: mensajes y tokens por día, clase (ia | rmk | fijo |
+     rapida) y modelo. Los días cerrados salen del resumen diario y solo hoy
+     se lee de mensajes_clientes (antes se recorrían todos los salientes del
+     período en cada entrada: 158 s la cfg 285 a 90 días). El costo se calcula
+     aquí, con los precios vigentes: es lineal en los tokens de cada modelo. */
+  const { cubos, clientes_atendidos } = await consumoDelPeriodo({
+    id_configuracion,
+    dias,
+  });
 
-  /* Costo exacto de una respuesta con desglose guardado. La escritura en
-     caché de Claude (1,25x) se suma a «entrada»: es entrada que se pagó cara
-     para que las siguientes salgan baratas. */
-  const costoExacto = (a) => {
-    const p = PRECIOS[normalizarModelo(a.modelo)] || precioRef;
-    const cached = Number(a.cached) || 0;
-    const escrita = Math.min(
-      Number(a.cache_write) || 0,
-      Math.max(0, (Number(a.input) || 0) - cached),
-    );
-    const entrada = Math.max(0, (Number(a.input) || 0) - cached);
-    const salida = Number(a.output) || 0;
+  /* Costo exacto de un cubo con desglose guardado. La escritura en caché de
+     Claude (1,25x) se suma a «entrada»: es entrada que se pagó cara para que
+     las siguientes salgan baratas. */
+  const costoExacto = (c) => {
+    const p = PRECIOS[normalizarModelo(c.modelo)] || precioRef;
     const cEntrada =
-      ((entrada - escrita) * p.input) / 1e6 +
-      costoEscrituraCache(a.modelo, escrita);
-    const cCache = (cached * p.cached) / 1e6;
-    const cSalida = (salida * p.output) / 1e6;
-    return { entrada, cached, salida, cEntrada, cCache, cSalida };
+      ((c.tk_entrada - c.tk_escrita) * p.input) / 1e6 +
+      costoEscrituraCache(c.modelo, c.tk_escrita);
+    const cCache = (c.tk_cache * p.cached) / 1e6;
+    const cSalida = (c.tk_salida * p.output) / 1e6;
+    return {
+      entrada: c.tk_entrada,
+      cached: c.tk_cache,
+      salida: c.tk_salida,
+      cEntrada,
+      cCache,
+      cSalida,
+    };
   };
+  const proveedorDeModelo = (m) => (/^claude-/i.test(m) ? 'claude' : 'openai');
 
   const porDia = new Map();
   const tot = {
@@ -191,12 +141,8 @@ async function calcularConsumo({
   // aplicar el filtro: el front muestra el selector solo si hubo de los dos.
   const porProveedor = { openai: 0, claude: 0 };
   const precioRef = PRECIOS[modeloRef] || PRECIOS['gpt-4o-mini'];
-  // Clientes distintos a los que el asistente les escribió en el período.
-  const clientes = new Set();
-  for (const f of filas) {
-    if (f.celular_recibe != null) clientes.add(String(f.celular_recibe));
-    const dia =
-      f.dia instanceof Date ? f.dia.toISOString().slice(0, 10) : String(f.dia).slice(0, 10);
+  for (const f of cubos) {
+    const dia = f.dia;
     if (!porDia.has(dia)) {
       porDia.set(dia, {
         dia,
@@ -215,21 +161,20 @@ async function calcularConsumo({
       });
     }
     const d = porDia.get(dia);
-    if (f.responsable === REMARKETING_IA) {
-      const a = leerAnalytics(f.json_analytics_mensaje);
-      const prov = a ? proveedorDe(a) : proveedorCuenta;
+    const medido = f.modelo !== '';
+    if (f.clase === 'rmk') {
+      const prov = medido ? proveedorDeModelo(f.modelo) : proveedorCuenta;
       if (proveedorFiltro && prov !== proveedorFiltro) continue;
-      d.msgs_remarketing += 1;
-      tot.msgs_remarketing += 1;
-      if (!a) {
-        d.rmk_sin_medir += 1; // se estima al final, con el promedio medido
+      d.msgs_remarketing += f.n;
+      tot.msgs_remarketing += f.n;
+      if (!medido) {
+        d.rmk_sin_medir += f.n; // se estima al final, con el promedio medido
         continue;
       }
-      const c = costoExacto(a);
+      const c = costoExacto(f);
       const costo = c.cEntrada + c.cCache + c.cSalida;
-      const tokens = Number(f.tokens) || 0;
-      d.tokens += tokens;
-      tot.tokens += tokens;
+      d.tokens += f.tokens;
+      tot.tokens += f.tokens;
       d.tk_entrada += c.entrada;
       d.tk_cache += c.cached;
       d.tk_salida += c.salida;
@@ -243,40 +188,40 @@ async function calcularConsumo({
       d.costo_remarketing_usd += costo;
       tot.costo_usd += costo;
       tot.costo_remarketing_usd += costo;
-      rmkMedidos += 1;
+      rmkMedidos += f.n;
       rmkCostoMedido += costo;
       continue;
     }
-    if (SIN_IA.includes(f.responsable)) {
-      d.msgs_sin_ia += 1;
-      tot.msgs_sin_ia += 1;
-      if (f.responsable === 'IA_respuesta_rapida') {
-        d.msgs_rapida += 1;
-        tot.msgs_rapida += 1;
+    if (f.clase === 'fijo' || f.clase === 'rapida') {
+      d.msgs_sin_ia += f.n;
+      tot.msgs_sin_ia += f.n;
+      if (f.clase === 'rapida') {
+        d.msgs_rapida += f.n;
+        tot.msgs_rapida += f.n;
       } else {
-        d.msgs_fijo += 1;
-        tot.msgs_fijo += 1;
+        d.msgs_fijo += f.n;
+        tot.msgs_fijo += f.n;
       }
       continue;
     }
-    const a = leerAnalytics(f.json_analytics_mensaje);
-    const prov = proveedorDe(a);
-    porProveedor[prov] += 1;
+    // Lo viejo sin desglose se atribuye a OpenAI.
+    const prov = medido ? proveedorDeModelo(f.modelo) : 'openai';
+    porProveedor[prov] += f.n;
     if (proveedorFiltro && prov !== proveedorFiltro) continue;
-    d.msgs_ia += 1;
-    tot.msgs_ia += 1;
-    const tokens = Number(f.tokens) || 0;
-    d.tokens += tokens;
-    tot.tokens += tokens;
-    /* Desglose por TIPO de gasto. Con analytics es exacto (entrada sin
-       caché, caché y salida por separado, con el precio del modelo real);
-       los mensajes viejos sin desglose se reparten 95/5 entrada/salida —
-       el mismo supuesto de costoEstimadoPorTokens. La caché es donde vive
-       el ahorro real: cuesta ~10x menos que la entrada normal. */
+    d.msgs_ia += f.n;
+    tot.msgs_ia += f.n;
+    d.tokens += f.tokens;
+    tot.tokens += f.tokens;
+    /* Desglose por TIPO de gasto. Con desglose guardado es exacto (entrada
+       sin caché, caché y salida por separado, con el precio del modelo real);
+       los mensajes viejos sin desglose llegan repartidos 95/5 entrada/salida
+       —el mismo supuesto de costoEstimadoPorTokens— y se cobran con el modelo
+       de referencia. La caché es donde vive el ahorro real: cuesta ~10x menos
+       que la entrada normal. */
     let costo = 0;
-    if (a) {
+    if (medido) {
       const { entrada, cached, salida, cEntrada, cCache, cSalida } =
-        costoExacto(a);
+        costoExacto(f);
       costo = cEntrada + cCache + cSalida;
       d.tk_entrada += entrada;
       d.tk_cache += cached;
@@ -287,18 +232,16 @@ async function calcularConsumo({
       tot.costo_entrada_usd += cEntrada;
       tot.costo_cache_usd += cCache;
       tot.costo_salida_usd += cSalida;
-      tot.costo_exacto_msgs += 1;
+      tot.costo_exacto_msgs += f.n;
       costoExactoRespuestas += costo;
-    } else if (tokens > 0) {
-      const entrada = Math.round(tokens * 0.95);
-      const salida = tokens - entrada;
-      const cEntrada = (entrada * precioRef.input) / 1e6;
-      const cSalida = (salida * precioRef.output) / 1e6;
+    } else if (f.tokens > 0) {
+      const cEntrada = (f.tk_entrada * precioRef.input) / 1e6;
+      const cSalida = (f.tk_salida * precioRef.output) / 1e6;
       costo = cEntrada + cSalida;
-      d.tk_entrada += entrada;
-      d.tk_salida += salida;
-      tot.tk_entrada += entrada;
-      tot.tk_salida += salida;
+      d.tk_entrada += f.tk_entrada;
+      d.tk_salida += f.tk_salida;
+      tot.tk_entrada += f.tk_entrada;
+      tot.tk_salida += f.tk_salida;
       tot.costo_entrada_usd += cEntrada;
       tot.costo_salida_usd += cSalida;
     }
@@ -351,7 +294,10 @@ async function calcularConsumo({
      empieza antes del primer dato. */
   let medicion_desde = null;
   try {
-    /* Siempre con fecha: el MIN sin filtro recorría todo el historial y en
+    /* Con deleted_at IS NULL para que el índice acote por fecha (los índices
+       por cuenta llevan deleted_at antes de created_at; un borrado no cambia
+       desde cuándo hay medición).
+       Siempre con fecha: el MIN sin filtro recorría todo el historial y en
        cuentas grandes (cfg 285) tardaba minutos y el panel no cargaba. Solo
        importa si la medición empezó DENTRO del rango pedido: primero se mira
        si ya había algo medido en los 30 días anteriores al rango (entonces el
@@ -361,6 +307,7 @@ async function calcularConsumo({
       const [antes] = await db.query(
         `SELECT 1 AS hay FROM mensajes_clientes
           WHERE id_configuracion = ? AND rol_mensaje = 1
+            AND deleted_at IS NULL
             AND total_tokens_openai_mensaje > 0
             AND created_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)
             AND created_at < DATE_SUB(CURDATE(), INTERVAL ? DAY)
@@ -374,6 +321,7 @@ async function calcularConsumo({
         [primera] = await db.query(
           `SELECT MIN(created_at) AS d FROM mensajes_clientes
             WHERE id_configuracion = ? AND rol_mensaje = 1
+              AND deleted_at IS NULL
               AND total_tokens_openai_mensaje > 0
               AND created_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)`,
           { replacements: [id_configuracion, dias], type: db.QueryTypes.SELECT },
@@ -405,7 +353,7 @@ async function calcularConsumo({
       proveedor_cuenta: proveedorCuenta,
       totales: {
         ...tot,
-        clientes_atendidos: clientes.size,
+        clientes_atendidos,
         costo_promedio_ia_usd: promedioIA,
         ahorro_estimado_usd: ahorro_usd,
       },

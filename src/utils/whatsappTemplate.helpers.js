@@ -569,6 +569,18 @@ async function convertVideoForWhatsApp(
       `[VIDEO_CONVERT] Duración: ${duration.toFixed(1)}s | Video bitrate objetivo: ${videoKbps}k | Target: ${targetSizeMB}MB`,
     );
 
+    /* ¿El original trae pista de audio? Un video mudo (grabación de pantalla,
+       edición sin sonido) no tiene `0:a`, y la mezcla de abajo fallaba con
+       «Stream specifier ':a' matches no streams»: el video mudo no se podía
+       convertir nunca. Sin audio se usa solo la pista silenciosa. */
+    let tieneAudio = true;
+    try {
+      const probeAudio = await execAsync(
+        `ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${inputPath}"`,
+      );
+      tieneAudio = probeAudio.stdout.trim().length > 0;
+    } catch (_) {}
+
     // Helper interno: construye el comando ffmpeg con los parámetros dados
     // - Escala manteniendo aspect ratio al máximo maxW x maxH
     // - Redondea ancho/alto a número par (libx264 lo exige)
@@ -579,8 +591,13 @@ async function convertVideoForWhatsApp(
         `-c:v libx264 -preset ultrafast`,
         `-vf "scale='min(${maxW},iw)':'min(${maxH},ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"`,
         `-b:v ${vKbps}k -maxrate ${Math.floor(vKbps * 1.5)}k -bufsize ${vKbps * 2}k`,
-        `-filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0[aout]"`,
-        `-map 0:v -map "[aout]"`,
+        ...(tieneAudio
+          ? [
+              `-filter_complex "[0:a][1:a]amix=inputs=2:duration=first:dropout_transition=0[aout]"`,
+              `-map 0:v -map "[aout]"`,
+            ]
+          : // La pista silenciosa no termina sola: -shortest corta con el video.
+            [`-map 0:v -map 1:a -shortest`]),
         `-c:a aac -b:a ${aKbps}k -ar 44100 -ac 1`,
         `-movflags +faststart -y "${outputPath}"`,
       ].join(' ');
