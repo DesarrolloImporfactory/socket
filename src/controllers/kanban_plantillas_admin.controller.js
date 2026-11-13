@@ -32,6 +32,8 @@ const {
 
 const {
   uploadToUploader,
+  uploadVideoToVideoAPI,
+  extractBearerToken,
   validateMetaMediaOrThrow,
   inferHeaderFormatFromMime,
 } = require('../utils/whatsappTemplate.helpers');
@@ -1035,14 +1037,35 @@ exports.catalogoSubirMedia = catchAsync(async (req, res, next) => {
       ? 'catalogo/templates/header'
       : 'catalogo/respuestas_rapidas';
 
+  /* El uploader S3 responde 500 a cualquier video (comprobado 13-11-2026):
+     los videos van a la Video API, igual que en plantillas, wizard de
+     productos y remarketing por producto. Necesita el JWT del usuario. */
+  const esVideo =
+    format === 'VIDEO' || /^video\//.test(req.file.mimetype || '');
+
   let result;
   try {
-    result = await uploadToUploader({
-      buffer: req.file.buffer,
-      originalname: req.file.originalname,
-      mimetype: req.file.mimetype,
-      folder,
-    });
+    if (esVideo) {
+      const jwtToken = extractBearerToken(req);
+      if (!jwtToken) {
+        return next(
+          new AppError('No se pudo subir el video: la sesión no trae token.', 401),
+        );
+      }
+      result = await uploadVideoToVideoAPI({
+        buffer: req.file.buffer,
+        originalname: req.file.originalname || 'video.mp4',
+        mimetype: req.file.mimetype,
+        jwtToken,
+      });
+    } else {
+      result = await uploadToUploader({
+        buffer: req.file.buffer,
+        originalname: req.file.originalname,
+        mimetype: req.file.mimetype,
+        folder,
+      });
+    }
   } catch (err) {
     return next(
       new AppError(

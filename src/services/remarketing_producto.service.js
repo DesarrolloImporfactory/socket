@@ -34,6 +34,7 @@ const {
 } = require('../utils/webhook_whatsapp/enviarMultimedia');
 const {
   uploadToUploader,
+  uploadVideoToVideoAPI,
   getConfigFromDB,
 } = require('../utils/whatsappTemplate.helpers');
 const {
@@ -884,8 +885,55 @@ async function eliminar(id_configuracion, id_producto) {
   );
 }
 
+function errorSubida(mensaje, statusCode) {
+  const e = new Error(mensaje);
+  e.statusCode = statusCode;
+  e.codigo = 'SUBIDA_FALLIDA';
+  return e;
+}
+
 /** Media de los bloques (capturas de opiniones, fotos, video, PDF). */
-async function subirMedia({ id_configuracion, buffer, originalname, mimetype }) {
+async function subirMedia({
+  id_configuracion,
+  buffer,
+  originalname,
+  mimetype,
+  jwtToken = null,
+}) {
+  /* El uploader S3 responde 500 a cualquier video (ver subirMedia del wizard
+     de productos): los videos van a la Video API, la misma de las plantillas
+     y del wizard, que necesita el JWT del usuario. Sin esto, subir un video
+     en /remarketing fallaba siempre con «Uploader HTTP 500». */
+  if (/^video\//.test(mimetype || '')) {
+    if (!jwtToken) {
+      throw errorSubida(
+        'No se pudo subir el video: la sesión no trae token. Vuelve a iniciar sesión e inténtalo de nuevo.',
+        401,
+      );
+    }
+    let r;
+    try {
+      r = await uploadVideoToVideoAPI({
+        buffer,
+        originalname: originalname || 'video.mp4',
+        mimetype,
+        jwtToken,
+      });
+    } catch (e) {
+      console.warn(
+        `[RMK_PRODUCTO_UPLOAD] Video API falló (cfg ${id_configuracion}): ${e.message}`,
+      );
+      throw errorSubida(
+        'No se pudo subir el video en este momento. Inténtalo de nuevo en unos minutos.',
+        502,
+      );
+    }
+    if (!r?.fileUrl) {
+      throw errorSubida('El servidor de videos no devolvió la URL.', 502);
+    }
+    return { url: r.fileUrl, tipo: 'video', reutilizado: !!r.reutilizado };
+  }
+
   const r = await uploadToUploader({
     buffer,
     originalname,
