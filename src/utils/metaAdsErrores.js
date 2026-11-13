@@ -28,6 +28,15 @@
 const AJUSTES = 'https://business.facebook.com/settings';
 const FACTURACION = 'https://business.facebook.com/billing_hub/payment_settings';
 
+// "el video 6" / "los videos 3 y 6", según ctx.videos (posición del creativo
+// en la plantilla, la misma numeración V1..V10 que ve el cliente).
+const cualesVideos = (ctx) => {
+  const n = Array.isArray(ctx?.videos) ? ctx.videos : [];
+  if (!n.length) return 'uno de los videos';
+  if (n.length === 1) return `el video ${n[0]}`;
+  return `los videos ${n.slice(0, -1).join(', ')} y ${n[n.length - 1]}`;
+};
+
 const CATALOGO = [
   {
     subcode: 2446886,
@@ -199,6 +208,72 @@ const CATALOGO = [
     ],
   },
   {
+    // Lo levanta el lanzador al revisar la cuenta ANTES de crear nada.
+    patron: /CUENTA_PUBLICITARIA_BLOQUEADA/,
+    culpa: 'cuenta',
+    titulo: 'Tu cuenta publicitaria no puede publicar en este momento',
+    porque:
+      'Meta tiene la cuenta publicitaria bloqueada: casi siempre es un saldo pendiente de pago, y a veces la cuenta está deshabilitada o cerrada. Mientras siga así rechaza cualquier anuncio. No se creó ninguna campaña.',
+    pasos: [
+      'Entra al centro de facturación de tu cuenta publicitaria y paga el saldo pendiente (o revisa el aviso que Meta te muestra ahí).',
+      'Cuando la cuenta vuelva a estar activa, lanza otra vez.',
+      'No hace falta reintentar antes: mientras siga bloqueada dará el mismo resultado.',
+    ],
+    enlace: { texto: 'Abrir el centro de facturación', url: FACTURACION },
+  },
+  // Los tres siguientes los levanta el lanzador al revisar los videos ANTES
+  // de crear la campaña (prepararVideosParaLanzar): no se creó nada en Meta.
+  {
+    patron: /VIDEO_NO_PROCESADO/,
+    culpa: 'plantilla',
+    titulo: (ctx) => `Meta no pudo procesar ${cualesVideos(ctx)}`,
+    porque:
+      'El archivo se subió, pero Meta lo marcó con error al procesarlo (pasa con videos dañados o exportados en un formato poco común), así que no puede usarse en un anuncio. No se creó ninguna campaña.',
+    pasos: (ctx) => [
+      `Edita la plantilla y, en el paso Creativos, quita ${cualesVideos(ctx)}.`,
+      'Si lo quieres usar, vuelve a exportarlo en MP4 y súbelo otra vez.',
+      'Lanza de nuevo: los demás creativos están bien.',
+    ],
+  },
+  {
+    patron: /VIDEO_PROCESANDO/,
+    culpa: 'plantilla',
+    titulo: (ctx) => `Meta todavía está procesando ${cualesVideos(ctx)}`,
+    porque:
+      'Los videos recién subidos tardan un momento en quedar listos y Meta no deja crear el anuncio antes. No se creó ninguna campaña.',
+    pasos: [
+      'Espera un par de minutos y vuelve a lanzar la plantilla.',
+      'Si después de 10 minutos sigue igual, quita ese video y súbelo otra vez.',
+    ],
+  },
+  {
+    patron: /VIDEO_SIN_PORTADA/,
+    culpa: 'plantilla',
+    titulo: (ctx) => `Meta no generó la portada de ${cualesVideos(ctx)}`,
+    porque:
+      'Todo anuncio de video necesita una imagen de portada y Meta no entregó ninguna para ese archivo. No se creó ninguna campaña.',
+    pasos: (ctx) => [
+      'Espera un par de minutos y vuelve a lanzar.',
+      `Si se repite, edita la plantilla, quita ${cualesVideos(ctx)} y súbelo otra vez.`,
+    ],
+  },
+  {
+    // Lo mismo, pero detectado por Meta al crear el creativo (por si la
+    // revisión previa no pudo leer el estado del video).
+    subcode: 1443226,
+    culpa: 'plantilla',
+    titulo: 'A uno de los videos le falta la portada',
+    porque: (ctx) =>
+      `Meta no tiene una imagen de portada para ese video${
+        ctx.paso ? ` (falló en "${ctx.paso}": la V indica cuál de tus creativos es)` : ''
+      }. Casi siempre es un video que Meta no terminó de procesar o que procesó con error.`,
+    pasos: [
+      'Edita la plantilla y, en el paso Creativos, quita ese video.',
+      'Súbelo otra vez (en MP4) y espera a que aparezca su miniatura.',
+      'Vuelve a lanzar.',
+    ],
+  },
+  {
     patron: /timeout of \d+ms exceeded|ETIMEDOUT|ECONNABORTED/i,
     culpa: 'reintentar',
     titulo: 'Meta tardó demasiado en responder',
@@ -236,6 +311,11 @@ const explicarError = (crudo, ctx = {}) => {
   const subcode = Number(e.error_subcode) || null;
   const code = Number(e.code) || null;
   const texto = String(e.error_user_msg || e.message || '');
+  // La bitácora relee el error guardado sin ctx: los videos señalados van
+  // dentro del propio error (meta_error.videos del lanzador).
+  if (!ctx.videos && Array.isArray(e.videos)) {
+    ctx = { ...ctx, videos: e.videos.map((v) => v?.n ?? v) };
+  }
 
   const ficha =
     CATALOGO.find((c) => c.subcode && c.subcode === subcode) ||
