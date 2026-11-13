@@ -32,6 +32,7 @@ const {
   validarApiKeyClaude,
   esApiKeyClaudeInvalida,
   mensajeErrorClaude,
+  MODELO_OPENAI_RECOMENDADO,
 } = require('../utils/claude/claude');
 // Aviso no bloqueante al dueño (organización sin verificar para gpt-5): ver
 // utils/openia/avisoOpenAI.js y el respaldo en kanban_ia.service.
@@ -1020,10 +1021,43 @@ exports.actualizar_proveedor_ia = catchAsync(async (req, res, next) => {
     }
   }
 
+  /* Al volver a OpenAI, las columnas que quedaron con un modelo de Claude se
+     pasan solas al recomendado de OpenAI: OpenAI rechaza un modelo `claude-*`
+     con 404 y el bot se quedaba mudo en esa columna sin que el cliente
+     entendiera por qué (cfg 1512, 2026-11-12). Se hace SIEMPRE que el destino
+     es OpenAI, no solo si el proveedor cambió, para que volver a pulsar
+     «OpenAI» repare una cuenta que ya quedó así.
+     En el otro sentido no se toca la columna: con Claude el motor ya usa el
+     equivalente en precio (modeloClaude) y conservar el modelo de OpenAI
+     permite volver sin perder lo que el cliente había elegido. */
+  let columnas_ajustadas = 0;
+  if (proveedor === 'openai') {
+    try {
+      const [, meta] = await db.query(
+        `UPDATE kanban_columnas
+            SET modelo = ?
+          WHERE id_configuracion = ? AND modelo LIKE 'claude-%'`,
+        {
+          replacements: [MODELO_OPENAI_RECOMENDADO, id_configuracion],
+          type: db.QueryTypes.UPDATE,
+        },
+      );
+      columnas_ajustadas = Number(meta?.affectedRows ?? meta) || 0;
+      if (columnas_ajustadas) {
+        console.log(
+          `[proveedor_ia] cfg ${id_configuracion}: ${columnas_ajustadas} columnas pasaron de un modelo de Claude a ${MODELO_OPENAI_RECOMENDADO}`,
+        );
+      }
+    } catch (e) {
+      console.error('[proveedor_ia] no se pudieron ajustar los modelos de las columnas:', e.message);
+    }
+  }
+
   return res.status(200).json({
     status: '200',
     proveedor_ia: proveedor,
     cadenas_reiniciadas,
+    columnas_ajustadas,
     message:
       proveedor === 'claude'
         ? 'El bot ahora responde con Claude'
