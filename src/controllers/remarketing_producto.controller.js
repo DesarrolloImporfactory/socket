@@ -89,11 +89,14 @@ exports.subirMedia = conErrores(async (req, res) => {
   const id_configuracion = idConfig(req);
   if (!id_configuracion) return falla(res, 'id_configuracion es obligatorio.');
   if (!req.file) return falla(res, 'Falta el archivo.');
+  // El JWT va a la Video API (videos); imágenes y PDF no lo usan.
+  const { extractBearerToken } = require('../utils/whatsappTemplate.helpers');
   const data = await servicio.subirMedia({
     id_configuracion,
     buffer: req.file.buffer,
     originalname: req.file.originalname,
     mimetype: req.file.mimetype,
+    jwtToken: extractBearerToken(req),
   });
   res.status(200).json({ status: 'success', data });
 });
