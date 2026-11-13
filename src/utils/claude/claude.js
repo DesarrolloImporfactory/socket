@@ -73,6 +73,18 @@ function modeloClaude(modelo) {
   return MODELO_INTERMEDIO;
 }
 
+/** El camino inverso: la cuenta volvió a OpenAI y la columna se quedó con un
+ *  modelo de Claude guardado. OpenAI lo rechaza con 404 «The model
+ *  `claude-sonnet-5-5` does not exist» y el bot se queda mudo en esa columna
+ *  (cfg 1512 «La Yapa Store», 2026-11-12; la 1333 tenía tres columnas igual).
+ *  Se responde con el modelo recomendado de OpenAI, el mismo que instalan las
+ *  plantillas; quien quiera otro lo elige en la columna. */
+const MODELO_OPENAI_RECOMENDADO = 'gpt-5-mini';
+
+function modeloOpenAI(modelo) {
+  return esModeloClaude(modelo) ? MODELO_OPENAI_RECOMENDADO : modelo;
+}
+
 /** Lo que cambia según el modelo (ver la cabecera): Haiku pensando y sin respaldo. */
 function opcionesPorModelo(modelo) {
   if (/^claude-haiku-/i.test(String(modelo || ''))) return { thinking: { type: 'adaptive' } };
@@ -406,6 +418,8 @@ module.exports = {
   IDS_CLAUDE,
   esModeloClaude,
   modeloClaude,
+  modeloOpenAI,
+  MODELO_OPENAI_RECOMENDADO,
   validarApiKeyClaude,
   ejecutarConClaude,
   esSinSaldoClaude,
