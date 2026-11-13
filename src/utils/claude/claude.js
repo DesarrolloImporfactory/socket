@@ -48,10 +48,29 @@ const IDS_CLAUDE = MODELOS_CLAUDE.map((m) => m.value);
 
 const esModeloClaude = (modelo) => /^claude-/i.test(String(modelo || ''));
 
-/** El modelo que de verdad se manda: el de la columna si es de Claude, si no el defecto. */
+/* Las plantillas globales instalan cada columna con el modelo recomendado de
+   OpenAI (casi siempre gpt-5-mini). Si la cuenta responde con Claude y la
+   columna sigue con ese modelo, se usa el EQUIVALENTE EN PRECIO, no el más
+   caro: hasta el 2026-11-12 todo modelo gpt-* caía en Opus 5.5 (~15 veces el
+   costo de gpt-5-mini) sin que el cliente lo hubiera elegido — 65 columnas en
+   17 cuentas. Quien quiera Sonnet u Opus lo elige a mano en la columna. */
+const MODELO_ECONOMICO = 'claude-haiku-5-5';
+const MODELO_INTERMEDIO = 'claude-sonnet-5-5';
+
+/* Recordatorios de remarketing con IA: dos líneas a partir del recap. No
+   necesitan el modelo de ventas de la columna y son la llamada más repetida
+   de una cuenta (cfg 1512: 373 en dos días). Siempre con el económico. */
+const MODELO_REMARKETING = MODELO_ECONOMICO;
+
+/** El modelo que de verdad se manda: el de la columna si es de Claude; si es
+ *  de OpenAI (o está vacío), su equivalente en precio. */
 function modeloClaude(modelo) {
-  const m = String(modelo || '').trim();
-  return IDS_CLAUDE.includes(m) ? m : MODELO_CLAUDE_DEFECTO;
+  const m = String(modelo || '').trim().toLowerCase();
+  if (IDS_CLAUDE.includes(m)) return m;
+  // mini / nano / 3.5 / sin modelo → económico. gpt-5, gpt-4.1, gpt-4o y
+  // cualquier otro modelo «completo» → intermedio.
+  if (!m || /mini|nano|gpt-3\.5/.test(m)) return MODELO_ECONOMICO;
+  return MODELO_INTERMEDIO;
 }
 
 /** Lo que cambia según el modelo (ver la cabecera): Haiku pensando y sin respaldo. */
@@ -129,8 +148,20 @@ async function ejecutarConClaude({
   const client = cliente(api_key_claude);
   const modelo = modeloClaude(model);
 
-  let system = String(instructions || '');
-  if (additional_instructions) system += '\n\n' + additional_instructions;
+  /* Dos bloques: el prompt de la columna + catálogo (igual para todos los
+     clientes) lleva el corte de caché; lo que cambia por cliente o por
+     recordatorio (producto del anuncio, ángulo de remarketing) va DESPUÉS.
+     Pegado en un solo bloque, cada variante era un prefijo distinto: no
+     reusaba la caché de las demás y pagaba la escritura (1,25x) cada vez. */
+  const fijo = String(instructions || '');
+  const variable = String(additional_instructions || '');
+  // Un bloque de texto vacío da 400: sin prompt de columna va todo en uno.
+  const system = fijo.trim()
+    ? [{ type: 'text', text: fijo, cache_control: { type: 'ephemeral' } }]
+    : [{ type: 'text', text: variable, cache_control: { type: 'ephemeral' } }];
+  if (fijo.trim() && variable.trim()) {
+    system.push({ type: 'text', text: variable });
+  }
 
   const t0 = Date.now();
   const res = await client.beta.messages.create({
@@ -139,7 +170,7 @@ async function ejecutarConClaude({
     // Chat de ventas: razonamiento corto. Opus 5.5 no deja apagarlo.
     output_config: { effort: 'low' },
     ...opcionesPorModelo(modelo),
-    system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+    system,
     messages: [{ role: 'user', content: String(input || '') }],
   });
 
@@ -148,6 +179,9 @@ async function ejecutarConClaude({
     modelo,
     input: (Number(u.input_tokens) || 0) + (Number(u.cache_read_input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0),
     cached: Number(u.cache_read_input_tokens) || 0,
+    // Lo que se ESCRIBIÓ en caché este turno: Anthropic lo cobra a 1,25x la
+    // entrada normal. Va incluido en `input`; el panel de consumo lo separa.
+    cache_write: Number(u.cache_creation_input_tokens) || 0,
     output: Number(u.output_tokens) || 0,
     reasoning: 0,
   };
@@ -365,6 +399,9 @@ async function describirImagenClaude({
 
 module.exports = {
   MODELO_CLAUDE_DEFECTO,
+  MODELO_ECONOMICO,
+  MODELO_INTERMEDIO,
+  MODELO_REMARKETING,
   MODELOS_CLAUDE,
   IDS_CLAUDE,
   esModeloClaude,

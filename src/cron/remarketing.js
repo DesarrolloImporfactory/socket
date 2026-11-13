@@ -1076,6 +1076,11 @@ cron.schedule('*/1 * * * *', async () => {
           let rrInfo = null;
           let iaTextoEnviado = null;
           let iaWamid = null;
+          // Tokens del recordatorio generado con IA: se guardan en el mensaje
+          // para que el panel de consumo los cuente (antes no se medían y el
+          // remarketing era la mayor parte de la factura sin aparecer).
+          let iaUso = null;
+          let iaTokens = 0;
 
           // Verificar ventana 24h una sola vez si es necesario
           let dentroVentana = false;
@@ -1172,6 +1177,7 @@ cron.schedule('*/1 * * * *', async () => {
               const {
                 usaClaude,
                 ejecutarConClaude,
+                MODELO_REMARKETING,
               } = require('../utils/claude/claude');
               const { leerApiKeyClaude } = require('../utils/claude/apiKeyClaude');
               const api_key_claude = cfgRow
@@ -1356,7 +1362,9 @@ cron.schedule('*/1 * * * *', async () => {
                     instructions,
                     additional_instructions: prompt_ia_resuelto,
                     input,
-                    model: colRow.modelo,
+                    // Un recordatorio son dos líneas: va con el modelo
+                    // económico, no con el de ventas de la columna.
+                    model: MODELO_REMARKETING,
                     max_tokens: colRow.max_tokens || 300,
                     api_key_claude,
                   });
@@ -1404,6 +1412,8 @@ cron.schedule('*/1 * * * *', async () => {
                 textoIA = limpiarMetaRemarketing(
                   limpiarTagsAcciones((r?.respuesta || '').trim()),
                 ).trim();
+                iaUso = r?.usage && r.usage.modelo ? r.usage : null;
+                iaTokens = Number(r?.total_tokens) || 0;
               } else {
                 if (!colRow?.assistant_id) {
                   throw new Error(
@@ -1942,6 +1952,10 @@ cron.schedule('*/1 * * * *', async () => {
               visto: 1,
               uid_whatsapp: telefonoLimpio,
               id_wamid_mensaje: iaWamid,
+              total_tokens_openai_mensaje: iaTokens,
+              ...(iaUso
+                ? { json_analytics_mensaje: JSON.stringify(iaUso).slice(0, 1000) }
+                : {}),
             });
           }
 

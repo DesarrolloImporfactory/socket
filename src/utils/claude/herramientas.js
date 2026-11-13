@@ -15,7 +15,13 @@
  * llega texto. Lo que devolvieron las herramientas sale en
  * `hechosHerramientas` para que la guardia lo dé por respaldado.
  */
-const { cliente, modeloClaude, opcionesPorModelo, PISO_MAX_TOKENS } = require('./claude');
+const {
+  cliente,
+  IDS_CLAUDE,
+  MODELO_CLAUDE_DEFECTO,
+  opcionesPorModelo,
+  PISO_MAX_TOKENS,
+} = require('./claude');
 
 const TOPE_HERRAMIENTA_MS = 8000;
 const TOPE_TURNO_MS = 30000;
@@ -56,7 +62,14 @@ async function ejecutarConClaudeHerramientas({
   deps = {},
 }) {
   const client = deps.client || cliente(api_key_claude);
-  const modelo = modeloClaude(model);
+  /* El bucle con herramientas (bot de soporte Expertos, asistente de la
+     cuenta) sigue como estaba: sin un modelo de Claude explícito usa Opus.
+     Decidir cuándo consultar una herramienta sí pide el modelo capaz, y esto
+     corre con nuestra llave. La equivalencia económica de modeloClaude() es
+     para el bot de ventas de los clientes. */
+  const modelo = IDS_CLAUDE.includes(String(model || '').trim())
+    ? String(model).trim()
+    : MODELO_CLAUDE_DEFECTO;
   // Pasado el tope del turno, el bucle se detiene: no hace más llamadas
   // pagadas, no corre herramientas y no escribe más en el log del turno.
   const control = new AbortController();
