@@ -165,8 +165,88 @@ async function corregirPrecioCombo(texto, id_configuracion, opts = {}) {
   };
 }
 
+/**
+ * Descuento del remarketing por producto (botón «🎁 Quiero mi 10% OFF»): el
+ * cliente lo tocó y el bot debe cobrarle el total de los productos menos ese
+ * porcentaje. La instrucción va en el contexto de cada turno, pero el total
+ * no se le confía al modelo: aquí se cuadra contra el catálogo.
+ *
+ * Base = suma, por cada línea "Producto:", del precio de catálogo para su
+ * cantidad (el combo de N si existe; si no, unitario x N).
+ *   - total ≈ base               → se olvidó del descuento: se corrige.
+ *   - total ≈ base con descuento → correcto (se iguala el redondeo si difiere
+ *                                  en centavos: $31.50 por $31.49).
+ *   - cualquier otro total (envío sumado, precio del prompt, producto que no
+ *     está en el catálogo) → no se toca: no se adivina.
+ * Corre DESPUÉS de corregirPrecioCombo, así "unitario x N" ya llegó como combo.
+ *
+ * @returns {Promise<null|{texto:string, motivo:string, de:number, a:number, base:number}>}
+ */
+async function aplicarDescuentoAlTotal(texto, id_configuracion, pct, opts = {}) {
+  const porcentaje = Number(pct);
+  if (!(porcentaje > 0 && porcentaje < 100)) return null;
+  const t = String(texto || '');
+  const lineasProducto = [...t.matchAll(RE_PRODUCTO)].map((m) => m[1].trim());
+  if (!lineasProducto.length) return null;
+  const mPrecio = t.match(RE_PRECIO);
+  if (!mPrecio) return null;
+  const total = parsearPrecio(mPrecio[2]);
+  if (total <= 0) return null;
+
+  let productos = opts.productos;
+  if (!productos) {
+    productos = await db.query(
+      `SELECT id, nombre, precio, combos_producto
+         FROM productos_chat_center
+        WHERE id_configuracion = ? AND eliminado = 0`,
+      { replacements: [id_configuracion], type: db.QueryTypes.SELECT },
+    );
+  }
+  if (!productos?.length) return null;
+  const { matchEnLista } = require('../services/dropiAutoOrder.service');
+
+  let base = 0;
+  for (const cruda of lineasProducto) {
+    const linea = parsearLineaProducto(cruda);
+    // Con un solo producto la cantidad puede venir en su propia línea.
+    const cantidadTxt =
+      lineasProducto.length === 1
+        ? t.match(RE_CANTIDAD)?.[1] || linea.cantidad
+        : linea.cantidad;
+    const cantidad = parseInt(String(cantidadTxt).replace(/\D/g, ''), 10) || 1;
+    if (!linea.producto) return null;
+    const prod = matchEnLista(productos, linea.producto, (p) => p.nombre);
+    const unitario = Number(prod?.precio || 0);
+    if (!prod || !(unitario > 0)) return null; // fuera del catálogo: no se adivina
+    const combo = leerCombos(prod).find(
+      (c) => Number(c?.cantidad) === cantidad && parsearPrecio(c?.precio) > 0,
+    );
+    base += combo ? parsearPrecio(combo.precio) : unitario * cantidad;
+  }
+  if (!(base > 0)) return null;
+
+  const esperado = Math.round(base * (100 - porcentaje)) / 100;
+  if (Math.abs(total - esperado) <= 0.02) return null; // ya está bien
+  const olvidoDescuento = Math.abs(total - base) <= 0.5;
+  const redondeoDistinto = Math.abs(total - esperado) <= 1;
+  if (!olvidoDescuento && !redondeoDistinto) return null;
+
+  const conSigno = /\$/.test(mPrecio[2]);
+  const nuevoValor = `${conSigno ? '$' : ''}${esperado.toFixed(2)}`;
+  return {
+    texto: t.replace(mPrecio[0], `${mPrecio[1]}${nuevoValor}`),
+    motivo: olvidoDescuento
+      ? `el bot cobró el precio normal ($${total.toFixed(2)}) y el cliente tiene ${porcentaje}% de descuento`
+      : `total con ${porcentaje}% de descuento mal redondeado ($${total.toFixed(2)})`,
+    de: total,
+    a: esperado,
+    base,
+  };
+}
+
 module.exports = {
   parsearLineaProducto,
   parsearPrecio,
   corregirPrecioCombo,
+  aplicarDescuentoAlTotal,
 };
