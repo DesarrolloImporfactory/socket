@@ -21,6 +21,7 @@
 //  - webhook WhatsApp → interpretarBotonProducto + atenderBotonProducto
 //    (igual que el colchón: antes de la IA) y registrarRespuestaProducto.
 const axios = require('axios');
+const path = require('path');
 const { db } = require('../database/config');
 const MensajesClientes = require('../models/mensaje_cliente.model');
 const {
@@ -35,6 +36,7 @@ const {
 const {
   uploadToUploader,
   uploadVideoToVideoAPI,
+  convertVideoForWhatsApp,
   getConfigFromDB,
 } = require('../utils/whatsappTemplate.helpers');
 const {
@@ -911,12 +913,35 @@ async function subirMedia({
         401,
       );
     }
+    /* El video sale por WhatsApp tal como queda guardado: Meta solo acepta
+       MP4 con H.264 + audio AAC y hasta 16 MB, y lo rechaza recién al
+       enviarlo (el cliente final nunca lo recibe). El conversor de las
+       plantillas lo deja en ese formato; si ya cumple, lo devuelve intacto.
+       Al conversor va un nombre fijo: el del archivo acaba en un comando. */
+    let listo = buffer;
+    try {
+      listo = await convertVideoForWhatsApp(buffer, 'remarketing.mp4');
+    } catch (e) {
+      if (e.isOversized) throw errorSubida(e.message, 400);
+      console.warn(
+        `[RMK_PRODUCTO_UPLOAD] Conversor falló (cfg ${id_configuracion}): ${e.message}`,
+      );
+      throw errorSubida(
+        'No se pudo preparar el video para WhatsApp. Prueba con otro archivo en formato MP4.',
+        422,
+      );
+    }
+    const convertido = listo !== buffer;
+    const nombre = convertido
+      ? `${path.parse(originalname || 'video').name}.mp4`
+      : originalname || 'video.mp4';
+
     let r;
     try {
       r = await uploadVideoToVideoAPI({
-        buffer,
-        originalname: originalname || 'video.mp4',
-        mimetype,
+        buffer: listo,
+        originalname: nombre,
+        mimetype: convertido ? 'video/mp4' : mimetype,
         jwtToken,
       });
     } catch (e) {
@@ -931,7 +956,12 @@ async function subirMedia({
     if (!r?.fileUrl) {
       throw errorSubida('El servidor de videos no devolvió la URL.', 502);
     }
-    return { url: r.fileUrl, tipo: 'video', reutilizado: !!r.reutilizado };
+    return {
+      url: r.fileUrl,
+      tipo: 'video',
+      reutilizado: !!r.reutilizado,
+      convertido,
+    };
   }
 
   const r = await uploadToUploader({

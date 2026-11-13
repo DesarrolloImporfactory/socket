@@ -1119,13 +1119,35 @@ async function subirMedia({ id_configuracion, file, jwtToken = null }) {
        (404) que ni la vista previa ni WhatsApp podían abrir. La Video API
        (la misma de los videos de plantillas) sirve desde cualquier servidor;
        necesita el JWT del usuario. Si falla, se sigue con el camino de antes. */
+    /* El video sale por WhatsApp tal como queda guardado y Meta solo acepta
+       MP4 con H.264 + AAC: un MOV de iPhone o un WEBM se subía bien y fallaba
+       recién al enviarlo. El conversor de las plantillas lo deja en ese
+       formato (si ya cumple, lo devuelve intacto). Si el conversor falla se
+       sigue con el original, como antes. Nombre fijo: acaba en un comando. */
+    const {
+      uploadVideoToVideoAPI,
+      convertVideoForWhatsApp,
+    } = require('../utils/whatsappTemplate.helpers');
+    let buffer = file.buffer;
+    let mimetype = file.mimetype;
+    let nombre = file.originalname || 'video.mp4';
+    try {
+      const listo = await convertVideoForWhatsApp(file.buffer, 'wizard.mp4');
+      if (listo !== file.buffer) {
+        buffer = listo;
+        mimetype = 'video/mp4';
+        nombre = `${path.parse(nombre).name}.mp4`;
+      }
+    } catch (e) {
+      if (e.isOversized) throw errorCon(e.message, 'VIDEO_PESADO');
+      console.warn(`[WIZARD_UPLOAD] Conversor falló (${e.message}); subo el original`);
+    }
     if (jwtToken) {
       try {
-        const { uploadVideoToVideoAPI } = require('../utils/whatsappTemplate.helpers');
         const r = await uploadVideoToVideoAPI({
-          buffer: file.buffer,
-          originalname: file.originalname || 'video.mp4',
-          mimetype: file.mimetype,
+          buffer,
+          originalname: nombre,
+          mimetype,
           jwtToken,
         });
         if (r?.fileUrl) return { tipo: 'video', url: r.fileUrl, origen: 'subida' };
@@ -1134,9 +1156,9 @@ async function subirMedia({ id_configuracion, file, jwtToken = null }) {
       }
     }
     const url = await subirBuffer({
-      buffer: file.buffer,
-      mimetype: file.mimetype,
-      nombre: file.originalname || 'video.mp4',
+      buffer,
+      mimetype,
+      nombre,
       carpeta: `productos-wizard/${id_configuracion}`,
     });
     return { tipo: 'video', url, origen: 'subida' };

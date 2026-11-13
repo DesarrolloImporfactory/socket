@@ -33,6 +33,7 @@ const {
 const {
   uploadToUploader,
   uploadVideoToVideoAPI,
+  convertVideoForWhatsApp,
   extractBearerToken,
   validateMetaMediaOrThrow,
   inferHeaderFormatFromMime,
@@ -1052,10 +1053,22 @@ exports.catalogoSubirMedia = catchAsync(async (req, res, next) => {
           new AppError('No se pudo subir el video: la sesión no trae token.', 401),
         );
       }
+      /* La respuesta rápida viaja tal cual por WhatsApp: se deja en MP4
+         H.264 + AAC (si ya cumple, el conversor la devuelve intacta). El
+         header de plantilla no: Meta lo re-transcodifica. */
+      let buffer = req.file.buffer;
+      if (modo === 'respuesta_rapida') {
+        try {
+          buffer = await convertVideoForWhatsApp(req.file.buffer, 'catalogo.mp4');
+        } catch (e) {
+          if (e.isOversized) return next(new AppError(e.message, 400));
+          console.warn(`[CATALOGO_MEDIA] Conversor falló (${e.message}); subo el original`);
+        }
+      }
       result = await uploadVideoToVideoAPI({
-        buffer: req.file.buffer,
+        buffer,
         originalname: req.file.originalname || 'video.mp4',
-        mimetype: req.file.mimetype,
+        mimetype: buffer !== req.file.buffer ? 'video/mp4' : req.file.mimetype,
         jwtToken,
       });
     } else {

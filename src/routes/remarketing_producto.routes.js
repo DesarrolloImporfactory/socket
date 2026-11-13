@@ -13,7 +13,8 @@ const router = express.Router();
 
 /* Capturas de opiniones, fotos, video o PDF de los bloques. En memoria: el
    servicio lo sube al uploader (dedupe por hash). 16 MB = tope de WhatsApp
-   para video. */
+   para video. MOV (iPhone) y WEBM entran porque el servicio pasa todo video
+   por el conversor, que lo deja en MP4 H.264 + AAC. */
 const MIMES = new Set([
   'image/jpeg',
   'image/jpg',
@@ -21,6 +22,8 @@ const MIMES = new Set([
   'image/webp',
   'video/mp4',
   'video/3gpp',
+  'video/quicktime',
+  'video/webm',
   'application/pdf',
 ]);
 const subirArchivo = multer({
@@ -28,7 +31,7 @@ const subirArchivo = multer({
   limits: { fileSize: 16 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (MIMES.has(file.mimetype)) return cb(null, true);
-    cb(new Error('Formato no permitido: usa JPG, PNG, WEBP, MP4 o PDF.'));
+    cb(new Error('Formato no permitido: usa JPG, PNG, WEBP, MP4, MOV o PDF.'));
   },
 }).single('archivo');
 
