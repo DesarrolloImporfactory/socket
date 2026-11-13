@@ -105,17 +105,38 @@ async function calcularConsumo({
   /* Una sola pasada por los mensajes salientes del bot en el rango. Se traen
      solo los campos necesarios; el desglose por día se arma en JS para poder
      calcular el costo exacto donde hay analytics y estimado donde no. */
-  const filas = await db.query(
-    `SELECT DATE(created_at) AS dia, responsable, celular_recibe,
+  /* Va en dos mitades (vivos + borrados) a propósito: los índices de la tabla
+     llevan deleted_at ANTES de created_at, así que sin fijar deleted_at MySQL
+     no puede acotar por fecha y recorre todos los salientes de la cuenta
+     (cfg 322: 300.000 filas para devolver 615). Con las dos mitades entra por
+     el rango de fechas. Los borrados se cuentan igual: sus tokens se pagaron. */
+  const CAMPOS_CONSUMO = `DATE(created_at) AS dia, responsable, celular_recibe,
             COALESCE(total_tokens_openai_mensaje, 0) AS tokens,
-            json_analytics_mensaje
-       FROM mensajes_clientes
-      WHERE id_configuracion = ?
+            json_analytics_mensaje`;
+  const FILTRO_CONSUMO = `id_configuracion = ?
         AND rol_mensaje = 1
         AND (responsable LIKE 'IA\\_%' OR responsable = ?)
-        AND created_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)`,
+        AND created_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)`;
+  const filas = await db.query(
+    `SELECT ${CAMPOS_CONSUMO}
+       FROM mensajes_clientes
+      WHERE ${FILTRO_CONSUMO}
+        AND deleted_at IS NULL
+      UNION ALL
+     SELECT ${CAMPOS_CONSUMO}
+       FROM mensajes_clientes
+      WHERE ${FILTRO_CONSUMO}
+        AND deleted_at >= DATE_SUB(CURDATE(), INTERVAL ? DAY)`,
     {
-      replacements: [id_configuracion, REMARKETING_IA, dias],
+      replacements: [
+        id_configuracion,
+        REMARKETING_IA,
+        dias,
+        id_configuracion,
+        REMARKETING_IA,
+        dias,
+        dias,
+      ],
       type: db.QueryTypes.SELECT,
     },
   );
@@ -499,7 +520,8 @@ exports.diagnostico = catchAsync(async (req, res) => {
     wizard,
     rmkProducto,
     tablero,
-    enPauta,
+    clientesPorAnuncio,
+    anunciosProducto,
   ] = await Promise.all([
     consulta(
       `SELECT id, nombre, estado_db, modelo, es_principal,
@@ -544,16 +566,20 @@ exports.diagnostico = catchAsync(async (req, res) => {
     /* Productos EN PAUTA: los que recibieron clientes desde un anuncio en las
        últimas 4 semanas (mismo cruce que el filtro por producto del kanban:
        cliente_productos_ad × anuncios_producto). Una cuenta puede tener 80
-       productos cargados y pautar 3: solo esos gastan IA. */
+       productos cargados y pautar 3: solo esos gastan IA. El cruce se hace
+       en JS con dos consultas chicas: el JOIN en SQL saltaba fila por fila
+       entre las dos tablas y en frío tardó 15 s en la cfg 285. */
     consulta(
-      `SELECT ap.id_producto, COUNT(*) AS clientes
-         FROM cliente_productos_ad cpa
-         JOIN anuncios_producto ap
-           ON ap.id_configuracion = cpa.id_configuracion
-          AND ap.source_id = cpa.source_id
-        WHERE cpa.id_configuracion = ?
-          AND cpa.created_at >= DATE_SUB(NOW(), INTERVAL ${DIAS_PAUTA} DAY)
-        GROUP BY ap.id_producto`,
+      `SELECT source_id, COUNT(*) AS clientes
+         FROM cliente_productos_ad
+        WHERE id_configuracion = ?
+          AND created_at >= DATE_SUB(NOW(), INTERVAL ${DIAS_PAUTA} DAY)
+        GROUP BY source_id`,
+      [id_configuracion],
+    ),
+    consulta(
+      `SELECT source_id, id_producto FROM anuncios_producto
+        WHERE id_configuracion = ?`,
       [id_configuracion],
     ),
   ]);
@@ -561,9 +587,18 @@ exports.diagnostico = catchAsync(async (req, res) => {
   /* Solo se le reclama al cliente lo que está vendiendo hoy. Si el cruce con
      anuncios no devuelve nada (cuenta sin anuncios enlazados a productos) no
      se puede saber qué pauta: se revisan todos y el texto lo aclara. */
-  const clientesPorProducto = new Map(
-    enPauta.map((r) => [Number(r.id_producto), Number(r.clientes) || 0]),
+  const productoDelAnuncio = new Map(
+    anunciosProducto.map((r) => [String(r.source_id), Number(r.id_producto)]),
   );
+  const clientesPorProducto = new Map();
+  for (const r of clientesPorAnuncio) {
+    const idProducto = productoDelAnuncio.get(String(r.source_id));
+    if (!idProducto) continue;
+    clientesPorProducto.set(
+      idProducto,
+      (clientesPorProducto.get(idProducto) || 0) + (Number(r.clientes) || 0),
+    );
+  }
   const productosEnPauta = productosTodos
     .filter((p) => clientesPorProducto.has(Number(p.id)))
     .sort(
@@ -685,9 +720,11 @@ exports.diagnostico = catchAsync(async (req, res) => {
           : ''),
       pasos: sinRmkProducto.length
         ? [
-            'Entra a Productos → Remarketing.',
-            'Elige el producto y escribe hasta 3 recordatorios (puedes añadir foto y botones).',
-            'Actívalo: desde ese momento ese producto deja de usar la IA para recordar.',
+            'Entra a [Remarketing por producto](/remarketing).',
+            'En el producto que estás pautando pulsa «Configurar».',
+            'Escribe hasta 3 recordatorios; a cada uno le puedes poner foto y botones.',
+            'Revisa en «Así se enviará» que el mensaje se vea como quieres.',
+            'Deja el interruptor en «Activo» y pulsa «Guardar»: desde ahí ese producto ya no usa la IA para recordar.',
           ]
         : [
             'Tus productos ya tienen remarketing propio. Los recordatorios con IA que quedan son de clientes sin producto identificado o de otras columnas (confirmación, retiro en agencia).',
@@ -712,9 +749,11 @@ exports.diagnostico = catchAsync(async (req, res) => {
         `Hoy el ${Math.round(pctSinIA * 100)}% de tus respuestas sale así; el resto lo contesta la IA (≈ ${usd(t.costo_promedio_ia_usd * 100)} cada 100 respuestas). ` +
         `Revisa: ${lista(sinFijo)}.${alcanceProductos}`,
       pasos: [
-        'Entra a Productos y abre el producto.',
-        'Completa el asistente del producto: mensaje de bienvenida y preguntas frecuentes.',
-        'Deja activadas las respuestas rápidas.',
+        'Entra al [listado de productos](/productos).',
+        'Busca el producto y pulsa el botón de editar (el lápiz).',
+        'Pulsa «Ajustes avanzados» y luego «Completar con IA»: la IA escribe el mensaje de bienvenida y las respuestas rápidas.',
+        'Pulsa «Ver vista previa» y asegúrate de que el producto tenga la información correcta (precio, envío y fotos).',
+        'Pulsa «Guardar y activar flujo».',
       ],
       accion: { texto: 'Ir a mis productos', ruta: '/productos' },
     });
@@ -748,8 +787,9 @@ exports.diagnostico = catchAsync(async (req, res) => {
         `${nombreModelo(eco)} cuesta unas ${veces} veces menos y es el que dejamos por defecto. ` +
         `Usa el modelo caro solo si ya comprobaste que vende más en esa columna.`,
       pasos: [
-        'Entra a Kanban → Configuración y abre la columna.',
-        `En la pestaña Asistente elige ${nombreModelo(eco)} y guarda.`,
+        'Entra a la [configuración del Kanban](/kanban_config).',
+        `Abre la columna${premium.length === 1 ? ` «${premium[0].nombre}»` : ''} y ve a la pestaña «Asistente».`,
+        `En el modelo elige ${nombreModelo(eco)} y guarda.`,
       ],
       accion: { texto: 'Abrir configuración del Kanban', ruta: '/kanban_config' },
     });
@@ -770,8 +810,8 @@ exports.diagnostico = catchAsync(async (req, res) => {
       detalle:
         'El guion de la columna, el catálogo y los documentos de conocimiento se envían completos en cada respuesta. Lo normal es entre 10 y 20 mil. Quita documentos que el bot no necesita y productos que ya no vendes.',
       pasos: [
-        'En Kanban → Configuración → Asistente revisa los documentos de conocimiento.',
-        'En Productos elimina o marca como privados los que ya no vendes.',
+        'Entra a la [configuración del Kanban](/kanban_config) y, en la pestaña «Asistente», quita los documentos de conocimiento que el bot no necesita.',
+        'En el [listado de productos](/productos) elimina o marca como privados los que ya no vendes.',
       ],
       accion: { texto: 'Abrir configuración del Kanban', ruta: '/kanban_config' },
     });
@@ -788,8 +828,8 @@ exports.diagnostico = catchAsync(async (req, res) => {
       titulo: `Tu tablero está en la versión ${versionAplicada} y ya publicamos la ${versionUltima}`,
       detalle: `Cada versión de «${plantilla.nombre}» trae el guion afinado y el modelo recomendado para cada columna. Al actualizar, tu tablero queda como lo dejamos hoy para una cuenta nueva; tus productos y tus conversaciones no cambian.`,
       pasos: [
-        'Entra a Kanban → Configuración.',
-        'Pulsa «Actualizar tablero» en el aviso de nueva versión.',
+        'Entra a la [configuración del Kanban](/kanban_config).',
+        'Pulsa «Actualizar tablero» en el aviso de nueva versión y confirma.',
       ],
       accion: { texto: 'Actualizar mi tablero', ruta: '/kanban_config' },
     });
@@ -917,3 +957,63 @@ exports.diagnostico = catchAsync(async (req, res) => {
     },
   });
 });
+
+/* ════════════════════════════════════════════════════════════════════
+   Caché en memoria con vencimiento. El panel y el asesor recorren los
+   mensajes del período en cada entrada a la pestaña (segundos en cuentas
+   grandes) y el gasto no cambia de un minuto a otro: se guarda la respuesta
+   unos minutos por cuenta y período. `refrescar: true` en el body (botón
+   «Actualizar») la salta. Es por proceso: con varios procesos cada uno
+   tiene la suya, que para un dato informativo alcanza.
+   ════════════════════════════════════════════════════════════════════ */
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_MAX = 500;
+const cache = new Map();
+
+function conCache(clavePara, handler) {
+  return (req, res, next) => {
+    const clave = clavePara(req.body || {});
+    const ahora = Date.now();
+    const guardado = clave ? cache.get(clave) : null;
+    const refrescar = req.body?.refrescar === true || req.body?.refrescar === 'true';
+    if (guardado && !refrescar && ahora - guardado.t < CACHE_TTL_MS) {
+      return res.status(200).json({
+        ...guardado.cuerpo,
+        cache: { desde: new Date(guardado.t).toISOString(), ttl_s: CACHE_TTL_MS / 1000 },
+      });
+    }
+    // Se guarda lo que el handler responde con 200; un error no se cachea.
+    let codigo = 200;
+    const status = res.status.bind(res);
+    const json = res.json.bind(res);
+    res.status = (c) => {
+      codigo = c;
+      return status(c);
+    };
+    res.json = (cuerpo) => {
+      if (clave && codigo === 200 && cuerpo?.status === 'success') {
+        if (cache.size >= CACHE_MAX) {
+          for (const [k, v] of cache) {
+            if (ahora - v.t >= CACHE_TTL_MS || cache.size >= CACHE_MAX) cache.delete(k);
+            if (cache.size < CACHE_MAX / 2) break;
+          }
+        }
+        cache.set(clave, { t: Date.now(), cuerpo });
+      }
+      return json(cuerpo);
+    };
+    return handler(req, res, next);
+  };
+}
+
+exports.resumen = conCache(
+  (b) =>
+    Number(b.id_configuracion)
+      ? `resumen|${Number(b.id_configuracion)}|${b.dias}|${b.proveedor || ''}`
+      : null,
+  exports.resumen,
+);
+exports.diagnostico = conCache(
+  (b) => (Number(b.id_configuracion) ? `diagnostico|${Number(b.id_configuracion)}` : null),
+  exports.diagnostico,
+);
