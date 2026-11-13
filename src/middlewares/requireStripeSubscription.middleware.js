@@ -5,7 +5,12 @@
 const Usuarios_chat_center = require('../models/usuarios_chat_center.model');
 const {
   PLANES_REQUIERE_TARJETA: PLANES_REQUIRE_CARD,
+  MESES_CORTESIA_METHOD,
 } = require('../config/planes.config');
+const {
+  comboPendienteDeUsuario,
+  checkoutDeComboPendiente,
+} = require('../services/combos.service');
 
 const requireStripeSubscription = async (req, res, next) => {
   try {
@@ -39,17 +44,30 @@ const requireStripeSubscription = async (req, res, next) => {
       });
     }
 
-    // Solo aplica a planes que requieren captura
-    if (!PLANES_REQUIRE_CARD.has(Number(usuario.id_plan))) {
-      return next();
-    }
-
     // Si ya tiene suscripción Stripe → todo bien
     if (usuario.stripe_subscription_id) {
       return next();
     }
 
-    // Plan 21 sin Stripe → bloquear y enviar a checkout
+    // Un combo activado por el equipo (p. ej. Combo Implementación) a una
+    // cuenta sin tarjeta pide lo mismo que el Plan 21, sea cual sea su plan.
+    const combo = await comboPendienteDeUsuario(usuario.id_usuario);
+
+    // Solo aplica a planes que requieren captura
+    if (!combo && !PLANES_REQUIRE_CARD.has(Number(usuario.id_plan))) {
+      return next();
+    }
+
+    // El front arma el aviso con estos datos (meses incluidos y cobro después).
+    let meses = MESES_CORTESIA_METHOD;
+    let precio_despues = null;
+    if (combo) {
+      meses = Number(combo.meses) || meses;
+      const datos = await checkoutDeComboPendiente(combo).catch(() => null);
+      precio_despues = datos?.precio_despues ?? null;
+    }
+
+    // Sin Stripe → bloquear y enviar a checkout
     return res.status(402).json({
       status: 'fail',
       code: 'CARD_CAPTURE_REQUIRED',
@@ -58,6 +76,9 @@ const requireStripeSubscription = async (req, res, next) => {
       redirectTo: '/capturar-tarjeta',
       plan_id: usuario.id_plan,
       action: 'capturarTarjetaPlan21',
+      meses_incluidos: meses,
+      precio_despues,
+      combo: combo ? combo.clave : null,
     });
   } catch (err) {
     return next(err);

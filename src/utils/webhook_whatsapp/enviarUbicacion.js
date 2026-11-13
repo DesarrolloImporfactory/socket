@@ -86,6 +86,7 @@ async function enviarUbicacionWhatsapp({
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
+      timeout: 20000,
     });
 
     const mensajeId = response?.data?.messages?.[0]?.id;

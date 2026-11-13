@@ -100,6 +100,9 @@ async function enviarMensajeTextoWhatsApp(
 
 const { registrarErrorEnvio } = require('./erroresEnvio');
 
+// Meta responde un envío en 1–3 s; 20 s es margen de sobra.
+const TIMEOUT_ENVIO_META_MS = 20000;
+
 async function enviarMensajeWhatsapp({
   phone_whatsapp_to,
   texto_mensaje,
@@ -121,12 +124,19 @@ async function enviarMensajeWhatsapp({
     text: { body: texto_mensaje },
   };
 
+  /* Devuelve `{ ok, wamid, error }` (antes no devolvía nada y quien llamaba no
+     podía saber si el texto salió: el paquete fijo daba el turno por cerrado
+     aunque Meta lo hubiera rechazado). No lanza. */
+  let mensajeId = null;
   try {
+    /* Con timeout: una llamada colgada dejaba el turno muerto en silencio
+       (caso 1325, 12-11-2026). */
     const response = await axios.post(url, data, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
+      timeout: TIMEOUT_ENVIO_META_MS,
     });
 
     const status = response.status;
@@ -134,50 +144,64 @@ async function enviarMensajeWhatsapp({
 
     await logInfo(`HTTP ${status} - Respuesta: ${JSON.stringify(respData)}`);
 
-    const mensajeId = respData?.messages?.[0]?.id;
-    if (status >= 200 && status < 300 && mensajeId) {
-      await logInfo(`✅ Mensaje enviado. ID: ${mensajeId}`);
-
-      // Obtener configuración para procesar el mensaje
-      const config = await Configuraciones.findOne({
-        where: {
-          id: id_configuracion,
-          suspendido: 0,
-        },
-      });
-      if (!config) {
-        return;
-      }
-
-      // Registrar mensaje
-      await procesarMensajeTexto({
-        id_configuracion,
-        business_phone_id,
-        nombre_cliente: config.nombre_configuracion, // reutiliza nombre_configuración como nombre
-        apellido_cliente: '',
-        telefono_configuracion: config.telefono,
-        phone_whatsapp_to,
-        tipo_mensaje: 'text',
-        texto_mensaje,
-        ruta_archivo: null,
-        responsable,
-        wamid: mensajeId,
-        total_tokens,
-        analytics,
-      });
-    } else {
-      const errorMsg = respData.error
+    mensajeId = respData?.messages?.[0]?.id || null;
+    if (!(status >= 200 && status < 300 && mensajeId)) {
+      const errorMsg = respData?.error
         ? JSON.stringify(respData.error)
         : 'Respuesta inesperada';
-      registrarErrorEnvio(phone_whatsapp_to, respData.error || errorMsg);
+      registrarErrorEnvio(phone_whatsapp_to, respData?.error || errorMsg);
       await logError(`❌ Error al enviar: ${errorMsg}`);
+      return { ok: false, error: errorMsg };
     }
+    await logInfo(`✅ Mensaje enviado. ID: ${mensajeId}`);
   } catch (err) {
+    const detalle = err.response?.data?.error
+      ? JSON.stringify(err.response.data.error)
+      : err.message;
     registrarErrorEnvio(
       phone_whatsapp_to,
       err.response?.data?.error || err.message,
     );
-    await logError(`❌ Error en enviarMensajeWhatsapp: ${err.message}`);
+    await logError(`❌ Error en enviarMensajeWhatsapp: ${detalle}`);
+    return { ok: false, error: detalle };
+  }
+
+  /* Desde acá Meta YA aceptó el mensaje: un fallo al guardarlo no es un envío
+     fallido (reintentarlo le duplicaría el texto al cliente). */
+  try {
+    // Obtener configuración para procesar el mensaje
+    const config = await Configuraciones.findOne({
+      where: {
+        id: id_configuracion,
+        suspendido: 0,
+      },
+    });
+    if (!config) {
+      return { ok: true, wamid: mensajeId, guardado: false };
+    }
+
+    // Registrar mensaje
+    await procesarMensajeTexto({
+      id_configuracion,
+      business_phone_id,
+      nombre_cliente: config.nombre_configuracion, // reutiliza nombre_configuración como nombre
+      apellido_cliente: '',
+      telefono_configuracion: config.telefono,
+      phone_whatsapp_to,
+      tipo_mensaje: 'text',
+      texto_mensaje,
+      ruta_archivo: null,
+      responsable,
+      wamid: mensajeId,
+      total_tokens,
+      analytics,
+    });
+    return { ok: true, wamid: mensajeId };
+  } catch (err) {
+    await logError(
+      `⚠️ Mensaje enviado (${mensajeId}) pero no se pudo guardar en BD: ${err.message}`,
+    );
+    return { ok: true, wamid: mensajeId, guardado: false };
   }
 }
 
@@ -247,6 +271,7 @@ async function enviarOpcionesWhatsapp({
           Authorization: `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
         },
+        timeout: TIMEOUT_ENVIO_META_MS,
       },
     );
     const mensajeId = response.data?.messages?.[0]?.id;

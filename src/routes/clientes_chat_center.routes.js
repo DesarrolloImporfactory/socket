@@ -40,6 +40,20 @@ router.post(
   clientes_chat_centerController.actualizar_enviar_remarketing,
 );
 
+// Bloquear / desbloquear el contacto en WhatsApp (Block Users API de Meta).
+// Para quien tiene solo API y no puede bloquear desde el celular.
+router.post(
+  '/estado_bloqueo_whatsapp',
+  requireChatPropietario('chatId'),
+  clientes_chat_centerController.estado_bloqueo_whatsapp,
+);
+
+router.post(
+  '/bloquear_whatsapp',
+  requireChatPropietario('chatId'),
+  clientes_chat_centerController.bloquear_whatsapp,
+);
+
 router.post(
   '/agregarNumeroChat',
   requireIdConfiguracion,

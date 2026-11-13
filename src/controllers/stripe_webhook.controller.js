@@ -3,6 +3,7 @@ const { db } = require('../database/config');
 const referidosService = require('../services/referidos.service');
 const { auditarDesdeSistema } = require('../services/suspension_audit.service');
 const { resolverBajaSuscripcion } = require('../services/stripe_baja.service');
+const { marcarAplicadoPorCheckout } = require('../services/combos.service');
 const {
   planPorPricePeriodico,
   guardarPeriodoPago,
@@ -336,6 +337,14 @@ exports.stripeWebhook = async (req, res) => {
           : [customerId, subscriptionId, id_usuario];
 
         await db.query(sql, { replacements });
+
+        // Checkout de un combo activado por el equipo: ya registró la tarjeta.
+        if (session.metadata?.combo_id) {
+          await marcarAplicadoPorCheckout(
+            session.metadata.combo_id,
+            subscriptionId,
+          );
+        }
 
         /**
          * Un checkout crea SIEMPRE una suscripción nueva. Si el usuario ya

@@ -20,9 +20,21 @@ const PRECIOS = {
   // Anthropic (proveedor «claude»): precios públicos 2026-10. El panel de
   // consumo recibe el mismo desglose { modelo, input, cached, output }.
   'claude-opus-5-5': { input: 4.0, cached: 0.2, output: 20.0 },
-  'claude-sonnet-5-5': { input: 2.0, cached: 0.2, output: 10.0 },
+  'claude-sonnet-5-5': { input: 2.0, cached: 0.1, output: 10.0 },
   'claude-haiku-5-5': { input: 0.1, cached: 0.01, output: 0.5 },
 };
+
+/* Anthropic cobra ESCRIBIR en caché (cache_creation_input_tokens, TTL de 5
+   min) a 1,25x la entrada normal; leerla, al precio `cached`. OpenAI no cobra
+   la escritura. Las respuestas guardan `cache_write` desde 2026-11-12. */
+const RECARGO_ESCRITURA_CACHE = 1.25;
+
+/** USD de lo que se escribió en caché en una respuesta (0 si no es Claude). */
+function costoEscrituraCache(modelo, cache_write) {
+  const m = normalizarModelo(modelo);
+  const recargo = /^claude-/.test(m) ? RECARGO_ESCRITURA_CACHE : 1;
+  return ((Number(cache_write) || 0) * PRECIOS[m].input * recargo) / 1e6;
+}
 
 const MODELO_DEFECTO = 'gpt-4o-mini';
 
@@ -81,6 +93,8 @@ module.exports = {
   normalizarModelo,
   precioDe,
   costoUSD,
+  costoEscrituraCache,
+  RECARGO_ESCRITURA_CACHE,
   costoEstimadoPorTokens,
   costoTipicoPorRespuesta,
 };

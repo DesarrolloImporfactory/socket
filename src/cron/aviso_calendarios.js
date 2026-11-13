@@ -135,7 +135,7 @@ cron.schedule('*/1 * * * *', async () => {
           let telefono = reunion.telefono;
 
           // Números en la lista de no contactar: ningún aviso automático.
-          if (await estaBloqueado(telefono)) continue;
+          if (await estaBloqueado(telefono, id_configuracion)) continue;
 
           const configuraciones = await db.query(
             `SELECT token, id_whatsapp, id_telefono, template_notificar_calendario,

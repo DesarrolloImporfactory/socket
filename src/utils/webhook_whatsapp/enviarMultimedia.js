@@ -19,6 +19,9 @@ const logsDir = path.join(process.cwd(), './src/logs/logs_meta');
  * Si esto lanzara, una foto rota se llevaría por delante el mensaje completo. */
 const { registrarErrorEnvio } = require('./erroresEnvio');
 
+// Meta responde un envío en 1–3 s; 20 s es margen de sobra.
+const TIMEOUT_ENVIO_META_MS = 20000;
+
 async function enviarMedioWhatsapp({
   tipo, // "image", "video" o "document"
   url_archivo,
@@ -52,11 +55,15 @@ async function enviarMedioWhatsapp({
   };
 
   try {
+    /* Con timeout: sin él, una llamada a Meta que se queda colgada no falla
+       nunca y el turno entero muere ahí en silencio (no sale el resto del
+       paquete ni corre la IA). Caso 1325, 12-11-2026. */
     const response = await axios.post(url, data, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
+      timeout: TIMEOUT_ENVIO_META_MS,
     });
 
     const status = response.status;
@@ -85,24 +92,34 @@ async function enviarMedioWhatsapp({
           },
         });
         if (config) {
-          await procesarMensajeTexto({
-            id_configuracion,
-            business_phone_id,
-            nombre_cliente: config.nombre_configuracion,
-            apellido_cliente: '',
-            telefono_configuracion: config.telefono,
-            phone_whatsapp_to,
-            tipo_mensaje: tipo,
-            texto_mensaje: nombreDoc,
-            /* Los documentos se guardan como los manda el chat a mano
-               ({nombre, ruta}): así el front los pinta con su nombre y el
-               dedupe (LIKE sobre ruta_archivo) los encuentra igual. */
-            ruta_archivo: nombreDoc
-              ? JSON.stringify({ nombre: nombreDoc, ruta: url_archivo })
-              : url_archivo,
-            responsable,
-            wamid: mensajeId,
-          });
+          /* Meta ya lo aceptó: si falla el guardado, el cliente igual lo
+             recibió. No se reporta como envío fallido (un reintento lo
+             duplicaría). */
+          try {
+            await procesarMensajeTexto({
+              id_configuracion,
+              business_phone_id,
+              nombre_cliente: config.nombre_configuracion,
+              apellido_cliente: '',
+              telefono_configuracion: config.telefono,
+              phone_whatsapp_to,
+              tipo_mensaje: tipo,
+              texto_mensaje: nombreDoc,
+              /* Los documentos se guardan como los manda el chat a mano
+                 ({nombre, ruta}): así el front los pinta con su nombre y el
+                 dedupe (LIKE sobre ruta_archivo) los encuentra igual. */
+              ruta_archivo: nombreDoc
+                ? JSON.stringify({ nombre: nombreDoc, ruta: url_archivo })
+                : url_archivo,
+              responsable,
+              wamid: mensajeId,
+            });
+          } catch (eGuardar) {
+            await logToFile(
+              `[${new Date().toISOString()}] ⚠️ ${tipo} enviado (${mensajeId}) pero no se pudo guardar en BD: ${eGuardar.message}\n`,
+            );
+            return { ok: true, wamid: mensajeId, guardado: false };
+          }
         }
       }
 

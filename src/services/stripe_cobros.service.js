@@ -555,4 +555,8 @@ async function cobrosEnRango(desde, hasta, { fresh = false } = {}) {
   return data;
 }
 
-module.exports = { cobrosEnRango };
+module.exports = {
+  cobrosEnRango,
+  // Lo comparte services/stripe_addons.service.js (misma llave y mismo rango).
+  _interno: { stripe, MODO, parseRango, cents, idDe, SUB_VIVA },
+};

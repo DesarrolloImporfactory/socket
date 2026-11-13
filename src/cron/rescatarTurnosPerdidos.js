@@ -63,8 +63,110 @@ const RESPONSABLE_AVISO_SISTEMA = 'sistema_ia';
 
 const enCurso = new Set(); // 'global' | 'cfg:<id>' — candado en memoria
 
+/* Una foto, video o PDF del paquete fijo del wizard SIN su texto no es una
+   respuesta: el texto es el que lleva el precio y la pregunta. Si el envío se
+   cortó ahí (Meta colgó o rechazó el resto), el cliente quedó con una foto y
+   nada más, y antes ese chat no lo retomaba nadie porque la foto contaba como
+   "ya respondido" (cfg 1325, 12-11-2026). Estas piezas sueltas se ignoran al
+   decidir si el chat quedó pendiente; el paquete completo trae su texto
+   después, que sí cuenta. */
+const RESPONSABLE_PAQUETE_FIJO = 'IA_mensaje_fijo';
+/* COALESCE a propósito: con `responsable` NULL la comparación da NULL, el NOT
+   de afuera también, y un mensaje de una persona sin responsable dejaría de
+   contar como respuesta. */
+const sqlPiezaSueltaPaquete = (a) =>
+  `(${a}.rol_mensaje = 1 AND COALESCE(${a}.responsable, '') = '${RESPONSABLE_PAQUETE_FIJO}' AND COALESCE(${a}.tipo_mensaje, '') <> 'text')`;
+
 // Chats donde el bot calló a propósito: no son turnos perdidos.
 const { calloDespuesDe } = require('../utils/turnosCallados');
+
+/**
+ * La detección sola (un SELECT, no envía nada): chats cuyo último mensaje del
+ * cliente quedó sin respuesta dentro de la ventana. Separada del barrido para
+ * poder probarla contra la BD sin correr ningún turno.
+ */
+async function detectarPendientes({
+  id_configuracion = null,
+  ventanaMinMinutos = VENTANA_MIN_MINUTOS,
+  ventanaMaxMinutos = VENTANA_MAX_MINUTOS,
+  tope = MAX_POR_CORRIDA,
+} = {}) {
+  // Cota por id además de la fecha: obliga el rango por PK aunque el
+  // optimizador no elija el índice de created_at (tabla de millones).
+  // 2.000.000 de ids son unas 3 semanas de mensajes; sobra para 23 h.
+  const [{ mx }] = await db.query(
+    `SELECT MAX(id) AS mx FROM mensajes_clientes`,
+    { type: db.QueryTypes.SELECT },
+  );
+
+  /* TODA la detección en una consulta (la primera versión iteraba ~900
+     grupos con 3 queries cada uno y tardaba minutos):
+     - el último mensaje del cliente por chat, dentro de la ventana;
+     - NOT EXISTS nada posterior (respuesta rol 1, asignación rol 3, o un
+       mensaje nuevo del cliente — ese lo atiende el webhook normal),
+       salvo los avisos del propio bot ('sistema_ia'), que no cuentan;
+     - cliente con bot prendido y chat abierto;
+     - configuración kanban viva y con credenciales;
+     - y la columna del cliente con IA ACTIVA: medido con datos reales, el
+       83% de los chats "sin responder" están en columnas con la IA apagada
+       a propósito (asesor, guía generada, cancelados…) — ahí el silencio
+       es correcto y barrerlos cada 5 minutos era puro desperdicio. */
+  const filtroCfg = id_configuracion ? 'AND m.id_configuracion = :cfg' : '';
+  return db.query(
+    `SELECT g.id_configuracion, g.id_cliente, g.ultimo_cli_id, g.ultimo_cli_at,
+            c.celular_cliente, c.estado_contacto,
+            cf.api_key_openai, cf.token, cf.id_telefono,
+            cf.proveedor_ia, cf.api_key_claude
+       FROM (
+         SELECT m.id_configuracion, m.celular_recibe AS id_cliente,
+                MAX(m.id) AS ultimo_cli_id, MAX(m.created_at) AS ultimo_cli_at
+           FROM mensajes_clientes m
+          WHERE m.id > :idDesde
+            ${filtroCfg}
+            AND m.created_at >= NOW() - INTERVAL :vmax MINUTE
+            AND m.created_at <  NOW() - INTERVAL :vmin MINUTE
+            AND m.rol_mensaje = 0 AND m.deleted_at IS NULL
+          GROUP BY m.id_configuracion, m.celular_recibe
+       ) g
+       JOIN clientes_chat_center c
+         ON c.id = CAST(g.id_cliente AS UNSIGNED)
+        AND c.id_configuracion = g.id_configuracion
+        AND c.bot_openia = 1 AND c.chat_cerrado = 0
+       JOIN configuraciones cf
+         ON cf.id = g.id_configuracion
+        AND cf.tipo_configuracion = 'kanban'
+        AND cf.suspendido = 0 AND cf.openai_activo = 1
+        AND cf.api_key_openai IS NOT NULL
+        AND cf.token IS NOT NULL AND cf.id_telefono IS NOT NULL
+      WHERE NOT EXISTS (
+              SELECT 1 FROM mensajes_clientes x
+               WHERE x.celular_recibe = g.id_cliente
+                 AND x.id_configuracion = g.id_configuracion
+                 AND x.id > g.ultimo_cli_id AND x.deleted_at IS NULL
+                 AND NOT (x.rol_mensaje = 3 AND x.responsable = :aviso)
+                 AND NOT ${sqlPiezaSueltaPaquete('x')}
+            )
+        AND EXISTS (
+              SELECT 1 FROM kanban_columnas k
+               WHERE k.id_configuracion = g.id_configuracion
+                 AND k.estado_db = c.estado_contacto
+                 AND k.activa_ia = 1
+            )
+      ORDER BY g.ultimo_cli_id ASC
+      LIMIT :tope`,
+    {
+      replacements: {
+        idDesde: Math.max(0, Number(mx || 0) - 2000000),
+        cfg: id_configuracion,
+        vmax: ventanaMaxMinutos,
+        vmin: ventanaMinMinutos,
+        tope,
+        aviso: RESPONSABLE_AVISO_SISTEMA,
+      },
+      type: db.QueryTypes.SELECT,
+    },
+  );
+}
 
 /**
  * Detecta y corre los turnos pendientes.
@@ -118,80 +220,12 @@ async function rescatarPendientes({
       return { rescatados: 0, candidatos: 0, motivo: 'lock_ocupado' };
     }
 
-    // Cota por id además de la fecha: obliga el rango por PK aunque el
-    // optimizador no elija el índice de created_at (tabla de millones).
-    // 2.000.000 de ids son unas 3 semanas de mensajes; sobra para 23 h.
-    const [{ mx }] = await db.query(
-      `SELECT MAX(id) AS mx FROM mensajes_clientes`,
-      { type: db.QueryTypes.SELECT },
-    );
-
-    /* TODA la detección en una consulta (la primera versión iteraba ~900
-       grupos con 3 queries cada uno y tardaba minutos):
-       - el último mensaje del cliente por chat, dentro de la ventana;
-       - NOT EXISTS nada posterior (respuesta rol 1, asignación rol 3, o un
-         mensaje nuevo del cliente — ese lo atiende el webhook normal),
-         salvo los avisos del propio bot ('sistema_ia'), que no cuentan;
-       - cliente con bot prendido y chat abierto;
-       - configuración kanban viva y con credenciales;
-       - y la columna del cliente con IA ACTIVA: medido con datos reales, el
-         83% de los chats "sin responder" están en columnas con la IA apagada
-         a propósito (asesor, guía generada, cancelados…) — ahí el silencio
-         es correcto y barrerlos cada 5 minutos era puro desperdicio. */
-    const filtroCfg = id_configuracion ? 'AND m.id_configuracion = :cfg' : '';
-    const grupos = await db.query(
-      `SELECT g.id_configuracion, g.id_cliente, g.ultimo_cli_id, g.ultimo_cli_at,
-              c.celular_cliente, c.estado_contacto,
-              cf.api_key_openai, cf.token, cf.id_telefono,
-              cf.proveedor_ia, cf.api_key_claude
-         FROM (
-           SELECT m.id_configuracion, m.celular_recibe AS id_cliente,
-                  MAX(m.id) AS ultimo_cli_id, MAX(m.created_at) AS ultimo_cli_at
-             FROM mensajes_clientes m
-            WHERE m.id > :idDesde
-              ${filtroCfg}
-              AND m.created_at >= NOW() - INTERVAL :vmax MINUTE
-              AND m.created_at <  NOW() - INTERVAL :vmin MINUTE
-              AND m.rol_mensaje = 0 AND m.deleted_at IS NULL
-            GROUP BY m.id_configuracion, m.celular_recibe
-         ) g
-         JOIN clientes_chat_center c
-           ON c.id = CAST(g.id_cliente AS UNSIGNED)
-          AND c.id_configuracion = g.id_configuracion
-          AND c.bot_openia = 1 AND c.chat_cerrado = 0
-         JOIN configuraciones cf
-           ON cf.id = g.id_configuracion
-          AND cf.tipo_configuracion = 'kanban'
-          AND cf.suspendido = 0 AND cf.openai_activo = 1
-          AND cf.api_key_openai IS NOT NULL
-          AND cf.token IS NOT NULL AND cf.id_telefono IS NOT NULL
-        WHERE NOT EXISTS (
-                SELECT 1 FROM mensajes_clientes x
-                 WHERE x.celular_recibe = g.id_cliente
-                   AND x.id_configuracion = g.id_configuracion
-                   AND x.id > g.ultimo_cli_id AND x.deleted_at IS NULL
-                   AND NOT (x.rol_mensaje = 3 AND x.responsable = :aviso)
-              )
-          AND EXISTS (
-                SELECT 1 FROM kanban_columnas k
-                 WHERE k.id_configuracion = g.id_configuracion
-                   AND k.estado_db = c.estado_contacto
-                   AND k.activa_ia = 1
-              )
-        ORDER BY g.ultimo_cli_id ASC
-        LIMIT :tope`,
-      {
-        replacements: {
-          idDesde: Math.max(0, Number(mx || 0) - 2000000),
-          cfg: id_configuracion,
-          vmax: ventanaMaxMinutos,
-          vmin: ventanaMinMinutos,
-          tope,
-          aviso: RESPONSABLE_AVISO_SISTEMA,
-        },
-        type: db.QueryTypes.SELECT,
-      },
-    );
+    const grupos = await detectarPendientes({
+      id_configuracion,
+      ventanaMinMinutos,
+      ventanaMaxMinutos,
+      tope,
+    });
     candidatos = grupos.length;
     if (!grupos.length) return { rescatados: 0, candidatos: 0 };
 
@@ -210,6 +244,7 @@ async function rescatarPendientes({
           WHERE celular_recibe = ? AND id_configuracion = ?
             AND id > ? AND deleted_at IS NULL
             AND NOT (rol_mensaje = 3 AND responsable = ?)
+            AND NOT ${sqlPiezaSueltaPaquete('mensajes_clientes')}
           LIMIT 1`,
         {
           replacements: [
@@ -248,12 +283,13 @@ async function rescatarPendientes({
       // Todo lo que el cliente escribió desde la última respuesta del bot:
       // si mandó varios mensajes durante la caída, van juntos como una ráfaga.
       const pendientes = await db.query(
-        `SELECT texto_mensaje FROM mensajes_clientes
+        `SELECT texto_mensaje, tipo_mensaje, ruta_archivo FROM mensajes_clientes
           WHERE celular_recibe = ? AND id_configuracion = ?
             AND rol_mensaje = 0 AND deleted_at IS NULL
             AND id > COALESCE((SELECT MAX(m2.id) FROM mensajes_clientes m2
                                 WHERE m2.celular_recibe = ? AND m2.id_configuracion = ?
-                                  AND m2.rol_mensaje = 1 AND m2.deleted_at IS NULL), 0)
+                                  AND m2.rol_mensaje = 1 AND m2.deleted_at IS NULL
+                                  AND NOT ${sqlPiezaSueltaPaquete('m2')}), 0)
           ORDER BY id ASC LIMIT 10`,
         {
           replacements: [
@@ -283,6 +319,45 @@ async function rescatarPendientes({
           enviarAsistenteKanban,
         } = require('../utils/webhook_whatsapp/funcciones_asistente');
 
+        /* Primero el wizard, igual que el webhook: si el cliente entró por
+           un producto con paquete fijo y el paquete no le llegó (o le llegó
+           solo la foto), se le manda ahora — la media ya enviada no se repite
+           y el texto ya enviado en 48 h tampoco. Si el paquete responde el
+           turno, no corre la IA; si no aplica o falla, sigue la IA con la
+           ficha del producto. */
+        let bloque_producto_referral = null;
+        try {
+          const {
+            intentarMensajeFijoWizard,
+          } = require('../services/producto_wizard_runtime.service');
+          const wiz = await intentarMensajeFijoWizard({
+            id_configuracion: g.id_configuracion,
+            id_cliente: Number(g.id_cliente),
+            telefono: cli.celular_cliente,
+            business_phone_id: cfg.id_telefono,
+            accessToken: cfg.token,
+            estado_contacto: cli.estado_contacto,
+            referral: referralDe(pendientes),
+            texto_mensaje: mensaje,
+            log: async (m) =>
+              console.log(
+                `${etiqueta} cfg=${g.id_configuracion} cliente=${g.id_cliente} ${m}`,
+              ),
+          });
+          if (wiz?.bloqueMotor) bloque_producto_referral = wiz.bloqueMotor;
+          if (wiz?.saltarIA) {
+            rescatados++;
+            console.log(
+              `${etiqueta} cfg=${g.id_configuracion} cliente=${g.id_cliente} → paquete fijo del wizard enviado, sin IA`,
+            );
+            continue;
+          }
+        } catch (eWiz) {
+          console.log(
+            `${etiqueta} cfg=${g.id_configuracion} cliente=${g.id_cliente} wizard falló (${eWiz?.message}); sigue la IA`,
+          );
+        }
+
         const r = await enviarAsistenteKanban({
           mensaje,
           id_configuracion: g.id_configuracion,
@@ -294,6 +369,7 @@ async function rescatarPendientes({
           business_phone_id: cfg.id_telefono,
           accessToken: cfg.token,
           estado_contacto: cli.estado_contacto,
+          bloque_producto_referral,
         });
         if (r?.ok) rescatados++;
         console.log(
@@ -339,6 +415,23 @@ async function rescatarPendientes({
   return { rescatados, candidatos };
 }
 
+/* El anuncio por el que entró el cliente, si alguno de sus mensajes
+   pendientes es la entrada del anuncio (tipo 'referral': el webhook guarda
+   ahí headline y source_id en ruta_archivo). Sin anuncio devuelve null y el
+   wizard resuelve por el texto, igual que en el webhook. */
+function referralDe(pendientes) {
+  for (const m of pendientes || []) {
+    if (m.tipo_mensaje !== 'referral' || !m.ruta_archivo) continue;
+    try {
+      const r = JSON.parse(m.ruta_archivo);
+      if (r && (r.headline || r.source_id)) {
+        return { headline: r.headline || '', source_id: r.source_id || null };
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
 /** Barrido del cron: todas las cuentas, ventana 5–120 min, sin esperar el lock. */
 async function barrido() {
   return rescatarPendientes({ motivo: 'cron' });
@@ -380,6 +473,8 @@ if (process.env.NODE_ENV === 'production') {
 module.exports = {
   barrido,
   rescatarPendientes,
+  detectarPendientes,
+  referralDe,
   reanudarChatsPendientes,
   RESPONSABLE_AVISO_SISTEMA,
 };

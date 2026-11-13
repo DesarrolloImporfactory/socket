@@ -524,7 +524,8 @@ async function markReadUnified({
   page_id,
   external_id,
   watermark,
-  id_cliente,
+  // id del CONTACTO (la fila del chat en clientes_chat_center), no del dueño.
+  id_contacto = null,
 }) {
   // 1) marcar OUT como read
   await db.query(
@@ -552,16 +553,24 @@ async function markReadUnified({
     },
   );
 
-  // 2) marcar IN como visto
-  if (id_cliente) {
+  // 2) marcar IN como visto — SOLO los de este contacto.
+  /* Antes filtraba por `id_cliente`, que en mensajes_clientes es el DUEÑO de
+     la cuenta: cada "leído" de un cliente de Messenger marcaba como vistos los
+     entrantes de TODOS los chats de la cuenta y recorría con candados cientos
+     de miles de filas (UPDATE de 6-7 minutos frenando la BD, 12-11-2026).
+     El chat vive en `celular_recibe` (id del contacto, VARCHAR). */
+  if (id_contacto) {
     await db.query(
       `UPDATE mensajes_clientes
        SET visto = 1
-       WHERE id_cliente = ?
-         AND source = ?
-         AND direction = 'in'
+       WHERE celular_recibe = ?
+         AND id_configuracion = ?
+         AND rol_mensaje = 0
          AND visto = 0`,
-      { replacements: [id_cliente, source] },
+      {
+        replacements: [String(id_contacto), id_configuracion],
+        type: db.QueryTypes.UPDATE,
+      },
     );
   }
 }

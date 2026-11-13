@@ -23,6 +23,11 @@ const {
 const { normalizarCanales } = require('../utils/canalesDepartamento');
 const { buildSearchClause } = require('../utils/buscarContactosClause');
 const { auditarDesdeChat } = require('../services/switch_audit.service');
+const {
+  cambiarBloqueo,
+  estadoBloqueo,
+  BloqueoError,
+} = require('../services/whatsapp_bloqueo.service');
 
 /**
  * ¿`clientes_chat_center` ya tiene las columnas de programas de Imporsuit?
@@ -330,6 +335,39 @@ exports.actualizar_bot_openia = catchAsync(async (req, res, next) => {
     });
   } catch (error) {
     return next(new AppError('Error al actualizar bot_openia', 500));
+  }
+});
+
+/* Bloqueo del contacto en WhatsApp (services/whatsapp_bloqueo.service.js).
+   El estado se pide aparte, al abrir el menú del chat, para no cargar la
+   lista de chats con un dato que casi nunca se usa. */
+exports.estado_bloqueo_whatsapp = catchAsync(async (req, res) => {
+  const estado = await estadoBloqueo(Number(req.body.chatId));
+  res.status(200).json({ status: '200', ...estado });
+});
+
+exports.bloquear_whatsapp = catchAsync(async (req, res, next) => {
+  const chatId = Number(req.body.chatId);
+  const bloquear = Number(req.body.bloquear) === 1;
+
+  try {
+    const resultado = await cambiarBloqueo({
+      chatId,
+      bloquear,
+      req,
+    });
+
+    res.status(200).json({
+      status: '200',
+      ...resultado,
+      message: bloquear ? 'Contacto bloqueado' : 'Contacto desbloqueado',
+    });
+  } catch (error) {
+    if (error instanceof BloqueoError) {
+      return next(new AppError(error.message, error.status));
+    }
+    console.error('[bloquear_whatsapp]', error);
+    return next(new AppError('No se pudo completar la acción', 500));
   }
 });
 

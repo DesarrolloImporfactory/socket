@@ -14,6 +14,7 @@ router.get('/cancelaciones_mes', requireFinanzasDashboard, ctrl.cancelacionesMes
 router.get('/desglose_planes', requireFinanzasDashboard, ctrl.desglosePlanes);
 router.get('/clientes_por_categoria', requireFinanzasDashboard, ctrl.clientesPorCategoria);
 router.get('/cobros', requireFinanzasDashboard, ctrl.cobros);
+router.get('/addons', requireFinanzasDashboard, ctrl.addons);
 
 // Recalcular guarda un snapshot: solo super administrador
 router.post('/snapshot_now', requireSuperAdmin, ctrl.snapshotAhora);

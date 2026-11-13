@@ -1086,3 +1086,93 @@ exports.complementosAdmin = catchAsync(async (req, res, next) => {
     data: { usuario: await leerUsuarioAdmin(id_usuario) },
   });
 });
+
+/* ══════════════════════════════════════════════════════════════
+   COMBOS (solo super_administrador)
+
+   Productos vendidos por fuera de la plataforma que traen meses gratis de un
+   plan y complementos (Combo Implementación: $297, 6 meses de ImporChat e
+   ImporKiller). Se activan por correo: la cuenta puede existir o no. Toda la
+   lógica vive en services/combos.service.js.
+   ══════════════════════════════════════════════════════════════ */
+
+const combos = require('../services/combos.service');
+
+const paramsCombo = (body = {}) => ({
+  stripe,
+  email: body.email,
+  id_usuario: parseInt(body.id_usuario, 10) || null,
+  clave: body.clave || undefined,
+  id_plan: parseInt(body.id_plan, 10) || null,
+  meses: body.meses,
+  desde: body.desde === 'sumar' ? 'sumar' : 'hoy',
+});
+
+const errorDeCombo = (e, next) => {
+  if (e?.statusCode) return next(new AppError(e.message, e.statusCode));
+  let msg = `Stripe: ${e?.message || e}`;
+  if (stripe && !STRIPE_SECRET.startsWith('sk_live_')) {
+    msg +=
+      ' (este servidor usa la llave de prueba de Stripe; los clientes viven en live)';
+  }
+  return next(new AppError(msg, 502));
+};
+
+/** GET /admin_usuarios/combos → catálogo y combos otorgados. */
+exports.combosListarAdmin = catchAsync(async (req, res) => {
+  const planes = await db.query(
+    `SELECT id_plan, nombre_plan, precio_plan
+       FROM planes_chat_center
+      WHERE activo = 1 AND id_price IS NOT NULL
+        AND nombre_plan NOT LIKE '%TEST%'
+      ORDER BY precio_plan, id_plan`,
+    { type: db.QueryTypes.SELECT },
+  );
+  return res.json({
+    status: 'success',
+    data: {
+      catalogo: combos.catalogo(),
+      planes,
+      otorgados: await combos.listarCombos({ limite: req.query?.limite }),
+    },
+  });
+});
+
+/** POST /admin_usuarios/combos/previa → qué pasaría, sin escribir nada. */
+exports.combosPreviaAdmin = catchAsync(async (req, res, next) => {
+  try {
+    const data = await combos.prepararCombo(paramsCombo(req.body));
+    return res.json({ status: 'success', data });
+  } catch (e) {
+    return errorDeCombo(e, next);
+  }
+});
+
+/** POST /admin_usuarios/combos/otorgar → activa el combo. */
+exports.combosOtorgarAdmin = catchAsync(async (req, res, next) => {
+  const ejecutor = await nombreDelEjecutor(req);
+  try {
+    const data = await combos.otorgarCombo({
+      ...paramsCombo(req.body),
+      ejecutor,
+      repetir: isTrue(req.body?.repetir),
+      nota: req.body?.nota,
+    });
+    return res.json({ status: 'success', message: data.mensaje, data });
+  } catch (e) {
+    return errorDeCombo(e, next);
+  }
+});
+
+/** POST /admin_usuarios/combos/anular → anula uno que aún no se aplicó. */
+exports.combosAnularAdmin = catchAsync(async (req, res, next) => {
+  const id = parseInt(req.body?.id, 10);
+  if (!id) return next(new AppError('id requerido', 400));
+  const ejecutor = await nombreDelEjecutor(req);
+  try {
+    const data = await combos.anularCombo({ id, ejecutor });
+    return res.json({ status: 'success', message: 'Combo anulado', data });
+  } catch (e) {
+    return errorDeCombo(e, next);
+  }
+});
