@@ -614,6 +614,7 @@ async function enviarPaqueteInicial({
      turno por cerrado con un cliente que solo vio la foto (caso 1325,
      12-11-2026: salió la imagen y nada más, y nadie retomó el chat). */
   let textoEnviado = !texto;
+  let conBotones = false;
   if (texto) {
     const mandarTexto = () =>
       enviarMensajeWhatsapp({
@@ -625,7 +626,54 @@ async function enviarPaqueteInicial({
         responsable: RESPONSABLE,
         total_tokens: 0,
       });
-    let r = await mandarTexto();
+    /* Ofertas en botones (ver ofertasDelMensajeFijo). El mensaje sale como
+       interactivo con el MISMO texto de cuerpo y en el chat se registra el
+       texto fijo exacto: yaSeEnvioMensajeInicial y la ficha de la IA lo
+       buscan textual, así que el registro no cambia según el modo. Si el
+       cuerpo no cabe en un interactivo (1024) o Meta lo rechaza, sale el
+       texto como siempre y los botones van en un mensaje corto aparte. */
+    const { modo: modoOfertas, ofertas } = ofertasDelMensajeFijo({ producto, wizard });
+    const opciones = ofertas.map((o) => ({
+      id: `${PREFIJO_BOTON_OFERTA}${producto.id}_${o.cantidad}`,
+      titulo: o.titulo,
+    }));
+    const { enviarOpcionesWhatsapp } = require('../utils/webhook_whatsapp/enviarMensajes');
+    let r = null;
+    if (opciones.length) {
+      const cuerpo = modoOfertas === 'botones' ? sinLineasDePrecio(texto) || texto : texto;
+      if (cuerpo.length <= MAX_CUERPO_INTERACTIVO) {
+        r = await enviarOpcionesWhatsapp({
+          phone_whatsapp_to: telefono,
+          business_phone_id,
+          accessToken,
+          id_configuracion,
+          cuerpo,
+          opciones,
+          texto_registro: texto,
+          responsable: RESPONSABLE,
+        });
+        if (r?.ok) conBotones = true;
+        else {
+          await decir(`⚠️ wizard: el mensaje con botones no salió (${JSON.stringify(r?.error || '')}); va como texto`);
+          r = null;
+        }
+      }
+    }
+    if (!r) r = await mandarTexto();
+    if (r?.ok !== false && opciones.length && !conBotones) {
+      // Texto largo (o interactivo rechazado): los botones van aparte.
+      const rb = await enviarOpcionesWhatsapp({
+        phone_whatsapp_to: telefono,
+        business_phone_id,
+        accessToken,
+        id_configuracion,
+        cuerpo: 'Elige tu oferta y te tomo el pedido 👇',
+        opciones,
+        texto_registro: `Elige tu oferta y te tomo el pedido 👇\n\n${opciones.map((o) => `[ ${o.titulo} ]`).join('  ')}`,
+        responsable: RESPONSABLE,
+      });
+      if (rb?.ok) conBotones = true;
+    }
     if (r?.ok === false) {
       await decir(`⚠️ wizard: falló el texto del paquete (${r.error || ''}); reintento`);
       await new Promise((res) => setTimeout(res, 1500));
@@ -656,7 +704,7 @@ async function enviarPaqueteInicial({
   }
 
   await decir(
-    `📦 wizard: paquete fijo ${fallos.length ? 'INCOMPLETO' : 'enviado'} (producto ${producto.id} "${producto.nombre}", ${imgsNuevas.length} img, ${vidsNuevos.length} video, ${docsNuevos.length} pdf, texto ${!texto ? 'no' : textoEnviado ? 'sí' : 'FALLÓ'})`,
+    `📦 wizard: paquete fijo ${fallos.length ? 'INCOMPLETO' : 'enviado'} (producto ${producto.id} "${producto.nombre}", ${imgsNuevas.length} img, ${vidsNuevos.length} video, ${docsNuevos.length} pdf, texto ${!texto ? 'no' : textoEnviado ? 'sí' : 'FALLÓ'}${conBotones ? ', ofertas en botones' : ''})`,
   );
   return {
     enviados,
@@ -727,6 +775,102 @@ function ajustesIaWizard(wizard) {
     // Con todos los datos, cierra directo: no muestra el resumen para que
     // el cliente lo confirme. El candado de datos reales sigue vigente.
     sinConfirmacion: noPedir.includes('confirmacion'),
+    // Ofertas del mensaje fijo: 'botones' (por defecto), 'texto' o 'ambos'.
+    ofertasModo: ['texto', 'ambos'].includes(aj?.ofertas_modo)
+      ? aj.ofertas_modo
+      : 'botones',
+  };
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Ofertas del mensaje fijo en botones
+   ══════════════════════════════════════════════════════════════
+   El mensaje fijo termina con las ofertas del producto («1 por $24,99»,
+   «2 por $34,99»). Por defecto salen como BOTONES en ese mismo mensaje: el
+   cliente toca la que quiere y el bot pasa directo a tomar los datos. El
+   negocio lo decide en el paso 3 del wizard («ajustes avanzados»):
+     - 'botones' (por defecto, Daniel 12-11-2026) el texto sale sin las
+                 líneas de precio; los precios van solo en los botones
+     - 'ambos'   texto con los precios + botones
+     - 'texto'   como antes, sin botones
+   Solo aplica si hay algo que elegir (2 ofertas o más), no es un servicio y
+   el producto no tiene embudo por pasos (ahí la respuesta que se espera es
+   la de la pregunta gancho). */
+const PREFIJO_BOTON_OFERTA = 'wzof_';
+const MAX_CUERPO_INTERACTIVO = 1024;
+const RE_LINEA_PRECIO_FIJO = /^\s*(?:\S{1,8}\s+)?\d{1,3}\s+por\s+\$\s?\d[\d.,]*\s*$/u;
+
+function ofertasDelMensajeFijo({ producto, wizard }) {
+  if (!producto || wizard?.tipo_venta === 'servicio') return { modo: 'texto', ofertas: [] };
+  const modo = ajustesIaWizard(wizard).ofertasModo;
+  if (modo === 'texto') return { modo, ofertas: [] };
+  if (pasosDelFlujo(wizard).length) return { modo: 'texto', ofertas: [] };
+  const { ofertasDe } = require('./remarketing_producto.service');
+  const ofertas = ofertasDe(producto);
+  return ofertas.length >= 2 ? { modo, ofertas } : { modo: 'texto', ofertas: [] };
+}
+
+/** El texto sin sus líneas «N por $X» (modo 'botones'). */
+function sinLineasDePrecio(texto) {
+  return String(texto || '')
+    .split('\n')
+    .filter((l) => !RE_LINEA_PRECIO_FIJO.test(l))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/** `wzof_<id_producto>_<cantidad>` → { id_producto, cantidad, titulo } o null. */
+function interpretarBotonOfertaWizard(interactive) {
+  const rep = interactive?.button_reply || interactive?.list_reply;
+  const m = String(rep?.id || '').match(/^wzof_([0-9]+)_([0-9]+)$/);
+  if (!m) return null;
+  return {
+    id_producto: Number(m[1]),
+    cantidad: Number(m[2]),
+    titulo: String(rep?.title || '').trim(),
+  };
+}
+
+/**
+ * El cliente tocó una oferta del mensaje fijo: el producto queda en juego y
+ * la IA recibe la cantidad y el total ya decididos (precio leído AHORA del
+ * producto), para que pase directo a tomar los datos.
+ * @returns {Promise<null|{mensaje_para_ia:string}>}
+ */
+async function atenderBotonOfertaWizard({
+  id_producto,
+  cantidad,
+  titulo,
+  id_configuracion,
+  id_cliente,
+  log,
+}) {
+  const decir = logDe(log);
+  const [producto] = await db.query(
+    `SELECT id, nombre, precio, combos_producto FROM productos_chat_center
+      WHERE id = ? AND id_configuracion = ? AND eliminado = 0 LIMIT 1`,
+    { replacements: [id_producto, id_configuracion], type: db.QueryTypes.SELECT },
+  );
+  if (!producto) return null;
+  await sembrarProductoEnJuego({
+    id_cliente,
+    id_configuracion,
+    producto: { nombre: producto.nombre },
+    texto_mensaje: titulo,
+  });
+  const { ofertasDe } = require('./remarketing_producto.service');
+  const oferta = ofertasDe(producto).find((o) => o.cantidad === cantidad);
+  const unidades = `${cantidad} unidad${cantidad === 1 ? '' : 'es'}`;
+  const total = oferta?.precio ? ` por ${fmtPrecio(oferta.precio)} en total` : '';
+  await decir(`🛍️ wizard: oferta «${titulo}» (${unidades}) producto ${producto.id}`);
+  return {
+    mensaje_para_ia:
+      `[El cliente tocó la oferta «${titulo}» del mensaje del producto "${producto.nombre}": ` +
+      `quiere ${unidades}${total} (es la oferta vigente del producto). La cantidad ya está decidida: ` +
+      'no la vuelvas a preguntar ni vuelvas a presentar el producto ni sus precios; confirma en una línea ' +
+      'su elección y sigue con el siguiente dato pendiente para tomar el pedido.]\n' +
+      `Mensaje del cliente: Quiero ${unidades} de ${producto.nombre}`,
   };
 }
 
@@ -2494,6 +2638,10 @@ module.exports = {
   wizardDelClienteEnJuego,
   bloqueWizardParaMotor,
   ajustesIaWizard,
+  ofertasDelMensajeFijo,
+  sinLineasDePrecio,
+  interpretarBotonOfertaWizard,
+  atenderBotonOfertaWizard,
   wizardParaMotor,
   enviarPaqueteInicial,
   intentarMensajeFijoWizard,
