@@ -47,6 +47,7 @@ const {
   esModeloClaudeNoDisponible,
   mensajeErrorClaude,
   modeloClaude,
+  modeloOpenAI,
 } = require('../utils/claude/claude');
 
 const {
@@ -5361,7 +5362,9 @@ async function ejecutarConResponsesAPI({
     tools.push(toolBusqueda);
   }
 
-  const modeloPedido = model || 'gpt-4o-mini';
+  // Una columna que se quedó con un modelo de Claude tras volver a OpenAI se
+  // responde con el recomendado de OpenAI en vez de fallar con 404.
+  const modeloPedido = modeloOpenAI(model) || 'gpt-4o-mini';
   const pideGpt5 = /^gpt-5/i.test(modeloPedido);
 
   // Arma el cuerpo para un modelo dado. Separado en función porque el mismo
