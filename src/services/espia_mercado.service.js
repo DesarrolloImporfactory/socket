@@ -1329,6 +1329,10 @@ async function radarCola(params = {}, sessionUser = {}) {
   const idSub = Number(sessionUser.id_sub_usuario) || 0;
   const campos = `p.dropi_product_id, p.nombre, p.imagen_url, p.precio, p.ventas_7d, p.ventas_30d, p.n_anuncios, p.radar_en`;
   const pendiente = `(p.radar_en IS NULL OR p.radar_en < DATE_SUB(NOW(), INTERVAL :dias DAY))`;
+  // Solo entra lo que se está moviendo: sin esto un país chico rellenaba la cola
+  // hasta el tope con productos sin ventas y gastaba horas del radar en ellos.
+  // Los seguidos entran siempre, vendan o no.
+  const seMueve = `(p.ventas_7d > 0 OR p.ventas_30d > 0)`;
   const [seguidos, top, [tot], [pend]] = await Promise.all([
     idSub
       ? q(
@@ -1342,12 +1346,12 @@ async function radarCola(params = {}, sessionUser = {}) {
     // Se piden de más porque las fichas no buscables (servicios, nombres genéricos) se filtran aquí.
     q(
       `SELECT ${campos} FROM espia_producto p
-        WHERE p.pais = :pais AND p.nombre IS NOT NULL AND p.nombre <> '' AND ${pendiente}
+        WHERE p.pais = :pais AND p.nombre IS NOT NULL AND p.nombre <> '' AND ${seMueve} AND ${pendiente}
         ORDER BY p.ventas_7d DESC, p.ventas_30d DESC, p.ventas_total DESC LIMIT :limitAmplio`,
       { pais, dias, limitAmplio: Math.round(limit * 1.4) + 50 },
     ),
     q(`SELECT COUNT(*) AS n FROM espia_producto p WHERE p.pais = :pais`, { pais }),
-    q(`SELECT COUNT(*) AS n FROM espia_producto p WHERE p.pais = :pais AND ${pendiente}`, { pais, dias }),
+    q(`SELECT COUNT(*) AS n FROM espia_producto p WHERE p.pais = :pais AND ${seMueve} AND ${pendiente}`, { pais, dias }),
   ]);
   const vistos = new Set();
   const items = [];
