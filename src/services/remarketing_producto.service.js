@@ -36,6 +36,11 @@ const {
   uploadToUploader,
   getConfigFromDB,
 } = require('../utils/whatsappTemplate.helpers');
+const {
+  combosValidos,
+  aNumero,
+  fmtPrecio: fmtPrecioCatalogo,
+} = require('../utils/wizardProducto/componerMensajeInicial');
 
 const T = db.QueryTypes;
 
@@ -80,6 +85,20 @@ const acumuladoHasta = (pasos, idx) =>
 
 const REMATE_DEFECTO = '¿Te gustaría pedir 1, 2 o 3 unidades? 😊';
 
+/* Descuento de recuperación (botón «🎁 Quiero mi 10% OFF», pensado para el
+   último recordatorio). El porcentaje lo fija el dueño por botón; al tocarlo
+   queda anotado para ESE cliente (evento 'descuento') y vale
+   DESCUENTO_VIGENCIA_H horas o hasta que se cree el pedido (evento
+   'descuento_usado'). */
+const DESCUENTO_PCT_DEFECTO = 10;
+const DESCUENTO_PCT_MAX = 90;
+const DESCUENTO_VIGENCIA_H = 72;
+const pctValido = (v) => {
+  const n = Math.round(Number(v));
+  if (!Number.isFinite(n) || n < 1) return DESCUENTO_PCT_DEFECTO;
+  return Math.min(n, DESCUENTO_PCT_MAX);
+};
+
 /* Botones sugeridos para cada recordatorio: misma intención (ver opiniones /
    pedir), otra forma de decirlo para que la secuencia no se lea repetida.
    Las claves 'opiniones' y 'quiero' se mantienen en los tres porque las
@@ -90,9 +109,15 @@ const BOTONES_DEFECTO_POR_PASO = [
     { clave: 'opiniones', titulo: '👀 Ver qué opinan', accion: 'bloque' },
     { clave: 'quiero', titulo: '🛒 Pedirlo ahora', accion: 'cerrar' },
   ],
+  // Último recordatorio: el descuento es el empujón para recuperarlo.
   [
     { clave: 'opiniones', titulo: '⭐ Opiniones reales', accion: 'bloque' },
-    { clave: 'quiero', titulo: '✅ Quiero el mío', accion: 'cerrar' },
+    {
+      clave: 'descuento',
+      titulo: `🎁 Quiero mi ${DESCUENTO_PCT_DEFECTO}% OFF`,
+      accion: 'descuento',
+      descuento_pct: DESCUENTO_PCT_DEFECTO,
+    },
   ],
 ];
 
@@ -118,12 +143,16 @@ const PASOS_DEFECTO = [
       '{{nombre}}, sigo por aquí 🙂 *{{producto}}* todavía está disponible. ¿Te quedó alguna duda? Te la resuelvo ahora mismo 👇',
     con_imagen: false,
     con_botones: true,
+    // Por defecto el 2 lleva las ofertas del producto en los botones («1 por
+    // $X», «2 por $Y»…): un toque y el cliente ya eligió cantidad. Los
+    // botones propios quedan guardados por si el dueño cambia de modo.
+    botones_modo: 'ofertas',
     botones: BOTONES_DEFECTO_POR_PASO[1],
   },
   {
     minutos: 480,
     mensaje:
-      'Última llamada, {{nombre}} 🙌 Para que no te quedes sin *{{producto}}*, te lo dejo listo para pedir hoy. ¿Lo aseguramos? 👇',
+      'Última llamada, {{nombre}} 🙌 Para que no te quedes sin *{{producto}}*, hoy te lo dejo con un descuento especial. ¿Lo aseguramos? 👇',
     con_imagen: true,
     con_botones: true,
     botones: BOTONES_DEFECTO_POR_PASO[2],
@@ -142,6 +171,47 @@ function botonesDe(config, paso) {
     const t = String(titulos[b.clave] || '').trim();
     return t ? { ...b, titulo: t } : b;
   });
+}
+
+/* ── Ofertas del producto en los botones ──────────────────────────────────
+   `pasos[i].botones_modo = 'ofertas'`: los botones del recordatorio NO se
+   escriben a mano, son las ofertas del producto tal como están en su ficha
+   (precio unitario + combos_producto, lo mismo que arma el mensaje fijo:
+   «1 por $24,99», «2 por $34,99»). Se calculan AL ENVIAR, así un cambio de
+   precio en el producto se refleja solo, sin volver a guardar el remarketing.
+   Máximo 3 (límite de WhatsApp): la unidad y los dos primeros combos. */
+const EMOJI_OFERTA = ['💵', '🔥', '🎁'];
+function ofertasDe(producto) {
+  const lista = [];
+  const unitario = aNumero(producto?.precio);
+  if (unitario && unitario > 0) lista.push({ cantidad: 1, precio: unitario });
+  for (const c of combosValidos(producto?.combos_producto)) lista.push(c);
+  return lista.slice(0, MAX_BOTONES).map((o, i) => {
+    const base = `${o.cantidad} por ${fmtPrecioCatalogo(o.precio)}`;
+    const conEmoji = `${EMOJI_OFERTA[i]} ${base}`;
+    const titulo =
+      [...conEmoji].length <= MAX_TITULO
+        ? conEmoji
+        : [...base].slice(0, MAX_TITULO).join('');
+    return {
+      clave: `oferta_${o.cantidad}`,
+      titulo,
+      accion: 'oferta',
+      cantidad: o.cantidad,
+      precio: o.precio,
+    };
+  });
+}
+
+/* Botones que de verdad salen en el envío del paso: las ofertas del producto
+   si el paso está en ese modo (y el producto tiene precio); si no, los suyos. */
+function botonesDelEnvio(config, paso, producto) {
+  if (!paso || paso.con_botones === false) return [];
+  if (paso.botones_modo === 'ofertas') {
+    const ofertas = ofertasDe(producto);
+    if (ofertas.length) return ofertas;
+  }
+  return botonesDe(config, paso);
 }
 
 const urlValida = (v) =>
@@ -277,7 +347,10 @@ function normalizarPasos(pasos, body = {}) {
     }
     if (!fueraDeVentana && !mensaje) throw error(`El ${etiqueta} no tiene mensaje`);
     const con_botones = p?.con_botones !== false && p?.con_botones !== 0;
-    const usaBotones = con_botones && !fueraDeVentana;
+    const botones_modo = p?.botones_modo === 'ofertas' ? 'ofertas' : 'propios';
+    // En modo ofertas los botones salen del producto: los propios se guardan
+    // sin exigirlos, por si el dueño vuelve a «botones propios».
+    const usaBotones = con_botones && !fueraDeVentana && botones_modo !== 'ofertas';
     const botones = normalizarBotones(botonesDe(body, p), { exigir: usaBotones, etiqueta });
     return {
       minutos,
@@ -285,6 +358,7 @@ function normalizarPasos(pasos, body = {}) {
       con_imagen: p?.con_imagen !== false && p?.con_imagen !== 0,
       imagen_url: imagenDe(body, p),
       con_botones,
+      botones_modo,
       botones,
       ...(plantilla ? { plantilla } : {}),
     };
@@ -361,14 +435,19 @@ function normalizarBotones(botones, { exigir = true, etiqueta = '' } = {}) {
       if (exigir) throw error(`El botón «${titulo}»${donde} supera ${MAX_TITULO} caracteres (límite de WhatsApp)`);
       titulo = [...titulo].slice(0, MAX_TITULO).join('');
     }
-    // Dos acciones nada más: mandar contenido o que el bot siga cerrando la
-    // venta como siempre (respuestas rápidas del wizard → IA). 'ia' quedó de
-    // la primera versión y se trata como 'cerrar'.
-    const accion = b?.accion === 'bloque' ? 'bloque' : 'cerrar';
+    // Tres acciones: mandar contenido, que el bot siga cerrando la venta
+    // como siempre (respuestas rápidas del wizard → IA) o cerrar CON
+    // descuento (el bot lo aplica al total del pedido). 'ia' quedó de la
+    // primera versión y se trata como 'cerrar'.
+    const accion = ['bloque', 'descuento'].includes(b?.accion) ? b.accion : 'cerrar';
     let clave = slug(b?.clave) || slug(titulo) || `boton_${i + 1}`;
+    // 'oferta_N' está reservada para los botones automáticos de ofertas.
+    if (/^oferta_[0-9]+$/.test(clave)) clave = `boton_${i + 1}`;
     if (vistos.has(clave)) clave = `${clave}_${i + 1}`;
     vistos.add(clave);
-    return { clave, titulo, accion };
+    return accion === 'descuento'
+      ? { clave, titulo, accion, descuento_pct: pctValido(b?.descuento_pct) }
+      : { clave, titulo, accion };
   });
   return out;
 }
@@ -422,7 +501,12 @@ function normalizarBloques(bloques, botones, { exigir = true, etiqueta = '' } = 
 function normalizarConfig(body) {
   const pasos = normalizarPasos(body?.pasos, body || {});
   const primero = pasos[0];
-  const mandan = pasos.filter((p, i) => p.con_botones && acumuladoHasta(pasos, i) <= LIMITE_VENTANA_MIN);
+  const mandan = pasos.filter(
+    (p, i) =>
+      p.con_botones &&
+      p.botones_modo !== 'ofertas' &&
+      acumuladoHasta(pasos, i) <= LIMITE_VENTANA_MIN,
+  );
   return {
     activo: body?.activo === false || body?.activo === 0 ? 0 : 1,
     pasos,
@@ -458,7 +542,7 @@ function filaAConfig(fila) {
 
 async function productoDe(id_configuracion, id_producto) {
   const [p] = await db.query(
-    `SELECT id, nombre, precio, imagen_url, video_url, descripcion,
+    `SELECT id, nombre, precio, combos_producto, imagen_url, video_url, descripcion,
             documento_url, documento_nombre
        FROM productos_chat_center
       WHERE id = ? AND id_configuracion = ? AND eliminado = 0 LIMIT 1`,
@@ -510,6 +594,57 @@ async function columnasDe(id_configuracion) {
   ).catch(() => []);
 }
 
+/* Columnas del tablero que significan «ya hay pedido» (las mismas del
+   tablero de salud del bot, botMetricas.service). */
+const ESTADOS_COMPRA = [
+  'generar_guia',
+  'guia_generada',
+  'guia_creada',
+  'en_transito',
+  'entregada',
+  'retiro_agencia',
+  'novedad',
+  'devolucion',
+];
+
+/**
+ * «Compraron»: clientes que recibieron un recordatorio del producto en el
+ * periodo y DESPUÉS terminaron con pedido. No hay historial de cambios de
+ * columna, así que se usan las dos señales que existen:
+ *  - el cliente está hoy en una columna de pedido (el recordatorio solo sale
+ *    en Contacto inicial, así que llegó ahí después de recibirlo), o
+ *  - el bot le creó la orden en Dropi después del primer recordatorio
+ *    (dropi_auto_ordenes_log), aunque luego haya pasado a otra columna.
+ * Cuenta al cliente aunque no haya respondido al recordatorio con un mensaje
+ * medible (p. ej. compró hablando con un asesor).
+ * @returns {Promise<Map<number, number>>} id_producto → clientes
+ */
+async function comprasTrasRecordatorio(id_configuracion, dias) {
+  const out = new Map();
+  try {
+    const filas = await db.query(
+      `SELECT e.id_producto, COUNT(DISTINCT e.id_cliente_chat_center) AS compraron
+         FROM (SELECT id_producto, id_cliente_chat_center, MIN(created_at) AS primer_envio
+                 FROM remarketing_producto_eventos
+                WHERE id_configuracion = ? AND evento = 'enviado'
+                  AND created_at >= DATE_SUB(NOW(), INTERVAL ${dias} DAY)
+                GROUP BY id_producto, id_cliente_chat_center) e
+         JOIN clientes_chat_center c ON c.id = e.id_cliente_chat_center
+        WHERE c.estado_contacto IN (${ESTADOS_COMPRA.map(() => '?').join(',')})
+           OR EXISTS (SELECT 1 FROM dropi_auto_ordenes_log al
+                       WHERE al.id_configuracion = ? AND al.id_cliente = e.id_cliente_chat_center
+                         AND al.resultado IN ('creada', 'actualizada')
+                         AND al.created_at >= e.primer_envio)
+        GROUP BY e.id_producto`,
+      { replacements: [id_configuracion, ...ESTADOS_COMPRA, id_configuracion], type: T.SELECT },
+    );
+    for (const f of filas) out.set(Number(f.id_producto), Number(f.compraron || 0));
+  } catch (e) {
+    console.warn('[remarketing_producto] compras:', e.message);
+  }
+  return out;
+}
+
 async function metricasPorProducto(id_configuracion, dias = 30) {
   const d = Math.min(Math.max(Number(dias) || 30, 1), 365);
   const filas = await db.query(
@@ -518,7 +653,8 @@ async function metricasPorProducto(id_configuracion, dias = 30) {
             COUNT(DISTINCT CASE WHEN evento = 'enviado' THEN id_cliente_chat_center END) AS clientes,
             COUNT(DISTINCT CASE WHEN evento IN ('respondio','boton') THEN id_cliente_chat_center END) AS respondieron,
             COUNT(DISTINCT CASE WHEN evento = 'boton' AND detalle = 'opiniones' THEN id_cliente_chat_center END) AS opiniones,
-            COUNT(DISTINCT CASE WHEN evento = 'boton' AND detalle = 'quiero' THEN id_cliente_chat_center END) AS quiero,
+            COUNT(DISTINCT CASE WHEN evento = 'boton' AND (detalle = 'quiero' OR detalle LIKE 'oferta\\_%') THEN id_cliente_chat_center END) AS quiero,
+            COUNT(DISTINCT CASE WHEN evento = 'descuento' THEN id_cliente_chat_center END) AS descuento,
             COUNT(DISTINCT CASE WHEN evento IN ('cierre_ia','cierre_flujo') THEN id_cliente_chat_center END) AS cierres,
             MAX(CASE WHEN evento = 'enviado' THEN created_at END) AS ultimo_envio
        FROM remarketing_producto_eventos
@@ -526,9 +662,12 @@ async function metricasPorProducto(id_configuracion, dias = 30) {
       GROUP BY id_producto`,
     { replacements: [id_configuracion], type: T.SELECT },
   );
+  const compras = await comprasTrasRecordatorio(id_configuracion, d);
   const out = new Map();
   for (const f of filas) {
     out.set(Number(f.id_producto), {
+      compraron: compras.get(Number(f.id_producto)) || 0,
+      descuento: Number(f.descuento || 0),
       enviados: Number(f.enviados || 0),
       clientes: Number(f.clientes || 0),
       respondieron: Number(f.respondieron || 0),
@@ -677,6 +816,13 @@ async function obtener(id_configuracion, id_producto) {
     metricas: metricas.get(Number(id_producto)) || null,
     columnas,
     respuesta_inicial,
+    // Botones que saldrían hoy en un recordatorio en modo «ofertas».
+    ofertas: ofertasDe(producto),
+    descuento: {
+      defecto: DESCUENTO_PCT_DEFECTO,
+      maximo: DESCUENTO_PCT_MAX,
+      vigencia_horas: DESCUENTO_VIGENCIA_H,
+    },
     variables: ['{{nombre}}', '{{producto}}', '{{precio}}'],
     limites: { pasos: MAX_PASOS, botones: MAX_BOTONES, titulo: MAX_TITULO, cuerpo: MAX_CUERPO, items: MAX_ITEMS_BLOQUE },
   };
@@ -1097,7 +1243,7 @@ async function enviarPasoProducto({ record, cfg, telefonoLimpio }) {
   }).slice(0, MAX_CUERPO);
 
   const imagen = paso.con_imagen ? imagenDe(config, paso) || producto.imagen_url || null : null;
-  const botones = paso.con_botones ? botonesDe(config, paso) : [];
+  const botones = botonesDelEnvio(config, paso, producto);
 
   const url = `https://graph.facebook.com/${process.env.GRAPH_VERSION}/${cfg.PHONE_NUMBER_ID}/messages`;
   const headers = {
@@ -1308,9 +1454,24 @@ async function atenderBotonProducto({
   // del envío, se busca la clave en cualquier paso. El contenido (bloques)
   // es el mismo del producto para todos.
   const paso = config.pasos[numPaso - 1] || null;
+  // Botón de oferta («2 por $34,99»): la cantidad va en la clave y el precio
+  // se lee del producto AHORA (si el dueño cambió el combo entre el envío y
+  // el toque, manda el vigente; si lo quitó, queda solo la cantidad).
+  const esOferta = String(clave).match(/^oferta_([0-9]+)$/);
+  const oferta = esOferta
+    ? ofertasDe(producto).find((o) => o.cantidad === Number(esOferta[1])) || {
+        clave,
+        titulo,
+        accion: 'oferta',
+        cantidad: Number(esOferta[1]),
+        precio: null,
+      }
+    : null;
+  const todosLosBotones = config.pasos.flatMap((p) => botonesDe(config, p));
   const boton =
+    oferta ||
     botonesDe(config, paso).find((b) => b.clave === clave) ||
-    botonesBloqueDe(config.pasos).find((b) => b.clave === clave) ||
+    todosLosBotones.find((b) => b.clave === clave) ||
     { clave, titulo, accion: 'cerrar' };
   const bloques = config.bloques || {};
   const base = {
@@ -1376,6 +1537,48 @@ async function atenderBotonProducto({
     };
   }
 
+  // Oferta elegida («2 por $34,99»): el cliente ya dijo cuántas quiere y a
+  // qué precio. El bot no vuelve a preguntar cantidad ni a presentar.
+  if (boton.accion === 'oferta') {
+    await registrarEventoReal({ ...base, evento: 'cierre_ia', detalle: boton.clave });
+    await log(`🛍️ remarketing producto: oferta «${boton.titulo}» (${boton.cantidad} u.) producto ${producto.id}`);
+    const unidades = `${boton.cantidad} unidad${boton.cantidad === 1 ? '' : 'es'}`;
+    const total = boton.precio ? ` por ${fmtPrecioCatalogo(boton.precio)} en total` : '';
+    return {
+      manejado: true,
+      saltarIA: false,
+      mensaje_para_ia:
+        `[El cliente tocó la oferta «${boton.titulo}» en el recordatorio del producto "${producto.nombre}": ` +
+        `quiere ${unidades}${total} (es la oferta vigente del producto). La cantidad ya está decidida: ` +
+        'no la vuelvas a preguntar ni vuelvas a presentar el producto; confirma en una línea su elección ' +
+        'y pasa directo a tomar los datos del pedido.]\n' +
+        `Mensaje del cliente: Quiero ${unidades} de ${producto.nombre}`,
+    };
+  }
+
+  // «Quiero mi 10% OFF»: el descuento queda anotado para este cliente (vale
+  // DESCUENTO_VIGENCIA_H horas o hasta crear el pedido). De ahí en adelante
+  // cada turno de la IA lleva el bloque de descuento (bloqueDescuentoParaIA)
+  // y el total del pedido se cuadra en código (aplicarDescuentoAlTotal).
+  // Se anota también en las pruebas del dueño: sin eso no podría probar que
+  // el bot lo aplica (no entra en las métricas de botones).
+  if (boton.accion === 'descuento') {
+    const pct = pctValido(boton.descuento_pct);
+    await registrarEvento({ ...base, evento: 'descuento', detalle: String(pct) });
+    await registrarEventoReal({ ...base, evento: 'cierre_ia', detalle: boton.clave });
+    await log(`🛍️ remarketing producto: «${boton.titulo}» → ${pct}% de descuento para el cliente ${id_cliente}, producto ${producto.id}`);
+    return {
+      manejado: true,
+      saltarIA: false,
+      mensaje_para_ia:
+        `[El cliente tocó «${boton.titulo}» en el recordatorio del producto ${refProducto}: quiere comprarlo ` +
+        `con el ${pct}% de descuento que le ofrecimos. Confírmale con entusiasmo que su ${pct}% de descuento ` +
+        'ya quedó aplicado a su pedido, no vuelvas a presentar el producto; confirma la cantidad si hace falta ' +
+        'y pasa directo a tomar los datos del pedido.]\n' +
+        `Mensaje del cliente: ${boton.titulo}`,
+    };
+  }
+
   // «Sí, lo quiero» (o cualquier botón sin bloque): el bot sigue cerrando
   // la venta por el camino de siempre (respuestas rápidas del wizard → IA),
   // con el producto ya sembrado y la pista de que el cliente ya decidió.
@@ -1431,6 +1634,78 @@ async function registrarRespuestaProducto({ id_cliente, id_configuracion }) {
   }
 }
 
+/* ── Descuento del cliente (botón «Quiero mi 10% OFF») ────────────────── */
+
+/**
+ * ¿Este cliente tiene un descuento vigente por haber tocado el botón de
+ * descuento de un recordatorio? Vale DESCUENTO_VIGENCIA_H horas, se corta si
+ * la conversación se reinició y se apaga al crear el pedido
+ * ('descuento_usado'). Se consulta en cada turno del bot (índice por cliente).
+ * @returns {Promise<null|{pct:number, id_producto:number, producto:string, id_remarketing_producto:number}>}
+ */
+async function descuentoVigente({ id_configuracion, id_cliente }) {
+  if (!id_cliente || !cuentaEnPiloto(id_configuracion)) return null;
+  try {
+    const [e] = await db.query(
+      `SELECT e.evento, e.detalle, e.id_producto, e.id_remarketing_producto, p.nombre
+         FROM remarketing_producto_eventos e
+         LEFT JOIN productos_chat_center p ON p.id = e.id_producto
+        WHERE e.id_cliente_chat_center = ? AND e.id_configuracion = ?
+          AND e.evento IN ('descuento', 'descuento_usado')
+          AND e.created_at > NOW() - INTERVAL ${DESCUENTO_VIGENCIA_H} HOUR
+          AND e.created_at > COALESCE(
+                (SELECT c.reinicio_conversacion_at FROM clientes_chat_center c WHERE c.id = ?),
+                '1970-01-01')
+        ORDER BY e.id DESC LIMIT 1`,
+      { replacements: [id_cliente, id_configuracion, id_cliente], type: T.SELECT },
+    );
+    if (!e || e.evento !== 'descuento') return null;
+    const pct = Math.round(Number(e.detalle));
+    if (!Number.isFinite(pct) || pct < 1 || pct > DESCUENTO_PCT_MAX) return null;
+    return {
+      pct,
+      id_producto: Number(e.id_producto),
+      producto: e.nombre || '',
+      id_remarketing_producto: Number(e.id_remarketing_producto),
+    };
+  } catch (err) {
+    if (!/doesn't exist|Unknown column/i.test(err.message)) {
+      console.warn('[remarketing_producto] descuento:', err.message);
+    }
+    return null;
+  }
+}
+
+/** Bloque que va en el contexto de CADA turno mientras el descuento valga. */
+function bloqueDescuentoParaIA(desc) {
+  if (!desc?.pct) return '';
+  const p = desc.pct;
+  const ejemplo = (40 * (100 - p)) / 100;
+  return [
+    '🎁 DESCUENTO ACTIVO DE ESTE CLIENTE (dato del sistema: es real y está autorizado por el negocio)',
+    `El cliente tocó el botón de descuento del recordatorio${desc.producto ? ` de "${desc.producto}"` : ''}: tiene ${p}% de descuento en este pedido.`,
+    `- Se aplica sobre el total de los productos del pedido: primero el precio normal que corresponde a la cantidad (el combo si lo hay) y a eso se le resta el ${p}%.`,
+    `- Cuando des el precio o el resumen, muéstralo así: "Precio normal: $X", "Descuento ${p}%: -$Y" y "Precio total: $Z". La línea "Precio total:" lleva SOLO el total final ya con el descuento.`,
+    `- Ejemplo: precio normal $40 → con ${p}% de descuento el total es $${ejemplo.toFixed(2)}.`,
+    '- Ya está aprobado: no digas que lo vas a consultar ni se lo vuelvas a ofrecer como novedad. No lo acumules con otro descuento ni des un porcentaje mayor.',
+  ].join('\n');
+}
+
+/** El pedido se cerró: el descuento ya se usó y no vale para otro pedido. */
+async function marcarDescuentoUsado({ id_configuracion, id_cliente }) {
+  const desc = await descuentoVigente({ id_configuracion, id_cliente });
+  if (!desc) return false;
+  await registrarEvento({
+    id_configuracion,
+    id_producto: desc.id_producto,
+    id_remarketing_producto: desc.id_remarketing_producto,
+    id_cliente_chat_center: id_cliente,
+    evento: 'descuento_usado',
+    detalle: String(desc.pct),
+  });
+  return true;
+}
+
 /* ── Prueba desde la pantalla ─────────────────────────────────────────── */
 
 /**
@@ -1472,7 +1747,7 @@ async function enviarPrueba({ id_configuracion, id_producto, telefono, paso = 1,
   const nombre = primerNombre(contacto?.nombre_cliente) || 'Daniela';
   const texto = rellenar(p.mensaje, { nombre, producto: producto.nombre, precio: fmtPrecio(producto.precio) }).slice(0, MAX_CUERPO);
   const imagen = p.con_imagen ? imagenDe(config, p) || producto.imagen_url || null : null;
-  const botones = p.con_botones ? botonesDe(config, p) : [];
+  const botones = botonesDelEnvio(config, p, producto);
   const interactive = {
     type: 'button',
     body: { text: texto },
@@ -1558,4 +1833,11 @@ module.exports = {
   registrarRespuestaProducto,
   registrarEvento,
   enviarPrueba,
+  ofertasDe,
+  botonesDelEnvio,
+  descuentoVigente,
+  bloqueDescuentoParaIA,
+  marcarDescuentoUsado,
+  DESCUENTO_PCT_DEFECTO,
+  DESCUENTO_VIGENCIA_H,
 };
