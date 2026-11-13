@@ -67,6 +67,8 @@ const {
 } = require('../services/remarketing_producto.service');
 const {
   sembrarProductoEnJuego,
+  interpretarBotonOfertaWizard,
+  atenderBotonOfertaWizard,
 } = require('../services/producto_wizard_runtime.service');
 
 // Respondedor logístico sin IA: guía/tracking, lugar de retiro y demora en
@@ -2772,6 +2774,23 @@ exports.webhook_whatsapp = catchAsync(async (req, res, next) => {
             // le dice a la IA que el cliente ya decidió y vaya al cierre.
             // Cualquier otra respuesta a un recordatorio por producto solo
             // se anota para las métricas.
+            // 1.44 Oferta del mensaje fijo del producto tocada como botón
+            // («2 por $34,99»): la cantidad y el total ya están decididos;
+            // la IA sigue directo con los datos del pedido.
+            const botonOfertaWizard =
+              tipo_mensaje === 'interactive' && !saltarIA
+                ? interpretarBotonOfertaWizard(mensaje_recibido?.interactive)
+                : null;
+            if (botonOfertaWizard) {
+              const ro = await atenderBotonOfertaWizard({
+                ...botonOfertaWizard,
+                id_configuracion,
+                id_cliente,
+                log: logWizard,
+              }).catch(() => null);
+              if (ro?.mensaje_para_ia) mensaje_para_ia = ro.mensaje_para_ia;
+            }
+
             const botonProducto =
               tipo_mensaje === 'interactive' && !saltarIA
                 ? interpretarBotonProducto(mensaje_recibido?.interactive)
